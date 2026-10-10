@@ -221,6 +221,8 @@ def main():
     base = dict(workspace=str(root), source=str(source), kind=kind, separator=separator, date_format=fmt or None, decimal_comma=decimal, price_mode="unit" if mode == "Unit selling price" else "line_total", sha256=digest)
 
     # Column mapping step - preview schema first
+    inspection_key = json.dumps(base, sort_keys=True)
+    
     if st.session_state.get("inspection_key") != inspection_key:
         drop_result()
 
@@ -267,11 +269,11 @@ def main():
             st.sidebar.warning(f"Missing mappings: {', '.join(missing_mapped)}")
         else:
             # Add mapping to base and validate
-            base["column_mapping"] = mapping
+            base_with_mapping = dict(base, column_mapping=mapping)
             if st.sidebar.button("Validate upload"):
                 try:
                     with st.spinner("Validating schema, values and basket keys in an isolated worker..."):
-                        worker(dict(base, action="inspect"))
+                        worker(dict(base_with_mapping, action="inspect"))
                     st.session_state["inspection_key"] = inspection_key
                     st.session_state.pop("preview_schema", None)
                     st.rerun()
