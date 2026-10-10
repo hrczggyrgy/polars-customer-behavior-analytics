@@ -215,7 +215,8 @@ def run(source, output, price_mode, snapshots, buckets=8, exclude_invalid=False,
         past = pl.scan_parquet(root / "validated.parquet").filter(pl.col("date").is_between(d - timedelta(days=364), d))
         sink(past.group_by("product_id").agg(pl.col("unit_price").median().alias("reference_price"), pl.len().alias("reference_count")), root / "price_references" / f"{d}.parquet")
         for path in paths:
-            numeric.append(snapshot(path, d, end, root))
+            if pl.scan_parquet(path).select(pl.len()).collect().item() > 0:
+                numeric.append(snapshot(path, d, end, root))
     ref = pl.scan_parquet([str(x) for x in numeric if x.parent.name == str(dates[0])])
     thresholds = ref.filter((pl.col("tenure") >= 89) & (pl.col("spend_90d") > 0)).select(pl.col("spend_90d").quantile(0.33).alias("value_low"), pl.col("spend_90d").quantile(0.80).alias("value_high")).collect().to_dicts()[0]
     thresholds.update(ref.filter((pl.col("days_365d") >= 6) & (pl.col("tenure") >= 90) & (pl.col("gap_count") >= 4)).select(pl.col("median_basket").quantile(0.33).alias("basket_low"), pl.col("median_basket").quantile(0.80).alias("basket_high"), pl.col("median_gap").quantile(0.33).alias("gap_low"), pl.col("median_gap").quantile(0.80).alias("gap_high")).collect().to_dicts()[0])

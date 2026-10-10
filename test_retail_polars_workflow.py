@@ -48,12 +48,12 @@ class WorkflowTests(unittest.TestCase):
             root = Path(tmp)
             frames = []
             full = fixture()
-            cases = [("unit", full, "unit"), ("total", full.with_columns((pl.col("price") * pl.col("quantity")).alias("price")), "line_total"), ("past", full.filter(pl.col("transaction_date") <= "2025-05-31"), "unit")]
-            for name, data, mode in cases:
+            cases = [("unit", full, "unit", ["2025-05-31", "2025-10-31"]), ("total", full.with_columns((pl.col("price") * pl.col("quantity")).alias("price")), "line_total", ["2025-05-31", "2025-10-31"]), ("past", full.filter(pl.col("transaction_date") <= "2025-05-20"), "unit", ["2025-05-20"])]
+            for name, data, mode, cutoffs in cases:
                 source = root / f"{name}.parquet"
                 data.write_parquet(source)
                 out = root / name
-                run(str(source), str(out), mode, ["2025-05-31"], buckets=1)
+                run(str(source), str(out), mode, cutoffs, buckets=1)
                 frames.append(pl.read_parquet(str(out / "snapshots" / "*" / "*.parquet")).sort("customer_id"))
             columns = [x for x in frames[0].columns if not x.startswith(("future_", "eligible_followup_"))]
             assert_frame_equal(frames[0].select(columns), frames[1].select(columns))
