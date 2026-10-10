@@ -1,0 +1,188 @@
+```mermaid
+flowchart TD
+    %% =============================================
+    %% INPUT STAGE
+    %% =============================================
+    subgraph INPUT["📥 INPUT DATA"]
+        SRC["customer_transactions.parquet\n(2.6M rows × 9 cols)"]
+        
+        COLS["Input Columns:\n• customer_id (str)\n• transaction_date (datetime[ns])\n• transaction_id (str)\n• product_id (str)\n• product_description (str)\n• department (str)\n• category (str)\n• price (f64)\n• quantity (i64)"]
+    end
+
+    %% =============================================
+    %% PREPARATION & VALIDATION
+    %% =============================================
+    subgraph PREP["🔧 PREPARATION & VALIDATION"]
+        SCAN["pl.scan_parquet()\nLazy evaluation"]
+        SCHEMA["Schema validation\nAll 9 columns present"]
+        
+        PARSE["Date parsing\n• String → Date\n• Datetime → Date\n• Configurable format"]
+        
+        CLEAN["Cleaning & casting:\n• Strip strings, empty→null\n• customer_id, transaction_id, product_id: String\n• department, category: String (null→'__UNKNOWN__')\n• product_description: String (null→'')\n• price, quantity: Float64"]
+        
+        VALUE["Value calculation:\n• mode='unit': value = price × quantity\n• mode='line_total': value = price"]
+        
+        VALIDATE["Row validation:\n• Required fields not null\n• price ≥ 0, finite\n• quantity > 0, finite\n• value finite\n→ 'valid' boolean column"]
+        
+        AUDIT["Quality audit (quality.json):\n• source_rows\n• rejected_rows\n• first_date, last_date"]
+        
+        REJECT["Rejected rows → rejected.parquet\n(if --exclude-invalid not set: error)"]
+        
+        FILTER["Filter valid rows\nDrop: valid, transaction_date"]
+        
+        THROUGH["Cutoff filter:\n• --observed-through or max date\n• Keep date ≤ cutoff"]
+        
+        ENRICH["Enrichment:\n• unit_price = value / quantity\n• category_key = dept_len:dept + cat_len:cat\n• bucket = hash(customer_id) % buckets"]
+        
+        SINK_VALID["validated.parquet\n(streaming, zstd)"]
+        
+        PARTITION["Partition by bucket\n→ partitions/b{N}.parquet"]
+        
+        CONFLICT["Conflict check:\ncustomer_id + transaction_id\nspans multiple dates?"]
+        
+        PROD_VAR["Product variation check:\nproduct_id → multiple\ndept/category/description?"]
+    end
+
+    %% =============================================
+    %% SNAPSHOT GENERATION (per cutoff date)
+    %% =============================================
+    subgraph SNAPSHOT["📸 SNAPSHOT GENERATION (per cutoff date)"]
+        direction TB
+        
+        PRICE_REF["Price references:\n• Filter validated: date ∈ [d-364, d]\n• Group by product_id\n• Median unit_price, count\n• → price_references/{d}.parquet"]
+        
+        BASKETS["Basket-level:\n• Filter partition: date ≤ d\n• Group by (customer_id, transaction_id, date)\n• Agg: spend=sum(value), products=n_unique,\n  breadth=n_unique(category_key)\n→ events/{d}/baskets.parquet"]
+        
+        RECON["Revenue reconciliation:\nsum(basket.spend) ≈ sum(line.value)"]
+        
+        BASE["Customer base features:\nGroup by customer_id →\n• first_purchase, last_purchase\n• purchases_history, spend_history\n• purchases_{30,90,365}d\n• spend_{30,90,365}d\n• purchases_previous90d, spend_previous90d\n• aov_365d, median_basket, basket_cv\n• median_breadth, breadth_recent, breadth_previous"]
+        
+        DAY["Daily features:\nGroup by (customer_id, date) →\n• day_spend, products[], categories[]\n• Shift(1): prev_date, prev_products, prev_categories\n• Rolling median(5): baseline_spend\n• gap = date - prev_date\n• relative_spend = day_spend / baseline_spend\n• Jaccard overlap: products, categories\n→ events/{d}/days.parquet"]
+        
+        RHYTHM["Rhythm features:\nFilter: year & prev_date ≥ d-365\nGroup by customer_id →\n• days_history, days_365d\n• gap_count, median_gap, gap_cv\n• product_overlap, category_overlap\n• weekend_share\n• personal_spend_ratio (recent median)\n• reactivation_events: gap ≥ 2×baseline_gap in last 30d"]
+        
+        WEEKDAY["Weekday entropy:\nFilter year → group by (customer_id, weekday)\n• p = count / sum(count) over customer\n• entropy = -Σ p·log(p)"]
+        
+        BREADTH["Last 6 days breadth:\nRank days desc per customer, take top 6\nJoin back → n_unique products/categories"]
+        
+        PROD_DAYS["Product-day features:\nGroup by (product_id, date) →\n• qty=sum, spend=sum\n• prior_days = cumcount-1\n• next_date = shift(-1)\n• baseline_qty = rolling median(5)\n• next_gap, relative_qty\n→ events/{d}/product_days.parquet"]
+        
+        PROD_HIST["Product history:\nGroup by product_id →\n• trial = min(date)\n• repeat = min(date where prior_days=1)\n• purchase_days, year_spend\n→ events/{d}/product_history.parquet"]
+        
+        TRIALS["Trial conversion:\n• eligible: trial ∈ [d-365, d-90]\n• success: repeat ≤ trial + 90d\nGroup by customer_id →\n• eligible_trials, repeated_trials\n• core_size (purchase_days≥3), core_spend"]
+        
+        PROD_BASKETS["Product-basket novelty:\nUnique (customer_id, transaction_id, product_id)\nJoin prior_days → new_share, repeat_share per basket\nGroup by customer_id → avg new_share, repeat_share"]
+        
+        QUANTITY["Quantity patterns:\nGroup by customer_id, filter year →\n• gap_after_large_qty (relative_qty≥1.5)\n• gap_after_typical_qty (0.75-1.25)\n• large_qty_gap_count"]
+        
+        CAT_HIST["Category history:\nGroup by (customer_id, dept, category, date) → spend\nShift → gap\nGroup by (customer_id, dept, category) →\n• year_spend, days, year_days, last, median_gap\n• share = year_spend / sum(year_spend) over customer\n• lateness = (d - last) / median_gap\n→ events/{d}/category_history.parquet"]
+        
+        CAT_FEATS["Category features:\nGroup by customer_id →\n• category_count (year_days>0)\n• category_hhi = Σ share²\n• category_entropy = -Σ share·log(share)\n• dominant_share = max(share)\n• overdue_categories: (days≥3 & lateness≥2)"]
+        
+        DOMINANT["Dominant category:\nFilter year_days>0, sort by year_spend desc\nFirst per customer → dominant_dept, dominant_cat"]
+        
+        PRICE_FEATS["Price features:\nFilter year, join price_references\nFilter reference_count≥5 → relative_price = unit_price/reference_price\nGroup by customer_id →\n• relative_paid_price (median)\n• comparable_price_lines (count)"]
+        
+        MERGE["Merge all features:\nbase ⋈ rhythm ⋈ weekday_stats ⋈ breadth ⋈ trials\n  ⋈ prod_baskets ⋈ quantity ⋈ cat_feats ⋈ dominant ⋈ price_feats\n→ 78 columns"]
+        
+        DERIVED["Derived metrics:\n• tenure = d - first_purchase\n• recency = d - last_purchase\n• aov_recent = spend_90d / purchases_90d\n• aov_previous = spend_prev90d / purchases_prev90d\n• trial_conversion = repeated/eligible\n• core_spend_share = core_spend / spend_365d\n• lateness = recency / median_gap\n• comparable_windows = tenure ≥ 179\n• breadth_change = breadth_recent - breadth_previous\n• frequency_change = purchases_90d/purchases_prev90d - 1\n• basket_change = aov_recent/aov_previous - 1\n• spend_change = spend_90d/spend_prev90d - 1"]
+        
+        FOLLOWUP["Future followup (no lookahead):\nFor h∈{30,90}:\n• Filter validated: date ∈ (d, d+h]\n• Group by customer_id → future_purchases_{h}d, future_spend_{h}d\n• eligible_followup_{h}d = (d+h ≤ observed_through)\n• If eligible: fill_null(0), else null"]
+        
+        SINK_NUM["numeric/{d}/b{N}.parquet"]
+    end
+
+    %% =============================================
+    %% LABELING & CLASSIFICATION
+    %% =============================================
+    subgraph LABEL["🏷️ LABELING & CLASSIFICATION"]
+        THRESH["Thresholds (from first cutoff, established customers):\n• value_low = Q33(spend_90d)\n• value_high = Q80(spend_90d)\n• basket_low = Q33(median_basket)\n• basket_high = Q80(median_basket)\n• gap_low = Q33(median_gap)\n• gap_high = Q80(median_gap)"]
+        
+        STYLE["Behavioral style tags:\n• enough = days_365d≥6 & tenure≥90 & gap_count≥4\n• routine = gap_cv≤0.75 & repeat_share≥0.70\n• focused = dominant_share≥0.70 & repeat_share≥0.70\n• broad = median_breadth≥3 & repeat_share≥0.70\n• explorer = new_share≥0.40\n• style tags: routine_repeat, focused_repeat,\n  broad_repeat, exploration_heavy\n• (+ large_basket_episodic, small_basket_frequent\n   if basket/gap thresholds available)"]
+        
+        TRAJ["Trajectory tags:\n• slowing = frequency_change ≤ -0.25\n• smaller_baskets = basket_change ≤ -0.25\n• narrowing = breadth_change ≤ -0.5 ∨ overdue≥2\n• broad_decline = slowing & smaller_baskets\n• expanding = freq≥0.25 ∨ basket≥0.25\n• overdue = enough & lateness≥2\n• reactivated = reactivation_events>0\n• stable = enough & comparable & not(any above)"]
+        
+        LIFECYCLE["Lifecycle:\n• days_history=1 & tenure≥90 → long_observed_single\n• days_history=1 & tenure<90 → first_observed\n• days≥6 & tenure≥90 → established_repeat\n• else → early_repeat"]
+        
+        EVIDENCE["Evidence level:\n• enough & gap_count≥12 → stronger\n• enough → limited\n• else → insufficient"]
+        
+        BEHAVIOR["Behavior label:\n• ¬style_eligible → insufficient_history\n• style_eligible & 0 tags → mixed_other\n• else → join(tags, '+')"]
+        
+        TRAJECTORY_L["Trajectory label:\n• 0 tags → not_classified\n• else → join(tags, '+')"]
+        
+        VALUE_TIER["Value tier:\n• tenure<89 → insufficient_exposure\n• spend_90d=0 → no_recent_spend\n• spend_90d≥value_high → high\n• spend_90d≤value_low → low\n• else → middle"]
+        
+        SINK_SNAP["snapshots/{d}/b{N}.parquet"]
+    end
+
+    %% =============================================
+    %% REPORTING & AGGREGATION
+    %% =============================================
+    subgraph REPORTS["📊 REPORTING & AGGREGATION"]
+        SEG_PROF["Segment profiles:\nScan all snapshots\nGroup by (snapshot, behavior) →\n• customers, revenue, median_spend, median_gap\n• exploration, mean_trial_conversion\n• future_purchase_rate_{30,90}d\n• future_mean_spend_{30,90}d\n• eligible_customers_{30,90}d\n• customer_share, revenue_share\n→ segment_profiles.parquet"]
+        
+        COHORT["Cohort profiles:\nAdd cohort = first_purchase truncated to month\nGroup by (snapshot, cohort) →\n• customers, mean_cumulative_spend\n• rolling30d_purchase_rate\n• future30d_purchase_rate\n→ cohort_profiles.parquet"]
+        
+        TRANS["Segment transitions:\nPer bucket, per dimension ∈ {lifecycle,behavior,trajectory,value_tier}:\n• Shift labels over snapshots per customer\n• Count transitions: from_label → to_label\n• Aggregate across buckets\n• transition_rate = customers / eligible_origin\n→ segment_transitions.parquet"]
+    end
+
+    %% =============================================
+    %% CONNECTIONS
+    %% =============================================
+    SRC --> SCAN --> SCHEMA --> PARSE --> CLEAN --> VALUE --> VALIDATE --> AUDIT
+    AUDIT --> REJECT
+    AUDIT --> FILTER --> THROUGH --> ENRICH --> SINK_VALID
+    SINK_VALID --> PARTITION --> CONFLICT
+    CONFLICT -.->|error| ERR["❌ Error: basket conflicts"]
+    CONFLICT --> PROD_VAR
+    PROD_VAR --> PROD_VAR_OUT["product_variation.parquet"]
+    
+    %% Snapshot loop
+    PARTITION --> PRICE_REF
+    PARTITION --> BASKETS
+    BASKETS --> RECON --> BASE
+    BASE --> DAY --> RHYTHM
+    DAY --> WEEKDAY
+    DAY --> BREADTH
+    DAY --> PROD_DAYS --> PROD_HIST --> TRIALS
+    PROD_DAYS --> PROD_BASKETS
+    PROD_DAYS --> QUANTITY
+    BASKETS -.-> CAT_HIST --> CAT_FEATS
+    CAT_HIST --> DOMINANT
+    BASE -.-> PRICE_FEATS
+    PRICE_REF -.-> PRICE_FEATS
+    
+    BASE --> MERGE
+    RHYTHM --> MERGE
+    WEEKDAY --> MERGE
+    BREADTH --> MERGE
+    TRIALS --> MERGE
+    PROD_BASKETS --> MERGE
+    QUANTITY --> MERGE
+    CAT_FEATS --> MERGE
+    DOMINANT --> MERGE
+    PRICE_FEATS --> MERGE
+    
+    MERGE --> DERIVED --> FOLLOWUP --> SINK_NUM
+    
+    SINK_NUM --> THRESH --> STYLE --> TRAJ --> LIFECYCLE --> EVIDENCE --> BEHAVIOR --> TRAJECTORY_L --> VALUE_TIER --> SINK_SNAP
+    
+    SINK_SNAP --> SEG_PROF
+    SINK_SNAP --> COHORT
+    SINK_SNAP --> TRANS
+
+    %% Styling
+    classDef input fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef prep fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+    classDef snap fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    classDef label fill:#fce4ec,stroke:#c2185b,stroke-width:2px
+    classDef report fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef error fill:#ffebee,stroke:#c62828,stroke-width:2px,stroke-dasharray: 5 5
+    
+    class SRC,COLS input
+    class SCAN,SCHEMA,PARSE,CLEAN,VALUE,VALIDATE,AUDIT,REJECT,FILTER,THROUGH,ENRICH,SINK_VALID,PARTITION,CONFLICT,PROD_VAR prep
+    class PRICE_REF,BASKETS,RECON,BASE,DAY,RHYTHM,WEEKDAY,BREADTH,PROD_DAYS,PROD_HIST,TRIALS,PROD_BASKETS,QUANTITY,CAT_HIST,CAT_FEATS,DOMINANT,PRICE_FEATS,MERGE,DERIVED,FOLLOWUP,SINK_NUM snap
+    class THRESH,STYLE,TRAJ,LIFECYCLE,EVIDENCE,BEHAVIOR,TRAJECTORY_L,VALUE_TIER,SINK_SNAP label
+    class SEG_PROF,COHORT,TRANS report
+    class ERR error
+```
