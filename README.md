@@ -1,44 +1,141 @@
-# Polars customer behavior analytics
+# Polars Customer Behavior Analytics
 
-Purchase-only analytics from exactly nine columns: customer_id, transaction_date,
-transaction_id, product_id, product_description, department, category, price,
-quantity. No customer data is included.
+A customer behavior analytics pipeline built with [Polars](https://pola.rs) for retail transaction data.
 
-## Run
-```bash
-python -m pip install -r requirements.txt
-python -m unittest test_retail_polars_workflow
-python -m retail_polars_workflow --input transactions.parquet --output results_01 --price-mode unit --snapshots 2025-05-31 2025-06-30 --buckets 8
+## Data Workflow
+
+```mermaid
+flowchart TD
+    %% =============================================
+    %% HIGH-LEVEL DATA PIPELINE
+    %% =============================================
+    
+    subgraph INPUT["INPUT"]
+        SRC["customer_transactions.parquet\n(2.6M rows x 9 cols)"]
+    end
+
+    subgraph PREP["PREPARATION & VALIDATION"]
+        SCAN["Scan & Validate Schema"]
+        PARSE["Parse Dates\n(String/Datetime to Date)"]
+        CLEAN["Clean & Cast Types\n(Strip, null handling, Float64)"]
+        VALUE["Compute Value\n(unit: price x qty or line_total: price)"]
+        VALIDATE["Row Validation\n(Required fields, price>=0, qty>0, finite)"]
+        AUDIT["Quality Audit\nto quality.json"]
+        REJECT["Rejected Rows\nto rejected.parquet"]
+        ENRICH["Enrich\n(unit_price, category_key, bucket)"]
+        PARTITION["Partition by Bucket\nto partitions/bN.parquet"]
+        CHECKS["Integrity Checks\n- Basket conflicts\n- Product variation"]
+    end
+
+    subgraph SNAPSHOT["SNAPSHOT GENERATION (per cutoff date)"]
+        PRICE_REF["Price References\n(Median unit_price per product)"]
+        BASKETS["Basket Aggregation\n(customer_id, txn_id, date)\nto spend, products, breadth"]
+        BASE["Customer Base Features\n- History: first/last purchase\n- Counts: purchases_30d, 90d, 365d\n- Spend: spend_30d, 90d, 365d\n- AOV, median_basket, breadth"]
+        DAILY["Daily Features\n- day_spend, products list, categories list\n- gap, relative_spend\n- Jaccard overlap (products/categories)"]
+        RHYTHM["Rhythm Features\n- median_gap, gap_cv\n- product/category overlap\n- weekend_share, reactivation_events"]
+        WEEKDAY["Weekday Entropy"]
+        BREADTH["Last 6 Days Breadth"]
+        PROD["Product-Level Features\n- trial/repeat dates\n- prior_days, next_gap\n- relative_qty"]
+        TRIALS["Trial Conversion\n- eligible_trials, repeated_trials\n- core_size, core_spend"]
+        CAT["Category History\n- share, HHI, entropy\n- dominant category\n- overdue_categories"]
+        PRICE_FEAT["Price Features\n- relative_paid_price\n- comparable_price_lines"]
+        MERGE["Merge All Features\nto 78 columns"]
+        DERIVED["Derived Metrics\n- tenure, recency\n- aov_recent/previous\n- frequency/basket/spend_change\n- lateness, breadth_change"]
+        FOLLOWUP["Future Followup (no lookahead)\n- future_purchases_30d, 90d\n- future_spend_30d, 90d"]
+    end
+
+    subgraph LABEL["LABELING & CLASSIFICATION"]
+        THRESH["Quantile Thresholds\n(value/basket/gap low/high)"]
+        STYLE["Behavioral Style Tags\n- routine_repeat (gap_cv<=.75, repeat>=.7)\n- focused_repeat (dominant>=.7, repeat>=.7)\n- broad_repeat (breadth>=3, repeat>=.7)\n- exploration_heavy (new_share>=.4)"]
+        TRAJ["Trajectory Tags\n- slowing / smaller_baskets\n- narrowing / broad_decline\n- expanding / overdue / reactivated / stable"]
+        LIFECYCLE["Lifecycle\n- first_observed / long_observed_single\n- early_repeat / established_repeat"]
+        EVIDENCE["Evidence Level\n- stronger / limited / insufficient"]
+        BEHAVIOR["Behavior Label"]
+        TRAJ_L["Trajectory Label"]
+        VALUE_TIER["Value Tier\n- high / middle / low\n- insufficient_exposure / no_recent_spend"]
+    end
+
+    subgraph REPORTS["REPORTING"]
+        SEG["Segment Profiles\n(customers, revenue, rates by behavior)"]
+        COHORT["Cohort Profiles\n(mean spend, purchase rates by cohort)"]
+        TRANS["Segment Transitions\n(transition rates by dimension)"]
+    end
+
+    %% Connections
+    SRC --> SCAN --> PARSE --> CLEAN --> VALUE --> VALIDATE --> AUDIT
+    AUDIT --> REJECT
+    AUDIT --> ENRICH --> PARTITION --> CHECKS
+    
+    CHECKS --> PRICE_REF
+    CHECKS --> BASKETS
+    BASKETS --> BASE
+    BASE --> DAILY --> RHYTHM
+    DAILY --> WEEKDAY
+    DAILY --> BREADTH
+    DAILY --> PROD --> TRIALS
+    PROD --> CAT
+    BASE -.-> PRICE_FEAT
+    PRICE_REF -.-> PRICE_FEAT
+    
+    BASE --> MERGE
+    RHYTHM --> MERGE
+    WEEKDAY --> MERGE
+    BREADTH --> MERGE
+    TRIALS --> MERGE
+    CAT --> MERGE
+    PRICE_FEAT --> MERGE
+    
+    MERGE --> DERIVED --> FOLLOWUP
+    
+    FOLLOWUP --> THRESH --> STYLE --> TRAJ --> LIFECYCLE --> EVIDENCE --> BEHAVIOR --> TRAJ_L --> VALUE_TIER
+    
+    VALUE_TIER --> SEG
+    VALUE_TIER --> COHORT
+    VALUE_TIER --> TRANS
+
+    %% Styling
+    classDef input fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef prep fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+    classDef snap fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    classDef label fill:#fce4ec,stroke:#c2185b,stroke-width:2px
+    classDef report fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    
+    class SRC input
+    class SCAN,PARSE,CLEAN,VALUE,VALIDATE,AUDIT,REJECT,ENRICH,PARTITION,CHECKS prep
+    class PRICE_REF,BASKETS,BASE,DAILY,RHYTHM,WEEKDAY,BREADTH,PROD,TRIALS,CAT,PRICE_FEAT,MERGE,DERIVED,FOLLOWUP snap
+    class THRESH,STYLE,TRAJ,LIFECYCLE,EVIDENCE,BEHAVIOR,TRAJ_L,VALUE_TIER label
+    class SEG,COHORT,TRANS report
 ```
-Example cutoffs must be replaced with dates in your data. Output must be empty.
-Use unit for price * quantity or line_total when price is already the line value.
-Non-ISO strings need --date-format. Dates are calendar dates; normalize timezone
-before ingestion. Invalid rows fail by default; --exclude-invalid is explicit.
-Duplicates are reported and preserved.
+
+## Quick Start
+
+```bash
+# Install dependencies
+pip install polars
+
+# Run pipeline
+python retail_polars_workflow.py \
+  --input customer_transactions.parquet \
+  --output results \
+  --price-mode unit \
+  --snapshots 2000-06-30 2001-06-30 2001-12-11 \
+  --buckets 4 \
+  --exclude-invalid
+```
 
 ## Outputs
-Validation reports, customer partitions, historical baskets/shopping days/product
-and category histories, numeric and labelled snapshots, price references, frozen
-thresholds, segment profiles, observed-cohort summaries and segment transitions.
-Features cover value, cadence, personal baselines, repetition, trials, exploration,
-category withdrawal, fixed-event breadth, adjacent-day overlap, comparable prices,
-quantity/next-gap relationships and nonoverlapping 90-day changes. Segmentation
-separates lifecycle, behavioral tags, trajectory, observed value and evidence.
-See label() for all rule thresholds; they require validation, not blind adoption.
 
-## Status and limitations
-Reconstructed from the conversation, not byte-identical to the earlier bundle.
-Syntax checked; Polars runtime tests NOT executed in the authoring environment.
-Run tests locally and pin the tested Polars version. Descriptions are retained,
-but automatic attribute parsing is not enabled. No profit CLV, elasticity,
-permanent-churn probability, clustering, survival or causal models are computed.
-Evidence labels are not calibrated confidence. Float64 is analytical, not audited
-accounting. Cohorts use first observed purchase, not confirmed acquisition.
+| File | Description |
+|------|-------------|
+| `results/quality.json` | Data quality audit |
+| `results/validated.parquet` | Cleaned transactions |
+| `results/snapshots/{date}/b{N}.parquet` | Customer features (78 cols) with labels |
+| `results/segment_profiles.parquet` | Segment metrics per cutoff |
+| `results/segment_transitions.parquet` | Transition rates between segments |
+| `results/cohort_profiles.parquet` | Cohort analysis by first purchase month |
 
-Future outcomes are separate from features and null for incomplete follow-up.
-The latest purchase date is a provisional coverage endpoint, not proof of complete
-capture. Use --observed-through only with confirmed complete data. Quantity-gap
-summaries use completed intervals only and are not censoring-corrected. Seasonality
-is not automatically adjusted. No dense matrices are built, but medians, ordered
-windows, grouping and lists still hold state. Increase buckets and monitor RAM.
-History is replayed per cutoff; this is not an incremental production service.
+## Tests
+
+```bash
+python -m unittest test_retail_polars_workflow -v
+```
