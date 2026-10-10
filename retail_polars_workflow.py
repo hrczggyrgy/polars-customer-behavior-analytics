@@ -190,16 +190,22 @@ def reports(root, buckets):
     sink(allrows.with_columns(pl.col("first_purchase").dt.truncate("1mo").alias("cohort")).group_by(["snapshot", "cohort"]).agg(pl.len().alias("customers"), pl.col("spend_history").mean().alias("mean_cumulative_spend"), (pl.col("purchases_30d") > 0).mean().alias("rolling30d_purchase_rate"), (pl.col("future_purchases_30d") > 0).filter(pl.col("eligible_followup_30d")).mean().alias("future30d_purchase_rate")), root / "cohort_profiles.parquet")
     paths = []
     for b in range(buckets):
-        rows = pl.scan_parquet(str(root / "snapshots" / "*" / f"b{b}.parquet"))
+        try:
+            rows = pl.scan_parquet(str(root / "snapshots" / "*" / f"b{b}.parquet"))
+            if rows.select(pl.len()).collect().item() == 0:
+                continue
+        except Exception:
+            continue
         for dim in ["lifecycle", "behavior", "trajectory", "value_tier"]:
             prev = rows.with_columns(pl.col(dim).shift(1).over(C, order_by="snapshot").alias("from_label"), pl.col("snapshot").shift(1).over(C, order_by="snapshot").alias("from_date")).filter(pl.col("from_label").is_not_null())
             trans = prev.group_by(["from_date", "snapshot", "from_label", dim]).len().rename({dim: "to_label", "len": "customers"}).with_columns(pl.lit(dim).alias("dimension"))
             target = root / "transition_parts" / f"b{b}_{dim}.parquet"
             sink(trans, target)
             paths.append(str(target))
-    trans = pl.scan_parquet(paths).group_by(["from_date", "snapshot", "dimension", "from_label", "to_label"]).agg(pl.col("customers").sum())
-    trans = trans.with_columns(pl.col("customers").sum().over(["from_date", "snapshot", "dimension", "from_label"]).alias("eligible_origin"))
-    sink(trans.with_columns(ratio(pl.col("customers"), pl.col("eligible_origin")).alias("transition_rate")), root / "segment_transitions.parquet")
+    if paths:
+        trans = pl.scan_parquet(paths).group_by(["from_date", "snapshot", "dimension", "from_label", "to_label"]).agg(pl.col("customers").sum())
+        trans = trans.with_columns(pl.col("customers").sum().over(["from_date", "snapshot", "dimension", "from_label"]).alias("eligible_origin"))
+        sink(trans.with_columns(ratio(pl.col("customers"), pl.col("eligible_origin")).alias("transition_rate")), root / "segment_transitions.parquet")
 
 
 def run(source, output, price_mode, snapshots, buckets=8, exclude_invalid=False, date_format=None, observed_through=None, coverage_confirmed=False):

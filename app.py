@@ -219,22 +219,69 @@ def main():
     decimal = st.sidebar.checkbox("Decimal comma in numeric text; no thousands separators")
     separator = st.sidebar.selectbox("CSV delimiter", [",", ";", "\t", "|"]) if kind == "csv" else ","
     base = dict(workspace=str(root), source=str(source), kind=kind, separator=separator, date_format=fmt or None, decimal_comma=decimal, price_mode="unit" if mode == "Unit selling price" else "line_total", sha256=digest)
-    inspection_key = json.dumps(base, sort_keys=True)
+
+    # Column mapping step - preview schema first
     if st.session_state.get("inspection_key") != inspection_key:
         drop_result()
-        if not st.sidebar.button("Validate upload"):
-            st.info("Validate the upload after choosing its interpretation.")
-            return
-        try:
-            with st.spinner("Validating schema, values and basket keys in an isolated worker..."):
-                worker(dict(base, action="inspect"))
-            st.session_state["inspection_key"] = inspection_key
-        except Exception as exc:
-            st.error(str(exc))
-            if (root / "inspection.json").exists():
-                st.json(read_json(root / "inspection.json"))
-            return
-    metadata = read_json(root / "inspection.json")
+
+    # Always show column mapping if we have an upload but haven't validated yet
+    if "column_mapping" not in st.session_state:
+        st.session_state["column_mapping"] = {}
+
+    # Preview schema button
+    if not st.session_state.get("inspection_key"):
+        if st.sidebar.button("Preview columns"):
+            try:
+                with st.spinner("Reading file schema..."):
+                    worker(dict(base, action="preview"))
+                st.session_state["preview_schema"] = read_json(root / "preview.json")
+            except Exception as exc:
+                st.error(str(exc))
+                return
+
+    # Column mapping UI if preview exists
+    if "preview_schema" in st.session_state and not st.session_state.get("inspection_key"):
+        preview = st.session_state["preview_schema"]
+        available_cols = preview.get("columns", [])
+        st.sidebar.subheader("Column Mapping")
+        st.sidebar.caption("Map your columns to the required schema:")
+        
+        required_cols = ["customer_id", "transaction_date", "transaction_id", "product_id", "product_description", "department", "category", "price", "quantity"]
+        mapping = {}
+        for req in required_cols:
+            default = st.session_state["column_mapping"].get(req, "")
+            options = [""] + available_cols
+            try:
+                index = options.index(default) if default in options else 0
+            except ValueError:
+                index = 0
+            selected = st.sidebar.selectbox(f"{req}", options, index=index, key=f"map_{req}")
+            if selected:
+                mapping[req] = selected
+        
+        st.session_state["column_mapping"] = mapping
+        
+        # Check if all required columns are mapped
+        missing_mapped = [c for c in required_cols if c not in mapping or not mapping[c]]
+        if missing_mapped:
+            st.sidebar.warning(f"Missing mappings: {', '.join(missing_mapped)}")
+        else:
+            # Add mapping to base and validate
+            base["column_mapping"] = mapping
+            if st.sidebar.button("Validate upload"):
+                try:
+                    with st.spinner("Validating schema, values and basket keys in an isolated worker..."):
+                        worker(dict(base, action="inspect"))
+                    st.session_state["inspection_key"] = inspection_key
+                    st.session_state.pop("preview_schema", None)
+                    st.rerun()
+                except Exception as exc:
+                    st.error(str(exc))
+                    if (root / "inspection.json").exists():
+                        st.json(read_json(root / "inspection.json"))
+                    return
+
+    metadata = read_json(root / "inspection.json") if st.session_state.get("inspection_key") else None
     first, last = date.fromisoformat(metadata["minimum_date"]), date.fromisoformat(metadata["maximum_date"])
     st.sidebar.caption(f'{metadata["rows"]:,} rows · {metadata["valid_customers"]:,} valid customer IDs · {first} to {last}')
     exclude = st.sidebar.checkbox("Exclude invalid records after review", value=False)

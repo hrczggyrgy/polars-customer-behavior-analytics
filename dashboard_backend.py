@@ -60,9 +60,24 @@ def inspect(job):
         raise ValueError("Column names collide after trimming/case normalization")
     raw = raw.rename(names)
     schema = raw.collect_schema()
+
+    # Apply column mapping if provided
+    column_mapping = job.get("column_mapping", {})
+    if column_mapping:
+        # Validate mapping: all target columns must be mapped, source columns must exist
+        for target, source_col in column_mapping.items():
+            if source_col and source_col not in schema.names():
+                raise ValueError(f"Mapped source column '{source_col}' not found in data")
+        # Apply rename
+        rename_map = {v: k for k, v in column_mapping.items() if v}
+        raw = raw.rename(rename_map)
+        schema = raw.collect_schema()
+
     missing = sorted(set(COLS) - set(schema.names()))
     if missing:
-        raise ValueError("Missing columns: " + ", ".join(missing))
+        # Return available columns for UI mapping
+        available = sorted([c for c in schema.names() if not schema[c].is_nested() and schema[c] != pl.Binary])
+        raise ValueError(f"Missing columns: {', '.join(missing)}. Available: {', '.join(available)}")
     if any(schema[x].is_nested() or schema[x] == pl.Binary for x in COLS):
         raise ValueError("Required columns must be scalar, not nested or binary")
     count = raw.select(pl.len()).collect(engine="streaming").item()
@@ -104,6 +119,31 @@ def inspect(job):
     if conflicts:
         raise ValueError("Customer/transaction keys span dates; resolve the transaction grain")
     return summary
+
+
+def preview(job):
+    """Read file schema without validation for column mapping UI."""
+    root, source = Path(job["workspace"]), Path(job["source"])
+    if job["kind"] == "parquet":
+        with source.open("rb") as handle:
+            start = handle.read(4)
+            handle.seek(-4, 2)
+            tail = handle.read(4)
+        if start != b"PAR1" or tail != b"PAR1":
+            raise ValueError("Not a supported, unencrypted Parquet file")
+        raw = pl.scan_parquet(source)
+    elif job["kind"] == "csv":
+        raw = pl.scan_csv(source, separator=job.get("separator", ","), infer_schema=False, encoding="utf8")
+    else:
+        raise ValueError("Only Parquet and UTF-8 CSV are supported")
+    schema = raw.collect_schema()
+    names = {x: x.lstrip("\ufeff").strip().lower() for x in schema.names()}
+    if len(set(names.values())) != len(names):
+        raise ValueError("Column names collide after trimming/case normalization")
+
+    # Return available scalar columns
+    available = sorted([c for c in names.values() if not schema[c].is_nested() and schema[c] != pl.Binary])
+    write_json(root / "preview.json", {"columns": available, "dtypes": {c: str(schema[c]) for c in available}})
 
 
 def analyze(job):
@@ -150,7 +190,14 @@ def main():
     job = json.loads(Path(args.job).read_text())
     result = Path(job["workspace"]) / "worker_status.json"
     try:
-        inspect(job) if job["action"] == "inspect" else analyze(job)
+        if job["action"] == "inspect":
+            inspect(job)
+        elif job["action"] == "analyze":
+            analyze(job)
+        elif job["action"] == "preview":
+            preview(job)
+        else:
+            raise ValueError(f"Unknown action: {job['action']}")
         write_json(result, {"ok": True})
     except Exception as exc:
         write_json(result, {"ok": False, "error_type": type(exc).__name__, "message": str(exc)[:1500]})
