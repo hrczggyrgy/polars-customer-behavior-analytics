@@ -1,0 +1,68 @@
+```mermaid
+flowchart TD
+    SRC["customer_transactions.parquet"]
+    SCAN["Scan & Validate"]
+    PARSE["Parse Dates"]
+    CLEAN["Clean & Cast"]
+    VALUE["Compute Value"]
+    VALIDATE["Row Validation"]
+    AUDIT["Quality Audit"]
+    REJECT["Rejected Rows"]
+    ENRICH["Enrich"]
+    PARTITION["Partition by Bucket"]
+    CHECKS["Integrity Checks"]
+    
+    PRICE_REF["Price References"]
+    BASKETS["Basket Aggregation"]
+    BASE["Customer Base Features"]
+    DAILY["Daily Features"]
+    RHYTHM["Rhythm Features"]
+    WEEKDAY["Weekday Entropy"]
+    BREADTH["Last 6 Days Breadth"]
+    PROD["Product-Level Features"]
+    TRIALS["Trial Conversion"]
+    CAT["Category History"]
+    PRICE_FEAT["Price Features"]
+    MERGE["Merge All Features"]
+    DERIVED["Derived Metrics"]
+    FOLLOWUP["Future Followup"]
+    
+    THRESH["Quantile Thresholds"]
+    STYLE["Behavioral Style Tags"]
+    TRAJ["Trajectory Tags"]
+    LIFECYCLE["Lifecycle"]
+    EVIDENCE["Evidence Level"]
+    BEHAVIOR["Behavior Label"]
+    TRAJ_L["Trajectory Label"]
+    VALUE_TIER["Value Tier"]
+    
+    SEG["Segment Profiles"]
+    COHORT["Cohort Profiles"]
+    TRANS["Segment Transitions"]
+    
+    SRC --> SCAN --> PARSE --> CLEAN --> VALUE --> VALIDATE --> AUDIT
+    AUDIT --> REJECT
+    AUDIT --> ENRICH --> PARTITION --> CHECKS
+    CHECKS --> PRICE_REF
+    CHECKS --> BASKETS
+    BASKETS --> BASE
+    BASE --> DAILY --> RHYTHM
+    DAILY --> WEEKDAY
+    DAILY --> BREADTH
+    DAILY --> PROD --> TRIALS
+    PROD --> CAT
+    BASE -.-> PRICE_FEAT
+    PRICE_REF -.-> PRICE_FEAT
+    BASE --> MERGE
+    RHYTHM --> MERGE
+    WEEKDAY --> MERGE
+    BREADTH --> MERGE
+    TRIALS --> MERGE
+    CAT --> MERGE
+    PRICE_FEAT --> MERGE
+    MERGE --> DERIVED --> FOLLOWUP
+    FOLLOWUP --> THRESH --> STYLE --> TRAJ --> LIFECYCLE --> EVIDENCE --> BEHAVIOR --> TRAJ_L --> VALUE_TIER
+    VALUE_TIER --> SEG
+    VALUE_TIER --> COHORT
+    VALUE_TIER --> TRANS
+```
