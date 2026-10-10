@@ -120,7 +120,8 @@ def analyze(job):
     if shutil.disk_usage(workspace).free < required_free:
         raise ValueError("Insufficient temporary disk space; reduce cutoffs or upload size")
     root.mkdir(parents=True, exist_ok=False)
-    paths, end = prepare(str(workspace / "canonical.parquet"), root, job["price_mode"], job["buckets"], job["exclude_invalid"], None, str(end))
+    coverage = bool(job.get("coverage_confirmed"))
+    paths, end = prepare(str(workspace / "canonical.parquet"), root, job["price_mode"], job["buckets"], job["exclude_invalid"], None, str(end), coverage)
     numeric = []
     for d in dates:
         past = pl.scan_parquet(root / "validated.parquet").filter(pl.col("date").is_between(d - timedelta(days=364), d))
@@ -128,7 +129,7 @@ def analyze(job):
         for path in paths:
             available = pl.scan_parquet(path).filter(pl.col("date") <= d).select(pl.len()).collect().item()
             if available:
-                numeric.append(snapshot(path, d, end, root))
+                numeric.append(snapshot(path, d, end, root, coverage))
     if not numeric:
         raise ValueError("No customers at the selected cutoffs")
     ref = pl.scan_parquet([str(p) for p in numeric if p.parent.name == str(dates[0])])
@@ -139,7 +140,7 @@ def analyze(job):
     for path in numeric:
         frame = label(pl.scan_parquet(path), thresholds).with_columns(pl.when(pl.col("spend_365d") > 0).then(pl.col("category_hhi")).otherwise(None).alias("category_hhi"), pl.when(pl.col("spend_365d") > 0).then(pl.col("category_entropy")).otherwise(None).alias("category_entropy"))
         sink(frame, root / "snapshots" / path.parent.name / path.name)
-    write_json(root / "run.json", {"snapshots": [str(x) for x in dates], "coverage_confirmed": bool(job.get("coverage_confirmed")), "observed_through": str(end), "price_mode": job["price_mode"], "polars_version": pl.__version__, "source_sha256": job["sha256"], "invalid_rows_excluded": bool(job["exclude_invalid"]), "reference_date": str(dates[0])})
+    write_json(root / "run.json", {"snapshots": [str(x) for x in dates], "coverage_confirmed": coverage, "observed_through": str(end), "price_mode": job["price_mode"], "polars_version": pl.__version__, "source_sha256": job["sha256"], "invalid_rows_excluded": bool(job["exclude_invalid"]), "reference_date": str(dates[0])})
 
 
 def main():

@@ -17,13 +17,13 @@ def fixture():
 
 
 class WorkflowTests(unittest.TestCase):
-    def test_features_and_followup(self):
+    def test_features_coverage_and_repeat_semantics(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "input.parquet"
             fixture().write_parquet(source)
             out = root / "results"
-            run(str(source), str(out), "unit", ["2025-05-31", "2025-10-31"], buckets=2)
+            run(str(source), str(out), "unit", ["2025-05-31", "2025-10-31"], buckets=2, coverage_confirmed=True)
             frame = pl.read_parquet(str(out / "snapshots" / "2025-05-31" / "*.parquet"))
             a = frame.filter(pl.col("customer_id") == "A").row(0, named=True)
             b = frame.filter(pl.col("customer_id") == "B").row(0, named=True)
@@ -31,6 +31,9 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(a["days_history"], 6)
             self.assertAlmostEqual(a["spend_history"], 125.0)
             self.assertEqual(a["gap_count"], 5)
+            self.assertAlmostEqual(a["new_share"], 6 / 7)
+            self.assertAlmostEqual(a["repeat_share"], 5 / 7)
+            self.assertAlmostEqual(a["established_share"], 4 / 7)
             self.assertEqual(a["eligible_trials"], 1)
             self.assertEqual(a["repeated_trials"], 1)
             self.assertEqual(a["future_purchases_30d"], 1)
@@ -43,18 +46,34 @@ class WorkflowTests(unittest.TestCase):
             sums = trans.group_by(["from_date", "snapshot", "dimension", "from_label"]).agg(pl.col("transition_rate").sum())
             self.assertLess((sums["transition_rate"] - 1).abs().max(), 1e-9)
 
+    def test_unconfirmed_coverage_suppresses_outcomes(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "input.parquet"
+            fixture().write_parquet(source)
+            out = root / "unconfirmed"
+            run(str(source), str(out), "unit", ["2025-05-31"], buckets=1, coverage_confirmed=False)
+            frame = pl.read_parquet(str(out / "snapshots" / "2025-05-31" / "*.parquet"))
+            for column in ["future_purchases_30d", "future_spend_30d", "future_purchases_90d", "future_spend_90d"]:
+                self.assertTrue(frame[column].is_null().all())
+            for column in ["eligible_followup_30d", "eligible_followup_90d"]:
+                self.assertFalse(frame[column].any())
+            profile = pl.read_parquet(out / "segment_profiles.parquet")
+            self.assertTrue(profile["future_purchase_rate_30d"].is_null().all())
+
     def test_price_modes_and_no_lookahead(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             frames = []
             full = fixture()
-            cases = [("unit", full, "unit", ["2025-05-31", "2025-10-31"]), ("total", full.with_columns((pl.col("price") * pl.col("quantity")).alias("price")), "line_total", ["2025-05-31", "2025-10-31"]), ("past", full.filter(pl.col("transaction_date") <= "2025-05-20"), "unit", ["2025-05-20"])]
-            for name, data, mode, cutoffs in cases:
+            cutoff = "2025-05-20"
+            cases = [("unit", full, "unit"), ("total", full.with_columns((pl.col("price") * pl.col("quantity")).alias("price")), "line_total"), ("past", full.filter(pl.col("transaction_date") <= cutoff), "unit")]
+            for name, data, mode in cases:
                 source = root / f"{name}.parquet"
                 data.write_parquet(source)
                 out = root / name
-                run(str(source), str(out), mode, cutoffs, buckets=1)
-                frames.append(pl.read_parquet(str(out / "snapshots" / "*" / "*.parquet")).sort("customer_id"))
+                run(str(source), str(out), mode, [cutoff], buckets=1, coverage_confirmed=False)
+                frames.append(pl.read_parquet(str(out / "snapshots" / cutoff / "*.parquet")).sort("customer_id"))
             columns = [x for x in frames[0].columns if not x.startswith(("future_", "eligible_followup_"))]
             assert_frame_equal(frames[0].select(columns), frames[1].select(columns))
             assert_frame_equal(frames[0].select(columns), frames[2].select(columns))

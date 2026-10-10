@@ -10,7 +10,7 @@ C = "customer_id"
 K = [C, "transaction_id", "date"]
 P = [C, "product_id"]
 G = [C, "department", "category"]
-VERSION = "reconstructed-1.0"
+VERSION = "reconstructed-1.1"
 
 
 def ratio(a, b):
@@ -27,7 +27,7 @@ def taglist(pairs):
     return pl.concat_list([pl.when(test.fill_null(False)).then(pl.lit(name)).otherwise(pl.lit(None, dtype=pl.String)) for name, test in pairs]).list.drop_nulls()
 
 
-def prepare(source, root, mode, buckets, exclude, fmt, through):
+def prepare(source, root, mode, buckets, exclude, fmt, through, coverage_confirmed=False):
     src = pl.scan_parquet(source)
     schema = src.collect_schema()
     if set(COLS) - set(schema.names()):
@@ -67,7 +67,8 @@ def prepare(source, root, mode, buckets, exclude, fmt, through):
     sink(clean, root / "validated.parquet")
     clean = pl.scan_parquet(root / "validated.parquet")
     audit["observed_through"] = str(end)
-    audit["coverage_assumption"] = "Complete purchase capture is assumed through observed_through; a maximum date does not prove it."
+    audit["coverage_confirmed"] = bool(coverage_confirmed)
+    audit["coverage_interpretation"] = "Future outcomes are unavailable unless coverage_confirmed is true; a maximum observed date alone does not establish complete capture."
     audit["preserved_duplicate_extras"] = 0
     paths = []
     for b in range(buckets):
@@ -85,7 +86,7 @@ def prepare(source, root, mode, buckets, exclude, fmt, through):
     return paths, end
 
 
-def snapshot(path, d, end, root):
+def snapshot(path, d, end, root, coverage_confirmed=False):
     out = root / "events" / str(d) / path.stem
     line = pl.scan_parquet(path).filter(pl.col("date") <= d)
     s30, s90, s365, old0, old1 = [d - timedelta(days=x) for x in [29, 89, 364, 179, 90]]
@@ -127,8 +128,8 @@ def snapshot(path, d, end, root):
     eligible = pl.col("trial").is_between(s365, d - timedelta(days=90))
     success = eligible & pl.col("repeat").is_not_null() & (pl.col("repeat") <= pl.col("trial") + pl.duration(days=90))
     trials = ph.group_by(C).agg(eligible.sum().alias("eligible_trials"), success.fill_null(False).sum().alias("repeated_trials"), (pl.col("purchase_days") >= 3).sum().alias("core_size"), pl.col("year_spend").filter(pl.col("purchase_days") >= 3).sum().alias("core_spend"))
-    product_baskets = line.select(K + ["product_id"]).unique().join(pd.select(P + ["date", "prior_days"]), on=P + ["date"], how="left", validate="m:1").group_by(K).agg((pl.col("prior_days") == 0).mean().alias("new_share"), (pl.col("prior_days") >= 2).mean().alias("repeat_share"))
-    habits = product_baskets.group_by(C).agg(pl.col("new_share").filter(year).mean().alias("new_share"), pl.col("repeat_share").filter(year).mean().alias("repeat_share"))
+    product_baskets = line.select(K + ["product_id"]).unique().join(pd.select(P + ["date", "prior_days"]), on=P + ["date"], how="left", validate="m:1").group_by(K).agg((pl.col("prior_days") == 0).mean().alias("new_share"), (pl.col("prior_days") >= 1).mean().alias("repeat_share"), (pl.col("prior_days") >= 2).mean().alias("established_share"))
+    habits = product_baskets.group_by(C).agg(pl.col("new_share").filter(year).mean().alias("new_share"), pl.col("repeat_share").filter(year).mean().alias("repeat_share"), pl.col("established_share").filter(year).mean().alias("established_share"))
     quantity = pd.group_by(C).agg(pl.col("next_gap").filter(year & (pl.col("relative_qty") >= 1.5)).median().alias("gap_after_large_qty"), pl.col("next_gap").filter(year & pl.col("relative_qty").is_between(0.75, 1.25)).median().alias("gap_after_typical_qty"), pl.col("next_gap").filter(year & (pl.col("relative_qty") >= 1.5)).count().alias("large_qty_gap_count"))
     cd = line.group_by(G + ["date"]).agg(pl.col("value").sum().alias("spend")).with_columns(pl.col("date").shift(1).over(G, order_by="date").alias("prev"))
     cd = cd.with_columns((pl.col("date") - pl.col("prev")).dt.total_days().alias("gap"))
@@ -146,8 +147,10 @@ def snapshot(path, d, end, root):
     frame = frame.with_columns(ratio(pl.col("recency"), pl.col("median_gap")).alias("lateness"), (pl.col("tenure") >= 179).alias("comparable_windows"), (pl.col("breadth_recent") - pl.col("breadth_previous")).alias("breadth_change"), *[pl.when(pl.col("days_history") >= 6).then(pl.col(x)).otherwise(None).alias(x) for x in ["products_last6days", "categories_last6days"]])
     frame = frame.with_columns(*[pl.when(pl.col("comparable_windows")).then(ratio(pl.col(a), pl.col(b)) - 1).otherwise(None).alias(name) for a, b, name in [("purchases_90d", "purchases_previous90d", "frequency_change"), ("aov_recent", "aov_previous", "basket_change"), ("spend_90d", "spend_previous90d", "spend_change")]], pl.lit(VERSION).alias("version"))
     for h in [30, 90]:
-        future = pl.scan_parquet(path).filter(pl.col("date").is_between(d + timedelta(days=1), d + timedelta(days=h))).group_by(C).agg(pl.col("transaction_id").n_unique().alias(f"future_purchases_{h}d"), pl.col("value").sum().alias(f"future_spend_{h}d"))
-        frame = frame.join(future, on=C, how="left", validate="1:1").with_columns(pl.lit(d + timedelta(days=h) <= end).alias(f"eligible_followup_{h}d"), *[pl.when(pl.lit(d + timedelta(days=h) <= end)).then(pl.col(x).fill_null(0)).otherwise(None).alias(x) for x in [f"future_purchases_{h}d", f"future_spend_{h}d"]])
+        horizon_end = d + timedelta(days=h)
+        followup_eligible = bool(coverage_confirmed) and horizon_end <= end
+        future = pl.scan_parquet(path).filter(pl.col("date").is_between(d + timedelta(days=1), horizon_end)).group_by(C).agg(pl.col("transaction_id").n_unique().alias(f"future_purchases_{h}d"), pl.col("value").sum().alias(f"future_spend_{h}d"))
+        frame = frame.join(future, on=C, how="left", validate="1:1").with_columns(pl.lit(followup_eligible).alias(f"eligible_followup_{h}d"), *[pl.when(pl.lit(followup_eligible)).then(pl.col(x).fill_null(0)).otherwise(None).alias(x) for x in [f"future_purchases_{h}d", f"future_spend_{h}d"]])
     target = root / "numeric" / str(d) / path.name
     sink(frame, target)
     return target
@@ -155,9 +158,9 @@ def snapshot(path, d, end, root):
 
 def label(frame, thresholds):
     enough = (pl.col("days_365d") >= 6) & (pl.col("tenure") >= 90) & (pl.col("gap_count") >= 4)
-    routine = (pl.col("gap_cv") <= 0.75) & (pl.col("repeat_share") >= 0.70)
-    focused = (pl.col("dominant_share") >= 0.70) & (pl.col("repeat_share") >= 0.70)
-    broad = (pl.col("median_breadth") >= 3) & (pl.col("repeat_share") >= 0.70)
+    routine = (pl.col("gap_cv") <= 0.75) & (pl.col("established_share") >= 0.70)
+    focused = (pl.col("dominant_share") >= 0.70) & (pl.col("established_share") >= 0.70)
+    broad = (pl.col("median_breadth") >= 3) & (pl.col("established_share") >= 0.70)
     explorer = pl.col("new_share") >= 0.40
     style = [("routine_repeat", enough & routine), ("focused_repeat", enough & focused), ("broad_repeat", enough & broad), ("exploration_heavy", enough & explorer)]
     if all(thresholds.get(x) is not None for x in ["basket_low", "basket_high", "gap_low", "gap_high"]) and thresholds["basket_high"] > thresholds["basket_low"] and thresholds["gap_high"] > thresholds["gap_low"]:
@@ -168,7 +171,7 @@ def label(frame, thresholds):
     late, back = enough & (pl.col("lateness") >= 2), pl.col("reactivation_events") > 0
     stable = enough & pl.col("comparable_windows") & pl.col("frequency_change").is_not_null() & ~(slow.fill_null(False) | small.fill_null(False) | narrow.fill_null(False) | grow.fill_null(False) | late.fill_null(False) | back.fill_null(False))
     frame = frame.with_columns(enough.alias("style_eligible"), taglist(style).alias("behavioral_tags"), taglist([("slowing", slow), ("smaller_baskets", small), ("narrowing", narrow), ("broad_decline", slow & small), ("expanding", grow), ("overdue", late), ("reactivated", back), ("stable", stable)]).alias("trajectory_tags"),
-        pl.when(pl.col("days_history") == 1).then(pl.when(pl.col("tenure") >= 90).then(pl.lit("long_observed_single")).otherwise(pl.lit("first_observed"))).when((pl.col("days_history") >= 6) & (pl.col("tenure") >= 90)).then(pl.lit("established_repeat")).otherwise(pl.lit("early_repeat")).alias("lifecycle"),
+        pl.when(pl.col("days_history") == 1).then(pl.when(pl.col("tenure") >= 90).then(pl.lit("one_shopping_day")).otherwise(pl.lit("first_observed"))).when((pl.col("days_history") >= 6) & (pl.col("tenure") >= 90)).then(pl.lit("established_repeat")).otherwise(pl.lit("early_repeat")).alias("lifecycle"),
         pl.when(enough & (pl.col("gap_count") >= 12)).then(pl.lit("stronger")).when(enough).then(pl.lit("limited")).otherwise(pl.lit("insufficient")).alias("evidence"))
     frame = frame.with_columns(pl.when(~pl.col("style_eligible")).then(pl.lit("insufficient_history")).when(pl.col("behavioral_tags").list.len() == 0).then(pl.lit("mixed_other")).otherwise(pl.col("behavioral_tags").list.join("+")).alias("behavior"), pl.when(pl.col("trajectory_tags").list.len() == 0).then(pl.lit("not_classified")).otherwise(pl.col("trajectory_tags").list.join("+")).alias("trajectory"))
     if thresholds.get("value_low") is None or thresholds.get("value_high") is None:
@@ -178,10 +181,10 @@ def label(frame, thresholds):
 
 def reports(root, buckets):
     allrows = pl.scan_parquet(str(root / "snapshots" / "*" / "*.parquet"))
-    profile = allrows.group_by(["snapshot", "behavior"]).agg(pl.len().alias("customers"), pl.col("spend_90d").sum().alias("revenue"), pl.col("spend_90d").median().alias("median_spend"), pl.col("median_gap").median().alias("median_gap"), pl.col("new_share").mean().alias("exploration"), pl.col("trial_conversion").mean().alias("mean_customer_trial_conversion"), *[(pl.col(f"future_purchases_{h}d") > 0).mean().alias(f"future_purchase_rate_{h}d") for h in [30, 90]], *[pl.col(f"future_spend_{h}d").mean().alias(f"future_mean_spend_{h}d") for h in [30, 90]], *[pl.col(f"eligible_followup_{h}d").sum().alias(f"eligible_customers_{h}d") for h in [30, 90]])
+    profile = allrows.group_by(["snapshot", "behavior"]).agg(pl.len().alias("customers"), pl.col("spend_90d").sum().alias("revenue"), pl.col("spend_90d").median().alias("median_spend"), pl.col("median_gap").median().alias("median_gap"), pl.col("new_share").mean().alias("exploration"), pl.col("trial_conversion").mean().alias("mean_customer_trial_conversion"), *[(pl.col(f"future_purchases_{h}d") > 0).filter(pl.col(f"eligible_followup_{h}d")).mean().alias(f"future_purchase_rate_{h}d") for h in [30, 90]], *[pl.col(f"future_spend_{h}d").filter(pl.col(f"eligible_followup_{h}d")).mean().alias(f"future_mean_spend_{h}d") for h in [30, 90]], *[pl.col(f"eligible_followup_{h}d").sum().alias(f"eligible_customers_{h}d") for h in [30, 90]])
     profile = profile.with_columns(ratio(pl.col("customers"), pl.col("customers").sum().over("snapshot")).alias("customer_share"), ratio(pl.col("revenue"), pl.col("revenue").sum().over("snapshot")).alias("revenue_share"))
     sink(profile, root / "segment_profiles.parquet")
-    sink(allrows.with_columns(pl.col("first_purchase").dt.truncate("1mo").alias("cohort")).group_by(["snapshot", "cohort"]).agg(pl.len().alias("customers"), pl.col("spend_history").mean().alias("mean_cumulative_spend"), (pl.col("purchases_30d") > 0).mean().alias("rolling30d_purchase_rate"), (pl.col("future_purchases_30d") > 0).mean().alias("future30d_purchase_rate")), root / "cohort_profiles.parquet")
+    sink(allrows.with_columns(pl.col("first_purchase").dt.truncate("1mo").alias("cohort")).group_by(["snapshot", "cohort"]).agg(pl.len().alias("customers"), pl.col("spend_history").mean().alias("mean_cumulative_spend"), (pl.col("purchases_30d") > 0).mean().alias("rolling30d_purchase_rate"), (pl.col("future_purchases_30d") > 0).filter(pl.col("eligible_followup_30d")).mean().alias("future30d_purchase_rate")), root / "cohort_profiles.parquet")
     paths = []
     for b in range(buckets):
         rows = pl.scan_parquet(str(root / "snapshots" / "*" / f"b{b}.parquet"))
@@ -196,7 +199,7 @@ def reports(root, buckets):
     sink(trans.with_columns(ratio(pl.col("customers"), pl.col("eligible_origin")).alias("transition_rate")), root / "segment_transitions.parquet")
 
 
-def run(source, output, price_mode, snapshots, buckets=8, exclude_invalid=False, date_format=None, observed_through=None):
+def run(source, output, price_mode, snapshots, buckets=8, exclude_invalid=False, date_format=None, observed_through=None, coverage_confirmed=False):
     if buckets < 1 or price_mode not in ["unit", "line_total"]:
         raise ValueError("Invalid buckets or price_mode")
     root = Path(output)
@@ -206,8 +209,8 @@ def run(source, output, price_mode, snapshots, buckets=8, exclude_invalid=False,
     dates = sorted({date.fromisoformat(x) for x in snapshots})
     if not dates:
         raise ValueError("At least one cutoff required")
-    (root / "configuration.json").write_text(json.dumps(dict(source=source, price_mode=price_mode, snapshots=[str(x) for x in dates], buckets=buckets, exclude_invalid=exclude_invalid, date_format=date_format, observed_through=observed_through, version=VERSION), indent=2))
-    paths, end = prepare(source, root, price_mode, buckets, exclude_invalid, date_format, observed_through)
+    (root / "configuration.json").write_text(json.dumps(dict(source=source, price_mode=price_mode, snapshots=[str(x) for x in dates], buckets=buckets, exclude_invalid=exclude_invalid, date_format=date_format, observed_through=observed_through, coverage_confirmed=bool(coverage_confirmed), version=VERSION), indent=2))
+    paths, end = prepare(source, root, price_mode, buckets, exclude_invalid, date_format, observed_through, coverage_confirmed)
     if dates[-1] > end:
         raise ValueError("Cutoff exceeds observed_through")
     numeric = []
@@ -216,7 +219,7 @@ def run(source, output, price_mode, snapshots, buckets=8, exclude_invalid=False,
         sink(past.group_by("product_id").agg(pl.col("unit_price").median().alias("reference_price"), pl.len().alias("reference_count")), root / "price_references" / f"{d}.parquet")
         for path in paths:
             if pl.scan_parquet(path).select(pl.len()).collect().item() > 0:
-                numeric.append(snapshot(path, d, end, root))
+                numeric.append(snapshot(path, d, end, root, coverage_confirmed))
     ref = pl.scan_parquet([str(x) for x in numeric if x.parent.name == str(dates[0])])
     thresholds = ref.filter((pl.col("tenure") >= 89) & (pl.col("spend_90d") > 0)).select(pl.col("spend_90d").quantile(0.33).alias("value_low"), pl.col("spend_90d").quantile(0.80).alias("value_high")).collect().to_dicts()[0]
     thresholds.update(ref.filter((pl.col("days_365d") >= 6) & (pl.col("tenure") >= 90) & (pl.col("gap_count") >= 4)).select(pl.col("median_basket").quantile(0.33).alias("basket_low"), pl.col("median_basket").quantile(0.80).alias("basket_high"), pl.col("median_gap").quantile(0.33).alias("gap_low"), pl.col("median_gap").quantile(0.80).alias("gap_high")).collect().to_dicts()[0])
@@ -238,4 +241,5 @@ if __name__ == "__main__":
     parser.add_argument("--exclude-invalid", action="store_true")
     parser.add_argument("--date-format")
     parser.add_argument("--observed-through")
+    parser.add_argument("--coverage-confirmed", action="store_true")
     run(**vars(parser.parse_args()))
