@@ -1,0 +1,74 @@
+"""Dashboard regression tests; require the project's installed dependencies."""
+import json
+import unittest
+from datetime import date
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+import polars as pl
+from dashboard_backend import inspect, analyze, cutoffs, wilson
+from test_retail_polars_workflow import fixture
+
+
+class DashboardTests(unittest.TestCase):
+    def test_wilson_edges(self):
+        self.assertEqual(wilson(0, 0), (None, None))
+        for k, n in [(0, 1), (1, 1), (0, 20), (20, 20), (7, 20)]:
+            lo, hi = wilson(k, n)
+            self.assertTrue(0 <= lo <= k / n <= hi <= 1)
+        with self.assertRaises(ValueError):
+            wilson(2, 1)
+
+    def test_calendar_cutoffs(self):
+        self.assertEqual(cutoffs(date(2024, 3, 15), date(2024, 1, 1), 3), [date(2024, 1, 31), date(2024, 2, 29), date(2024, 3, 15)])
+        self.assertEqual(cutoffs(date(2024, 3, 15), date(2024, 3, 1), 12), [date(2024, 3, 15)])
+        with self.assertRaises(ValueError):
+            cutoffs(date(2024, 3, 15), date(2024, 1, 1), 13)
+
+    def test_upload_and_analysis(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.csv"
+            fixture().write_csv(source, separator=";")
+            job = dict(workspace=str(root), source=str(source), kind="csv", separator=";", price_mode="unit", decimal_comma=False, date_format=None)
+            info = inspect(job)
+            self.assertEqual(info["invalid_rows"], 0)
+            self.assertEqual(info["valid_customers"], 2)
+            self.assertEqual(info["basket_key_conflicts"], 0)
+            job.update(output=str(root / "results"), snapshots=["2025-05-31", "2025-10-31"], buckets=8, exclude_invalid=False, coverage_confirmed=False, sha256="synthetic-test")
+            analyze(job)
+            rows = pl.read_parquet(str(root / "results" / "snapshots" / "2025-05-31" / "*.parquet"))
+            self.assertEqual(rows.height, 2)
+            a = rows.filter(pl.col("customer_id") == "A").row(0, named=True)
+            self.assertEqual(a["spend_history"], 125)
+            manifest = json.loads((root / "results" / "run.json").read_text())
+            self.assertFalse(manifest["coverage_confirmed"])
+
+    def test_missing_columns_and_limits(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "input.parquet"
+            job = dict(workspace=str(root), source=str(source), kind="parquet", price_mode="unit")
+            fixture().drop("quantity").write_parquet(source)
+            with self.assertRaises(ValueError):
+                inspect(job)
+            fixture().write_parquet(source)
+            with patch("dashboard_backend.MAX_ROWS", 2):
+                with self.assertRaises(ValueError):
+                    inspect(job)
+
+    def test_empty_and_corrupt_uploads(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "input.parquet"
+            job = dict(workspace=str(root), source=str(source), kind="parquet", price_mode="unit")
+            fixture().head(0).write_parquet(source)
+            with self.assertRaises(ValueError):
+                inspect(job)
+            source.write_bytes(b"not parquet")
+            with self.assertRaises(ValueError):
+                inspect(job)
+
+
+if __name__ == "__main__":
+    unittest.main()
