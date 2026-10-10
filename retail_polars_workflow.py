@@ -57,9 +57,12 @@ def prepare(source, root, mode, buckets, exclude, fmt, through, coverage_confirm
         if not exclude:
             raise ValueError("Invalid rows: inspect quality.json and rejected.parquet")
     clean = raw.filter(pl.col("valid")).drop("valid", "transaction_date")
-    end = date.fromisoformat(through) if through else clean.select(pl.col("date").max()).collect().item()
-    if end is None:
+    maximum_date = clean.select(pl.col("date").max()).collect().item()
+    if maximum_date is None:
         raise ValueError("No valid records")
+    end = date.fromisoformat(through) if through else maximum_date
+    if end < maximum_date:
+        raise ValueError("observed_through precedes the latest valid transaction date; explicitly truncate the source before analysis")
     clean = clean.filter(pl.col("date") <= end).with_columns(
         ratio(pl.col("value"), pl.col("quantity")).alias("unit_price"),
         pl.concat_str([pl.col("department").str.len_bytes().cast(pl.String), pl.lit(":"), pl.col("department"), pl.col("category").str.len_bytes().cast(pl.String), pl.lit(":"), pl.col("category")]).alias("category_key"),

@@ -1,10 +1,11 @@
 """Synthetic integration checks; run with python -m unittest test_retail_polars_workflow."""
 import unittest
+from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import polars as pl
 from polars.testing import assert_frame_equal
-from retail_polars_workflow import run
+from retail_polars_workflow import run, prepare
 
 
 def fixture():
@@ -31,9 +32,10 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(a["days_history"], 6)
             self.assertAlmostEqual(a["spend_history"], 125.0)
             self.assertEqual(a["gap_count"], 5)
-            self.assertAlmostEqual(a["new_share"], 6 / 7)
+            self.assertAlmostEqual(a["new_share"], 2 / 7)
             self.assertAlmostEqual(a["repeat_share"], 5 / 7)
             self.assertAlmostEqual(a["established_share"], 4 / 7)
+            self.assertAlmostEqual(a["new_share"] + a["repeat_share"], 1.0)
             self.assertEqual(a["eligible_trials"], 1)
             self.assertEqual(a["repeated_trials"], 1)
             self.assertEqual(a["future_purchases_30d"], 1)
@@ -77,6 +79,32 @@ class WorkflowTests(unittest.TestCase):
             columns = [x for x in frames[0].columns if not x.startswith(("future_", "eligible_followup_"))]
             assert_frame_equal(frames[0].select(columns), frames[1].select(columns))
             assert_frame_equal(frames[0].select(columns), frames[2].select(columns))
+
+    def test_reject_conflicting_observation_end(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "input.parquet"
+            fixture().write_parquet(source)
+            for confirmed in [False, True]:
+                with self.subTest(coverage_confirmed=confirmed):
+                    with self.assertRaisesRegex(ValueError, "observed_through precedes the latest valid transaction date"):
+                        run(str(source), str(root / f"conflict_{confirmed}"), "unit", ["2025-05-31"], buckets=1, observed_through="2025-05-31", coverage_confirmed=confirmed)
+
+    def test_accept_equal_or_later_observation_end(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "input.parquet"
+            data = fixture()
+            data.write_parquet(source)
+            for through in ["2025-10-31", "2025-11-30"]:
+                for confirmed in [False, True]:
+                    with self.subTest(observed_through=through, coverage_confirmed=confirmed):
+                        out = root / f"valid_{through}_{confirmed}"
+                        out.mkdir()
+                        paths, end = prepare(str(source), out, "unit", 1, False, None, through, confirmed)
+                        self.assertEqual(end, date.fromisoformat(through))
+                        self.assertEqual(pl.read_parquet(out / "validated.parquet").height, data.height)
+                        self.assertEqual(len(paths), 1)
 
     def test_reject_invalid(self):
         with TemporaryDirectory() as tmp:
