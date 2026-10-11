@@ -65,11 +65,35 @@ def inspect(job):
     column_mapping = job.get("column_mapping", {})
     if column_mapping:
         # Validate mapping: all target columns must be mapped, source columns must exist
+        # Check that all required COLS have a mapping
+        mapped_targets = set(column_mapping.keys())
+        required_targets = set(COLS)
+        missing_targets = required_targets - mapped_targets
+        if missing_targets:
+            raise ValueError(f"Missing column mappings for required targets: {', '.join(sorted(missing_targets))}")
+        
+        # Check that all source columns are distinct (no duplicate assignments)
+        source_cols = [v for v in column_mapping.values() if v]
+        if len(source_cols) != len(set(source_cols)):
+            duplicates = [c for c in source_cols if source_cols.count(c) > 1]
+            raise ValueError(f"Duplicate source column assignments: {', '.join(set(duplicates))}")
+        
+        # Check that all source columns exist in schema
         for target, source_col in column_mapping.items():
             if source_col and source_col not in schema.names():
                 raise ValueError(f"Mapped source column '{source_col}' not found in data")
-        # Apply rename
+        
+        # Check for target-name collisions (mapping creates duplicate target names)
+        # After rename, check if any non-mapped columns would collide with mapped targets
         rename_map = {v: k for k, v in column_mapping.items() if v}
+        # Check if any non-target columns would be renamed to existing target names
+        non_target_cols = set(schema.names()) - set(rename_map.keys())
+        mapped_target_names = set(rename_map.values())
+        collisions = non_target_cols & mapped_target_names
+        if collisions:
+            raise ValueError(f"Column mapping creates target name collisions: {', '.join(collisions)}. Consider renaming source columns first.")
+        
+        # Apply rename
         raw = raw.rename(rename_map)
         schema = raw.collect_schema()
 

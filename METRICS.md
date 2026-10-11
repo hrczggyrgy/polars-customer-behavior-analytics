@@ -127,7 +127,7 @@ This document defines every user-visible metric produced by the pipeline. Each m
 - **Numerator**: Standard deviation of gaps
 - **Denominator**: Mean of gaps
 - **Grain**: Customer × snapshot
-- **Window**: 365d lookback with usability filter (gaps where prior date ≥ C-365)
+- **Window**: 365d lookback with usability filter (gaps where prior date ≥ C-364)
 - **Minimum data**: At least 2 gaps and mean gap > 0; returns `null` otherwise
 - **Limitations**: Requires sufficient purchase frequency
 
@@ -170,7 +170,7 @@ This document defines every user-visible metric produced by the pipeline. Each m
 - **Definition**: Mean distinct categories per basket in previous 90d window (days 91-180 before C).
 - **Formula**: `mean(distinct category_key per basket)` for baskets in previous 90d
 - **Grain**: Customer × snapshot
-- **Window**: Previous 90d (C-180 to C-91)
+- **Window**: Previous 90d (C-179 to C-90)
 - **Minimum data**: At least 1 basket in window
 
 ### products_last6days
@@ -588,9 +588,19 @@ Precedence: Tags are collected as a list; `not_classified` if no tags apply.
 All original columns plus:
 - `date`: Parsed date (null if parse failed)
 - `value`: Computed value (null if computation failed)
-- `valid`: Boolean (always false)
+- `rejection_reason`: Primary rejection reason code
 
-**No rejection reason column currently exists** — this is a known gap to be addressed.
+Rejection reason codes:
+- `missing_customer_id`, `missing_transaction_id`, `missing_product_id`: Required field null/empty
+- `invalid_date`: Date parse failure
+- `null_price`, `null_quantity`: Numeric field null (missing in source)
+- `malformed_price`, `malformed_quantity`: Non-numeric token that failed conversion
+- `nonfinite_price`, `nonfinite_quantity`: NaN or infinity
+- `negative_price`: Price < 0
+- `nonpositive_quantity`: Quantity ≤ 0
+- `nonfinite_value`: Computed value not finite
+
+**Note**: The `valid` column is NOT included (dropped before write). Each row has exactly one primary reason; multiple issues on the same row are not enumerated. Missing source values and malformed tokens both become null after casting but are tracked separately in quality.json counters.
 
 ---
 

@@ -21,14 +21,38 @@ def ratio(a, b):
 def sink(frame, path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Deterministic output ordering - only sort by customer_id if present
+    # Deterministic output ordering by output grain
     schema = frame.collect_schema()
-    if C in schema.names():
-        frame = frame.sort(C)
-    elif "snapshot" in schema.names() and C in schema.names():
-        frame = frame.sort("snapshot", C)
-    elif "snapshot" in schema.names():
-        frame = frame.sort("snapshot")
+    names = schema.names()
+    if C in names:
+        if "snapshot" in names and "date" in names and "transaction_id" in names:
+            # Basket events: customer_id, date, transaction_id
+            frame = frame.sort(C, "date", "transaction_id")
+        elif "snapshot" in names and "date" in names and "product_id" in names:
+            # Product-day events: customer_id, product_id, date
+            frame = frame.sort(C, "product_id", "date")
+        elif "snapshot" in names and "department" in names and "category" in names:
+            # Category history: customer_id, department, category
+            frame = frame.sort(C, "department", "category")
+        elif "snapshot" in names and "behavior" in names:
+            # Segment profiles: snapshot, behavior
+            frame = frame.sort("snapshot", "behavior")
+        elif "snapshot" in names and "cohort" in names:
+            # Cohort profiles: snapshot, cohort
+            frame = frame.sort("snapshot", "cohort")
+        elif "from_date" in names and "snapshot" in names and "dimension" in names and "from_label" in names and "to_label" in names:
+            # Transitions: from_date, snapshot, dimension, from_label, to_label
+            frame = frame.sort("from_date", "snapshot", "dimension", "from_label", "to_label")
+        elif "product_id" in names and "reference_count" in names:
+            # Price references: product_id
+            frame = frame.sort("product_id")
+        elif C in names:
+            # Customer snapshots: customer_id
+            frame = frame.sort(C)
+        elif "snapshot" in names and C in names:
+            frame = frame.sort("snapshot", C)
+        elif "snapshot" in names:
+            frame = frame.sort("snapshot")
     frame.sink_parquet(path, compression="zstd", engine="streaming")
 
 
@@ -48,12 +72,14 @@ def _rejection_reasons(raw):
         reasons.append(pl.when(pl.col(col).is_null() | (pl.col(col).cast(pl.String).str.strip_chars() == "")).then(pl.lit(f"missing_{col}")).otherwise(pl.lit(None)))
     # Date parse failure (date becomes null)
     reasons.append(pl.when(pl.col("date").is_null()).then(pl.lit("invalid_date")).otherwise(pl.lit(None)))
-    # Price checks - distinguish null (conversion failure) from non-finite and negative
-    reasons.append(pl.when(pl.col("price").is_null()).then(pl.lit("null_price")).otherwise(pl.lit(None)))
+    # Price checks - distinguish missing source (null after strip) from malformed token (null after cast)
+    reasons.append(pl.when(pl.col("price").is_null() & pl.col("price_raw").is_not_null()).then(pl.lit("malformed_price")).otherwise(pl.lit(None)))
+    reasons.append(pl.when(pl.col("price").is_null() & pl.col("price_raw").is_null()).then(pl.lit("null_price")).otherwise(pl.lit(None)))
     reasons.append(pl.when(~pl.col("price").is_finite()).then(pl.lit("nonfinite_price")).otherwise(pl.lit(None)))
     reasons.append(pl.when(pl.col("price") < 0).then(pl.lit("negative_price")).otherwise(pl.lit(None)))
-    # Quantity checks - distinguish null (conversion failure) from non-finite and non-positive
-    reasons.append(pl.when(pl.col("quantity").is_null()).then(pl.lit("null_quantity")).otherwise(pl.lit(None)))
+    # Quantity checks - distinguish missing source from malformed token
+    reasons.append(pl.when(pl.col("quantity").is_null() & pl.col("quantity_raw").is_not_null()).then(pl.lit("malformed_quantity")).otherwise(pl.lit(None)))
+    reasons.append(pl.when(pl.col("quantity").is_null() & pl.col("quantity_raw").is_null()).then(pl.lit("null_quantity")).otherwise(pl.lit(None)))
     reasons.append(pl.when(~pl.col("quantity").is_finite()).then(pl.lit("nonfinite_quantity")).otherwise(pl.lit(None)))
     reasons.append(pl.when(pl.col("quantity") <= 0).then(pl.lit("nonpositive_quantity")).otherwise(pl.lit(None)))
     # Value computation
@@ -80,6 +106,9 @@ def prepare(source, root, mode, buckets, exclude, fmt, through, coverage_confirm
         *[pl.col(x).cast(pl.String).str.strip_chars().replace("", None) for x in [C, "transaction_id", "product_id"]],
         *[pl.col(x).cast(pl.String).str.strip_chars().replace("", None).fill_null("__UNKNOWN__") for x in ["department", "category"]],
         pl.col("product_description").cast(pl.String).fill_null(""),
+        # Preserve raw string values before casting to distinguish missing vs malformed
+        pl.col("price").cast(pl.String).str.strip_chars().replace("", None).alias("price_raw"),
+        pl.col("quantity").cast(pl.String).str.strip_chars().replace("", None).alias("quantity_raw"),
         *[pl.col(x).cast(pl.Float64, strict=False) for x in ["price", "quantity"]])
     raw = raw.with_columns((pl.col("price") * pl.col("quantity") if mode == "unit" else pl.col("price")).alias("value"))
     
@@ -93,18 +122,21 @@ def prepare(source, root, mode, buckets, exclude, fmt, through, coverage_confirm
     rejected = raw.filter(~pl.col("valid"))
     rejected_count = rejected.select(pl.len()).collect().item()
     
-    # Base audit metrics
-    audit_base = raw.select(
-        pl.len().alias("source_rows"),
+    # Valid rows for date bounds
+    valid = raw.filter(pl.col("valid"))
+    
+    # Base audit metrics - date bounds from VALID rows only
+    audit_base = valid.select(
+        pl.lit(valid.select(pl.len()).collect().item() + rejected_count).alias("source_rows"),
         pl.lit(rejected_count).alias("rejected_rows"),
         pl.col("date").min().alias("first_date"),
         pl.col("date").max().alias("last_date"),
-        # Null required fields
+        # Null required fields (on raw)
         pl.col(C).is_null().sum().alias("null_customer_id"),
         pl.col("transaction_id").is_null().sum().alias("null_transaction_id"),
         pl.col("product_id").is_null().sum().alias("null_product_id"),
         pl.col("date").is_null().sum().alias("null_date"),
-        # Invalid numerics - separate null from non-finite and sign checks
+        # Invalid numerics - separate missing source from malformed and non-finite
         pl.col("price").is_null().sum().alias("null_price"),
         (~pl.col("price").is_finite()).sum().alias("nonfinite_price"),
         (pl.col("price") < 0).sum().alias("negative_price"),
@@ -112,6 +144,9 @@ def prepare(source, root, mode, buckets, exclude, fmt, through, coverage_confirm
         (~pl.col("quantity").is_finite()).sum().alias("nonfinite_quantity"),
         (pl.col("quantity") <= 0).sum().alias("nonpositive_quantity"),
         (~pl.col("value").is_finite()).sum().alias("nonfinite_value"),
+        # Raw string presence for malformed detection
+        pl.col("price_raw").is_null().sum().alias("missing_price_raw"),
+        pl.col("quantity_raw").is_null().sum().alias("missing_quantity_raw"),
     ).collect(engine="streaming").to_dicts()[0]
     
     # Rejection breakdown (only if there are rejected rows)
@@ -135,10 +170,10 @@ def prepare(source, root, mode, buckets, exclude, fmt, through, coverage_confirm
         raise ValueError("Empty input")
     if audit["rejected_rows"]:
         # Write rejected rows with rejection_reason
-        sink(rejected.drop("valid"), root / "rejected.parquet")
+        sink(rejected.drop("valid", "price_raw", "quantity_raw"), root / "rejected.parquet")
         if not exclude:
             raise ValueError("Invalid rows: inspect quality.json and rejected.parquet")
-    clean = raw.filter(pl.col("valid")).drop("valid", "transaction_date", "rejection_reason")
+    clean = raw.filter(pl.col("valid")).drop("valid", "transaction_date", "rejection_reason", "price_raw", "quantity_raw")
     maximum_date = clean.select(pl.col("date").max()).collect().item()
     if maximum_date is None:
         raise ValueError("No valid records")

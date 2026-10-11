@@ -138,13 +138,14 @@ Schema: All 9 input columns + derived columns
 Rejection reason codes:
 - `missing_customer_id`, `missing_transaction_id`, `missing_product_id`: Required field null/empty
 - `invalid_date`: Date parse failure
-- `null_price`, `null_quantity`: Numeric field null (conversion failure)
+- `null_price`, `null_quantity`: Numeric field null (missing in source)
+- `malformed_price`, `malformed_quantity`: Non-numeric token that failed conversion
 - `nonfinite_price`, `nonfinite_quantity`: NaN or infinity
 - `negative_price`: Price < 0
 - `nonpositive_quantity`: Quantity ≤ 0
 - `nonfinite_value`: Computed value not finite
 
-**Note**: The `valid` column is NOT included (dropped before write). Each row has exactly one primary reason; multiple issues on the same row are not enumerated.
+**Note**: The `valid` column is NOT included (dropped before write). Each row has exactly one primary reason; multiple issues on the same row are not enumerated. Missing source values and malformed tokens both become null after casting but are tracked separately in quality.json counters.
 
 ---
 
@@ -221,16 +222,16 @@ Customer feature snapshots (79 columns). One file per bucket per snapshot.
 | `aov_365d` | Float64 | Mean basket value |
 | `median_basket` | Float64 | Median basket value |
 | `basket_cv` | Float64 | CV of basket values |
-| `median_breadth` | Float64 | Median distinct products/basket |
-| `breadth_recent` | Float64 | Mean breadth in 90d |
-| `breadth_previous` | Float64 | Mean breadth in previous 90d |
+| `median_breadth` | Float64 | Median distinct categories/basket |
+| `breadth_recent` | Float64 | Mean category breadth in 90d |
+| `breadth_previous` | Float64 | Mean category breadth in previous 90d |
 
 #### Daily Rhythm Features (365d window with usability filter)
 | Column | Type | Description |
 |--------|------|-------------|
 | `days_history` | UInt32 | Total shopping days |
 | `days_365d` | UInt32 | Shopping days in 365d |
-| `gap_count` | UInt32 | Usable gaps (prior ≥ C-365) |
+| `gap_count` | UInt32 | Usable gaps (prior ≥ C-364) |
 | `median_gap` | Float64 | Median gap (days) |
 | `gap_cv` | Float64 | CV of gaps |
 | `product_overlap` | Float64 | Median product Jaccard |
@@ -249,15 +250,15 @@ Customer feature snapshots (79 columns). One file per bucket per snapshot.
 #### Trial & Product Habits (365d window)
 | Column | Type | Description |
 |--------|------|-------------|
-| `eligible_trials` | UInt32 | Products with trial in [C-365, C-90] |
+| `eligible_trials` | UInt32 | Products with trial in [C-364, C-90] |
 | `repeated_trials` | UInt32 | Eligible trials with repeat ≤ 90d |
 | `trial_conversion` | Float64 | `repeated_trials / eligible_trials` |
 | `core_size` | UInt32 | Products with ≥ 3 purchase days |
 | `core_spend` | Float64 | Spend on core products |
 | `core_spend_share` | Float64 | `core_spend / spend_365d` |
-| `new_share` | Float64 | Basket proportion with new products |
-| `repeat_share` | Float64 | Basket proportion all repeat |
-| `established_share` | Float64 | Basket proportion all established |
+| `new_share` | Float64 | Mean fraction of products per basket that are new (prior_days = 0) |
+| `repeat_share` | Float64 | Mean fraction of products per basket that are repeat (prior_days ≥ 1) |
+| `established_share` | Float64 | Mean fraction of products per basket that are established (prior_days ≥ 2) |
 
 #### Quantity Rhythm
 | Column | Type | Description |

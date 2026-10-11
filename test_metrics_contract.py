@@ -666,11 +666,12 @@ class MetricContractTests(unittest.TestCase):
         self.assertTrue(j["gap_count"] >= 4)
     
     def test_behavior_label_precedence(self):
-        """Test behavioral_tags are multi-label (all matching tags collected)."""
-        # Create customer matching multiple style conditions
+        """Test behavioral_tags are multi-label: all matching tags collected in documented order."""
+        # Create customer matching both routine_repeat AND focused_repeat
         # routine_repeat: gap_cv <= 0.75, established_share >= 0.7
         # focused_repeat: dominant_share >= 0.7, established_share >= 0.7
-        # Both can be true simultaneously
+        # Customer with single product P1 purchased monthly for 12 months -> established_share = 1.0, dominant_share = 1.0
+        # Regular monthly cadence -> gap_cv = 0.0
         rows = []
         base = date(2024, 1, 1)
         # First, some old transactions for tenure
@@ -700,14 +701,14 @@ class MetricContractTests(unittest.TestCase):
         
         k = frame.filter(pl.col("customer_id") == "K").row(0, named=True)
         
-        # Customer K should be style_eligible and have behavioral_tags
+        # Customer K should be style_eligible
         self.assertTrue(k["style_eligible"])
-        # behavioral_tags should be a list (possibly multiple tags)
-        self.assertIsInstance(k["behavioral_tags"], list)
-        # behavior should join tags with "+"
-        if len(k["behavioral_tags"]) > 1:
-            self.assertIn("+", k["behavior"])
-        self.assertNotEqual(k["behavior"], "insufficient_history")
+        
+        # Verify expected tags: routine_repeat (gap_cv=0 <= 0.75, established_share=1 >= 0.7)
+        # and focused_repeat (dominant_share=1 >= 0.7, established_share=1 >= 0.7)
+        # Both should be present in documented order
+        self.assertEqual(k["behavioral_tags"], ["routine_repeat", "focused_repeat"])
+        self.assertEqual(k["behavior"], "routine_repeat+focused_repeat")
     
     def test_lifecycle_stages(self):
         """Test lifecycle stage assignments."""
@@ -897,6 +898,199 @@ class MetricContractTests(unittest.TestCase):
                             subset = dim_data.filter((pl.col("from_label") == from_label) & (pl.col("snapshot") == snap))
                             rate_sum = subset["transition_rate"].sum()
                             self.assertAlmostEqual(rate_sum, 1.0, places=6)
+
+    def test_breadth_category_not_product(self):
+        """Test breadth measures distinct categories, not products."""
+        # One basket with 3 products across 2 categories
+        rows = [
+            dict(customer_id="B1", transaction_date="2025-01-01", transaction_id="B1", product_id="P1", product_description="P1", department="D", category="C1", price=10.0, quantity=1.0),
+            dict(customer_id="B1", transaction_date="2025-01-01", transaction_id="B1", product_id="P2", product_description="P2", department="D", category="C1", price=10.0, quantity=1.0),
+            dict(customer_id="B1", transaction_date="2025-01-01", transaction_id="B1", product_id="P3", product_description="P3", department="D", category="C2", price=10.0, quantity=1.0),
+        ]
+        df = pl.DataFrame(rows)
+        
+        cutoff = "2025-01-31"
+        frame = self._run_pipeline(df, cutoff, observed_through="2025-01-31")
+        
+        b1 = frame.filter(pl.col("customer_id") == "B1").row(0, named=True)
+        # Breadth measures distinct categories per basket = 2 (C1 and C2)
+        # NOT 3 (products P1, P2, P3)
+        self.assertEqual(b1["median_breadth"], 2)
+        self.assertEqual(b1["breadth_recent"], 2.0)
+
+    def test_familiarity_shares_basket_weighted(self):
+        """Test familiarity shares are basket-weighted means of product fractions."""
+        # Two products established before trailing year
+        # In trailing year:
+        # Basket 1: 2 established products + 1 new product (3 products)
+        # Basket 2: 1 new product (1 product)
+        rows = []
+        base = date(2024, 1, 1)
+        # Establish P1 and P2 before trailing year
+        for i in range(3):
+            d = base + timedelta(days=i * 60)
+            rows.append(dict(customer_id="F1", transaction_date=str(d), transaction_id=f"F{i}", product_id="P1", product_description="P1", department="D", category="C", price=10.0, quantity=1.0))
+            rows.append(dict(customer_id="F1", transaction_date=str(d), transaction_id=f"F{i}", product_id="P2", product_description="P2", department="D", category="C", price=10.0, quantity=1.0))
+        
+        # Trailing year baskets (cutoff = 2025-06-30, year = 2024-07-01 to 2025-06-30)
+        recent_base = date(2024, 7, 1)
+        # Basket 1: 2 established (P1, P2) + 1 new (P3)
+        rows.append(dict(customer_id="F1", transaction_date="2024-08-01", transaction_id="B1", product_id="P1", product_description="P1", department="D", category="C", price=10.0, quantity=1.0))
+        rows.append(dict(customer_id="F1", transaction_date="2024-08-01", transaction_id="B1", product_id="P2", product_description="P2", department="D", category="C", price=10.0, quantity=1.0))
+        rows.append(dict(customer_id="F1", transaction_date="2024-08-01", transaction_id="B1", product_id="P3", product_description="P3", department="D", category="C", price=10.0, quantity=1.0))
+        # Basket 2: 1 new (P4)
+        rows.append(dict(customer_id="F1", transaction_date="2024-09-01", transaction_id="B2", product_id="P4", product_description="P4", department="D", category="C", price=10.0, quantity=1.0))
+        
+        df = pl.DataFrame(rows)
+        
+        cutoff = "2025-06-30"
+        frame = self._run_pipeline(df, cutoff, observed_through="2025-06-30")
+        
+        f1 = frame.filter(pl.col("customer_id") == "F1").row(0, named=True)
+        
+        # Basket 1: 3 products, 2 established, 1 new -> fractions: established=2/3, new=1/3, repeat=2/3
+        # Basket 2: 1 new -> fractions: established=0, new=1, repeat=0
+        # new_share = mean(1/3, 1) = 2/3
+        # repeat_share = mean(2/3, 0) = 1/3
+        # established_share = mean(2/3, 0) = 1/3
+        self.assertAlmostEqual(f1["new_share"], 2/3, places=6)
+        self.assertAlmostEqual(f1["repeat_share"], 1/3, places=6)
+        self.assertAlmostEqual(f1["established_share"], 1/3, places=6)
+        
+        # Verify NOT equal to global product weighting or any/all basket indicators
+        # Global product fractions: 2 established + 2 new = 4 products -> established=0.5, new=0.5
+        # Any/all basket indicators would give different values
+
+    def test_core_eligibility_historical(self):
+        """Test core eligibility uses all-history purchase_days >= 3."""
+        # Product with 2 purchase days before trailing year, 1 inside it
+        rows = []
+        base = date(2024, 1, 1)
+        # 2 purchases before trailing year (2024-07-01)
+        rows.append(dict(customer_id="C1", transaction_date="2024-01-01", transaction_id="C1", product_id="P1", product_description="P1", department="D", category="C", price=10.0, quantity=1.0))
+        rows.append(dict(customer_id="C1", transaction_date="2024-04-01", transaction_id="C2", product_id="P1", product_description="P1", department="D", category="C", price=10.0, quantity=1.0))
+        # 1 purchase inside trailing year
+        rows.append(dict(customer_id="C1", transaction_date="2024-08-01", transaction_id="C3", product_id="P1", product_description="P1", department="D", category="C", price=10.0, quantity=1.0))
+        # Another product with only 1 purchase in trailing year (not core)
+        rows.append(dict(customer_id="C1", transaction_date="2024-09-01", transaction_id="C4", product_id="P2", product_description="P2", department="D", category="C", price=10.0, quantity=1.0))
+        
+        df = pl.DataFrame(rows)
+        
+        cutoff = "2025-06-30"
+        frame = self._run_pipeline(df, cutoff, observed_through="2025-06-30")
+        
+        c1 = frame.filter(pl.col("customer_id") == "C1").row(0, named=True)
+        
+        # P1 has 3 purchase days total (2 before year + 1 in year) -> core
+        # P2 has 1 purchase day -> not core
+        self.assertEqual(c1["core_size"], 1)
+        # core_spend = spend on P1 in trailing year = 10.0
+        self.assertEqual(c1["core_spend"], 10.0)
+        self.assertAlmostEqual(c1["core_spend_share"], 10.0/20.0, places=6)
+
+    def test_overdue_category_historical_cadence(self):
+        """Test overdue_categories uses all-history cadence."""
+        # Category with 3+ shopping days in history, overdue based on historical gap
+        rows = []
+        base = date(2024, 1, 1)
+        # 3 purchases in category C1 over history, regular monthly
+        for i in range(3):
+            d = base + timedelta(days=i * 30)
+            rows.append(dict(customer_id="O1", transaction_date=str(d), transaction_id=f"O{i}", product_id="P1", product_description="P1", department="D", category="C1", price=10.0, quantity=1.0))
+        # Last purchase was 60 days before cutoff (2 months), median_gap = 30 -> lateness = 2 -> overdue
+        rows.append(dict(customer_id="O1", transaction_date="2025-05-01", transaction_id="O3", product_id="P1", product_description="P1", department="D", category="C1", price=10.0, quantity=1.0))
+        
+        df = pl.DataFrame(rows)
+        
+        cutoff = "2025-07-01"
+        frame = self._run_pipeline(df, cutoff, observed_through="2025-07-01")
+        
+        o1 = frame.filter(pl.col("customer_id") == "O1").row(0, named=True)
+        
+        # Category has 4 shopping days in all history -> days >= 3
+        # median_gap = 30, recency = 61 (Jul 1 - May 1) -> lateness = 61/30 = 2.03 >= 2 -> overdue
+        self.assertEqual(o1["overdue_categories"], 1)
+
+    def test_window_endpoints(self):
+        """Test exact window boundary membership."""
+        # Place records on boundaries and one outside
+        rows = [
+            # C-365 = 2024-03-31 (outside year) - different product P0 so P1's trial is at C-364
+            dict(customer_id="W1", transaction_date="2024-03-31", transaction_id="W1", product_id="P0", product_description="P0", department="D", category="C", price=10.0, quantity=1.0),
+            # C-364 = 2024-04-01 (inside year, P1's trial)
+            dict(customer_id="W1", transaction_date="2024-04-01", transaction_id="W2", product_id="P1", product_description="P1", department="D", category="C", price=10.0, quantity=1.0),
+            # C-179 = 2024-10-04 (inside previous90d)
+            dict(customer_id="W1", transaction_date="2024-10-04", transaction_id="W3", product_id="P1", product_description="P1", department="D", category="C", price=10.0, quantity=1.0),
+            # C-178 = 2024-10-05 (inside previous90d)
+            dict(customer_id="W1", transaction_date="2024-10-05", transaction_id="W4", product_id="P1", product_description="P1", department="D", category="C", price=10.0, quantity=1.0),
+            # C-90 = 2024-12-31 (boundary: previous90d end, trial eligible end)
+            dict(customer_id="W1", transaction_date="2024-12-31", transaction_id="W5", product_id="P1", product_description="P1", department="D", category="C", price=10.0, quantity=1.0),
+            # C-89 = 2025-01-01 (inside recent90d, trial NOT eligible)
+            dict(customer_id="W1", transaction_date="2025-01-01", transaction_id="W6", product_id="P1", product_description="P1", department="D", category="C", price=10.0, quantity=1.0),
+            # C = 2025-03-31 (cutoff, inside all historical windows)
+            dict(customer_id="W1", transaction_date="2025-03-31", transaction_id="W7", product_id="P1", product_description="P1", department="D", category="C", price=10.0, quantity=1.0),
+            # C+1 = 2025-04-01 (future_30d)
+            dict(customer_id="W1", transaction_date="2025-04-01", transaction_id="W8", product_id="P1", product_description="P1", department="D", category="C", price=10.0, quantity=1.0),
+        ]
+        df = pl.DataFrame(rows)
+        
+        cutoff = "2025-03-31"
+        frame = self._run_pipeline(df, cutoff, observed_through="2025-07-01", coverage_confirmed=True)
+        
+        w1 = frame.filter(pl.col("customer_id") == "W1").row(0, named=True)
+        
+        # Year [C-364, C] = [2024-04-01, 2025-03-31]: 6 transactions (W2-W7, excluding W1 which is P0)
+        self.assertEqual(w1["purchases_365d"], 6)
+        self.assertEqual(w1["spend_365d"], 60.0)
+        
+        # Previous90d [C-179, C-90] = [2024-10-03, 2024-12-31]: 3 transactions (W3, W4, W5 at 2024-12-31)
+        # W6=2025-01-01 is C-89 (in recent90d)
+        self.assertEqual(w1["purchases_previous90d"], 3)
+        
+        # Recent90d [C-89, C] = [2025-01-01, 2025-03-31]: 2 transactions (W6 at 2025-01-01, W7 at 2025-03-31)
+        self.assertEqual(w1["purchases_90d"], 2)
+        
+        # Eligible trials [C-364, C-90] = [2024-04-01, 2024-12-31]: trial = 2024-04-01 (P1's first purchase) -> eligible
+        self.assertEqual(w1["eligible_trials"], 1)
+        
+        # Future 30d (C, C+30] = (2025-03-31, 2025-04-30]: 1 transaction (W8)
+        self.assertTrue(w1["eligible_followup_30d"])
+        self.assertEqual(w1["future_purchases_30d"], 1)
+        self.assertEqual(w1["future_spend_30d"], 10.0)
+
+    def test_change_metrics_exact(self):
+        """Test exact hand-calculated change metrics."""
+        # Customer with purchases in both 90d windows
+        # Cutoff = 2025-07-20
+        # Previous90d [C-179, C-90] = [2025-01-22, 2025-04-21]
+        # Recent90d [C-89, C] = [2025-04-22, 2025-07-20]
+        rows = []
+        # 3 purchases in previous 90d window [C-179, C-90]
+        prev_base = date(2025, 1, 22)
+        for i in range(3):
+            d = prev_base + timedelta(days=i * 20)
+            rows.append(dict(customer_id="CH1", transaction_date=str(d), transaction_id=f"CH{i}", product_id="P1", product_description="P1", department="D", category="C", price=10.0, quantity=1.0))
+        # 6 purchases in recent 90d window [C-89, C]
+        recent_base = date(2025, 4, 22)
+        for i in range(6):
+            d = recent_base + timedelta(days=i * 10)
+            rows.append(dict(customer_id="CH1", transaction_date=str(d), transaction_id=f"CH{i+3}", product_id="P1", product_description="P1", department="D", category="C", price=20.0, quantity=1.0))
+        
+        df = pl.DataFrame(rows)
+        
+        cutoff = "2025-07-20"
+        frame = self._run_pipeline(df, cutoff, observed_through="2025-07-20")
+        
+        ch1 = frame.filter(pl.col("customer_id") == "CH1").row(0, named=True)
+        
+        # previous90d: 3 purchases, 30 spend -> AOV = 10
+        # recent90d: 6 purchases, 120 spend -> AOV = 20
+        # frequency_change = 6/3 - 1 = 1.0
+        # basket_change = 20/10 - 1 = 1.0
+        # spend_change = 120/30 - 1 = 3.0
+        self.assertAlmostEqual(ch1["frequency_change"], 1.0, places=6)
+        self.assertAlmostEqual(ch1["basket_change"], 1.0, places=6)
+        self.assertAlmostEqual(ch1["spend_change"], 3.0, places=6)
 
 
 if __name__ == "__main__":
