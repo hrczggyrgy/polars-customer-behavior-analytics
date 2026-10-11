@@ -297,13 +297,14 @@ def analyze(job):
     root.mkdir(parents=True, exist_ok=False)
     coverage = bool(job.get("coverage_confirmed"))
     timezone = job.get("timezone")
+    date_format = job.get("date_format")
     paths, end, observation_start = prepare(
         str(workspace / "canonical.parquet"),
         root,
         job["price_mode"],
         job["buckets"],
         job["exclude_invalid"],
-        None,
+        date_format,
         str(end),
         coverage,
         False,  # drop_exact_duplicates

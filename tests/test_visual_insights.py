@@ -16,10 +16,12 @@ if HAS_POLARS:
     from retail_analytics.visualization.visual_insights_core import (
         cadence_map,
         cohort_summary,
+        collect,
         concentration,
         momentum_map,
         revenue_waterfall,
         transition_summary,
+        value_tier_transition_waterfall,
     )
 
 
@@ -241,6 +243,82 @@ class Aggregates(unittest.TestCase):
         result = revenue_waterfall(None, None, date(2024, 6, 1))
         self.assertEqual(result.height, 0)
 
+    def test_value_tier_transition_waterfall_eager_lazy(self):
+        """Test value_tier_transition_waterfall with both eager and lazy inputs."""
+        # Create test data with value_tier transitions
+        before = pl.DataFrame({
+            "customer_id": ["A", "B", "C", "D", "E"],
+            "value_tier": ["high", "high", "middle", "middle", "low"],
+        }).lazy()
+        
+        after = pl.DataFrame({
+            "customer_id": ["A", "B", "C", "D", "E"],
+            "value_tier": ["high", "middle", "middle", "low", "low"],
+        }).lazy()
+        
+        # Get transitions
+        flows, counts = transition_summary(before, after, "value_tier")
+        
+        # Test with lazy flows (as returned by transition_summary)
+        waterfall_lazy = value_tier_transition_waterfall(flows)
+        self.assertEqual(waterfall_lazy.height, 3)  # high, middle, low
+        
+        # Test with eager flows - transition_summary returns eager DataFrame already
+        # Just call value_tier_transition_waterfall again with the same flows
+        waterfall_eager = value_tier_transition_waterfall(flows)
+        self.assertEqual(waterfall_eager.height, 3)
+        
+        # Both should give same results
+        lazy_dict = {row["tier"]: row["net_change"] for row in waterfall_lazy.to_dicts()}
+        eager_dict = {row["tier"]: row["net_change"] for row in waterfall_eager.to_dicts()}
+        self.assertEqual(lazy_dict, eager_dict)
+        
+        # Verify net changes:
+        # high: outflow=2 (A stays, B moves to middle), inflow=1 (A stays) -> net = -1
+        # middle: outflow=2 (C stays, D moves to low), inflow=2 (B from high, C stays) -> net = 0
+        # low: outflow=1 (E stays), inflow=2 (D from middle, E stays) -> net = +1
+        self.assertEqual(lazy_dict["high"], -1)
+        self.assertEqual(lazy_dict["middle"], 0)
+        self.assertEqual(lazy_dict["low"], 1)
+        
+        # Sum of net changes should be 0 for matched population
+        self.assertEqual(sum(lazy_dict.values()), 0)
+    
+    def test_value_tier_transition_waterfall_empty(self):
+        """Test value_tier_transition_waterfall with empty flows."""
+        empty_flows = pl.DataFrame({
+            "from_label": [],
+            "to_label": [],
+            "len": [],
+        }).lazy()
+        
+        result = value_tier_transition_waterfall(empty_flows)
+        self.assertEqual(result.height, 0)
+    
+    def test_value_tier_transition_waterfall_one_sided(self):
+        """Test value_tier_transition_waterfall with tiers appearing only on one side."""
+        before = pl.DataFrame({
+            "customer_id": ["A", "B"],
+            "value_tier": ["high", "middle"],
+        }).lazy()
+        
+        after = pl.DataFrame({
+            "customer_id": ["A", "B", "C"],
+            "value_tier": ["middle", "low", "high"],
+        }).lazy()
+        
+        flows, _ = transition_summary(before, after, "value_tier")
+        waterfall = value_tier_transition_waterfall(flows)
+        
+        # Should have all three tiers
+        tiers = set(waterfall["tier"].to_list())
+        self.assertEqual(tiers, {"high", "middle", "low"})
+        
+        # Net change should sum to 0 for matched population
+        matched_net = waterfall.filter(pl.col("tier").is_in(["high", "middle", "low"]))["net_change"].sum()
+        # For matched customers (A, B): high->middle (high -1, middle +1), middle->low (middle -1, low +1)
+        # Net: high=-1, middle=0, low=+1, sum=0
+        self.assertEqual(matched_net, 0)
 
 if __name__ == "__main__":
     unittest.main()

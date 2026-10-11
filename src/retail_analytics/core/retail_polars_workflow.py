@@ -195,8 +195,21 @@ def prepare(
         raise ValueError("Dates must be Date, Datetime, or strings; epoch units are not guessed")
     # Include price_raw/quantity_raw in select if they exist (from dashboard canonical)
     select_cols = COLS + [c for c in ["price_raw", "quantity_raw"] if c in schema.names()]
+    
+    # Preserve original source columns for exact deduplication (before normalization)
+    # These are the literal 9 input columns as they appear in the source
     raw = src.select(select_cols).with_columns(
         dates.alias("date"),
+        # Keep original source columns for exact deduplication
+        pl.col(C).alias("customer_id_source"),
+        pl.col("transaction_date").alias("transaction_date_source"),
+        pl.col("transaction_id").alias("transaction_id_source"),
+        pl.col("product_id").alias("product_id_source"),
+        pl.col("product_description").alias("product_description_source"),
+        pl.col("department").alias("department_source"),
+        pl.col("category").alias("category_source"),
+        pl.col("price").alias("price_source"),
+        pl.col("quantity").alias("quantity_source"),
         *[
             pl.col(x).cast(pl.String).str.strip_chars().replace("", None)
             for x in [C, "transaction_id", "product_id"]
@@ -312,9 +325,11 @@ def prepare(
         or 0
     )
     # Excess value = value beyond one representative line per duplicate group
-    # For n identical lines worth v each: excess = (n-1) * v, not n*v*(n-1)
+    # For n identical lines worth v each: excess = (n-1) * v
+    # Only include valid finite values in monetary impact
+    valid_raw = raw.filter(pl.col("valid"))
     exact_dup_value = (
-        raw.group_by(exact_source_cols)
+        valid_raw.group_by(exact_source_cols)
         .agg(pl.col("value").first().alias("line_value"), pl.len().alias("dup_count"))
         .filter(pl.col("dup_count") > 1)
         .select((pl.col("line_value") * (pl.col("dup_count") - 1)).sum())
@@ -345,8 +360,9 @@ def prepare(
         .item()
         or 0
     )
+    # Only include valid finite values in monetary impact
     norm_dup_value = (
-        raw.group_by(norm_source_cols)
+        valid_raw.group_by(norm_source_cols)
         .agg(pl.col("value").first().alias("line_value"), pl.len().alias("dup_count"))
         .filter(pl.col("dup_count") > 1)
         .select((pl.col("line_value") * (pl.col("dup_count") - 1)).sum())
@@ -463,22 +479,27 @@ def prepare(
         (pl.col(C).hash(seed=HASH_SEED_BUCKETING) % buckets).alias("bucket"),
     )
     # Drop exact duplicates if requested
-    # Exact duplicates = identical on all original 9 columns including transaction_date timestamp
+    # Exact duplicates = identical on all original 9 source columns including transaction_date timestamp
     if drop_exact_duplicates:
         exact_source_cols = [
-            C,
-            "transaction_date",
-            "transaction_id",
-            "product_id",
-            "product_description",
-            "department",
-            "category",
-            "price",
-            "quantity",
+            "customer_id_source",
+            "transaction_date_source",
+            "transaction_id_source",
+            "product_id_source",
+            "product_description_source",
+            "department_source",
+            "category_source",
+            "price_source",
+            "quantity_source",
         ]
         clean = clean.unique(subset=exact_source_cols, maintain_order=True)
-    # Drop transaction_date after exact duplicate detection (no longer needed downstream)
-    clean = clean.drop("transaction_date")
+    # Drop source columns after exact duplicate detection (no longer needed downstream)
+    source_cols_to_drop = [
+        "customer_id_source", "transaction_date_source", "transaction_id_source",
+        "product_id_source", "product_description_source", "department_source",
+        "category_source", "price_source", "quantity_source", "transaction_date"
+    ]
+    clean = clean.drop(source_cols_to_drop)
     sink(clean, root / "validated.parquet")
     clean = pl.scan_parquet(root / "validated.parquet")
     audit["observed_through"] = str(end)

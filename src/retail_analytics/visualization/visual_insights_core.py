@@ -672,7 +672,7 @@ def value_tier_transition_waterfall(transition_flows):
             pl.col("inflow").fill_null(0),
         )
         .with_columns(
-            (pl.col("inflow") - pl.col("outflow")).alias("net_change"),
+            (pl.col("inflow").cast(pl.Int64) - pl.col("outflow").cast(pl.Int64)).alias("net_change"),
         )
         .with_columns(
             pl.when(pl.col("net_change") >= 0)
