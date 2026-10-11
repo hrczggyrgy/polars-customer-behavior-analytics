@@ -150,12 +150,15 @@ def inspect(job):
         if job.get("decimal_comma"):
             value = value.str.replace_all(",", ".", literal=True)
         # Preserve raw string before casting to distinguish missing vs malformed
-        raw_col = value.alias(f"{x}_raw")
+        # Apply same normalization as core: empty string -> null
+        raw_col = value.replace("", None).alias(f"{x}_raw")
         casted = value.cast(pl.Float64, strict=False).alias(x)
         numeric.append(raw_col)
         numeric.append(casted)
+    # Preserve original transaction_date for provenance
     raw = raw.select(COLS).with_columns(
-        parsed.alias("transaction_date"),
+        parsed.alias("date"),
+        pl.col("transaction_date").alias("transaction_date_original"),
         *numeric,
         *[
             pl.col(x).cast(pl.String).str.strip_chars().replace("", None)
@@ -172,7 +175,7 @@ def inspect(job):
         pl.all_horizontal(
             [
                 pl.col(x).is_not_null()
-                for x in ["customer_id", "transaction_id", "product_id", "transaction_date"]
+                for x in ["customer_id", "transaction_id", "product_id", "date"]
             ]
         )
         & pl.col("price").is_finite()
@@ -185,7 +188,7 @@ def inspect(job):
         raw.select(
             pl.len().alias("rows"),
             (~valid).sum().alias("invalid_rows"),
-            pl.col("transaction_date").null_count().alias("invalid_dates"),
+            pl.col("date").null_count().alias("invalid_dates"),
             (pl.col("department") == "__UNKNOWN__").sum().alias("unknown_department_rows"),
             (pl.col("category") == "__UNKNOWN__").sum().alias("unknown_category_rows"),
             # Distinguish missing source from malformed token
@@ -207,8 +210,8 @@ def inspect(job):
     bounds = (
         raw.filter(valid)
         .select(
-            pl.col("transaction_date").min().alias("minimum_date"),
-            pl.col("transaction_date").max().alias("maximum_date"),
+            pl.col("date").min().alias("minimum_date"),
+            pl.col("date").max().alias("maximum_date"),
             pl.col("customer_id").n_unique().alias("valid_customers"),
         )
         .collect()
@@ -223,7 +226,7 @@ def inspect(job):
     conflicts = (
         raw.filter(valid)
         .group_by(["customer_id", "transaction_id"])
-        .agg(pl.col("transaction_date").n_unique().alias("dates"))
+        .agg(pl.col("date").n_unique().alias("dates"))
         .filter(pl.col("dates") > 1)
         .select(pl.len())
         .collect()

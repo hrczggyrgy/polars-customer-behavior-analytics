@@ -585,22 +585,22 @@ def revenue_waterfall(rows, previous_rows, cutoff):
 
     # Handle edge cases
     if pc_prev == 0 or tb_prev == 0:
-        # Cannot compute previous-period rates; return total change only
-        return pl.DataFrame([
-            dict(component="Previous period spend", value=ts_prev, order=0),
-            dict(component="Current period spend", value=ts_curr, order=1),
-            dict(component="Total change", value=ts_curr - ts_prev, order=2),
-            dict(component="Decomposition", value="unavailable: zero purchasing customers or baskets in previous period", order=3),
-        ])
+        # Cannot compute previous-period rates; return total change with unavailable decomposition status
+        return pl.DataFrame({
+            "component": ["Previous period spend", "Current period spend", "Total change", "Decomposition"],
+            "value": [float(ts_prev), float(ts_curr), float(ts_curr - ts_prev), None],
+            "status": [None, None, None, "unavailable: zero purchasing customers or baskets in previous period"],
+            "order": [0, 1, 2, 3],
+        })
 
     if pc_curr == 0 or tb_curr == 0:
         # Current period has no purchasing activity
-        return pl.DataFrame([
-            dict(component="Previous period spend", value=ts_prev, order=0),
-            dict(component="Current period spend", value=ts_curr, order=1),
-            dict(component="Total change", value=ts_curr - ts_prev, order=2),
-            dict(component="Decomposition", value="unavailable: zero purchasing customers or baskets in current period", order=3),
-        ])
+        return pl.DataFrame({
+            "component": ["Previous period spend", "Current period spend", "Total change", "Decomposition"],
+            "value": [float(ts_prev), float(ts_curr), float(ts_curr - ts_prev), None],
+            "status": [None, None, None, "unavailable: zero purchasing customers or baskets in current period"],
+            "order": [0, 1, 2, 3],
+        })
 
     # Compute rates
     F_prev = tb_prev / pc_prev  # baskets per buyer
@@ -616,14 +616,12 @@ def revenue_waterfall(rows, previous_rows, cutoff):
     # Verify reconciliation (within floating-point tolerance)
     residual = ts_curr - ts_prev - delta_N - delta_F - delta_A
 
-    return pl.DataFrame([
-        dict(component="Previous period spend", value=ts_prev, order=0),
-        dict(component="Purchasing customers", value=delta_N, order=1),
-        dict(component="Baskets per customer", value=delta_F, order=2),
-        dict(component="Spend per basket (AOV)", value=delta_A, order=3),
-        dict(component="Residual (rounding)", value=residual, order=4),
-        dict(component="Current period spend", value=ts_curr, order=5),
-    ])
+    return pl.DataFrame({
+        "component": ["Previous period spend", "Purchasing customers", "Baskets per customer", "Spend per basket (AOV)", "Residual (rounding)", "Current period spend"],
+        "value": [float(ts_prev), float(delta_N), float(delta_F), float(delta_A), float(residual), float(ts_curr)],
+        "status": [None, None, None, None, None, None],
+        "order": [0, 1, 2, 3, 4, 5],
+    })
 
 
 def value_tier_transition_waterfall(transition_flows):
@@ -632,13 +630,19 @@ def value_tier_transition_waterfall(transition_flows):
     Takes transition flows from transition_summary (from_label, to_label, len, rate)
     and computes net gain/loss per value tier.
 
+    Accepts both eager DataFrames and LazyFrames.
+
     Note: Inflows/outflows include diagonal transitions (customers staying in same tier).
     Net change for a tier = inflow - outflow. For a closed matched population,
     sum of net_change across all tiers should be zero.
     """
     import polars as pl
 
-    flows = collect(transition_flows)
+    # Handle both eager and lazy input
+    if isinstance(transition_flows, pl.DataFrame):
+        flows = transition_flows
+    else:
+        flows = collect(transition_flows)
     if flows.is_empty():
         return pl.DataFrame()
 
@@ -659,7 +663,7 @@ def value_tier_transition_waterfall(transition_flows):
         .rename({"to_label": "tier"})
     )
 
-    # Net change per tier - compute in separate stage to ensure fill_null takes effect
+    # Net change per tier - compute in separate stages to ensure fill_null takes effect
     result = (
         all_tiers.join(outflows, on="tier", how="left")
         .join(inflows, on="tier", how="left")
@@ -669,6 +673,8 @@ def value_tier_transition_waterfall(transition_flows):
         )
         .with_columns(
             (pl.col("inflow") - pl.col("outflow")).alias("net_change"),
+        )
+        .with_columns(
             pl.when(pl.col("net_change") >= 0)
             .then(pl.lit("gain"))
             .otherwise(pl.lit("loss"))

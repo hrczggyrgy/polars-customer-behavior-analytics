@@ -139,45 +139,107 @@ class Aggregates(unittest.TestCase):
         self.assertEqual(set(result_filtered["sample"]["customer_id"].to_list()), {"A", "C"})
 
     def test_revenue_waterfall(self):
+        # Fixture: Previous: 2 buyers, 4 baskets, spend 40. Current: 2 buyers, 6 baskets, spend 90.
+        # Expected: buyer contribution 0, frequency +20, AOV +30, total +50, residual ~0.
         current = pl.DataFrame({
             "customer_id": ["A", "B", "C"],
-            "purchases_90d": [5, 3, 0],
-            "spend_90d": [500.0, 150.0, 0.0],
+            "purchases_90d": [2, 4, 0],
+            "spend_90d": [20.0, 70.0, 0.0],
         }).lazy()
 
         previous = pl.DataFrame({
             "customer_id": ["A", "B", "C"],
-            "purchases_90d": [4, 4, 0],
-            "spend_90d": [320.0, 200.0, 0.0],
+            "purchases_90d": [2, 2, 0],
+            "spend_90d": [20.0, 20.0, 0.0],
         }).lazy()
 
         cutoff = date(2024, 6, 1)
         result = revenue_waterfall(current, previous, cutoff)
 
         self.assertEqual(result.height, 6)
-        # Previous: 2 purchasers, 4 baskets avg, 65 AOV = 520
-        # Current: 2 purchasers, 4 baskets avg, 162.5 AOV = 650
-        # Wait: current purchasers = 2 (A, B), avg baskets = (5+3)/2=4, avg spend = (500+150)/2=325
-        # Previous purchasers = 2 (A, B), avg baskets = (4+4)/2=4, avg spend = (320+200)/2=260
-        # Spend prev = 520, current = 650
-        # delta_pc = (2-2)*4*260 = 0
-        # delta_bpb = 2*(4-4)*260 = 0
-        # delta_spb = 2*4*(325-260) = 8*65 = 520
-        # residual = 650 - 520 - 0 - 0 - 520 = -390? That doesn't seem right.
-        # Let me recheck: spend_prev = 520, spend_curr = 650
-        # The decomposition uses:
-        # pc_curr = 2, bpb_curr = 4, spb_curr = 325
-        # pc_prev = 2, bpb_prev = 4, spb_prev = 260
-        # delta_pc = (2-2)*4*260 = 0
-        # delta_bpb = 2*(4-4)*260 = 0
-        # delta_spb = 2*4*(325-260) = 520
-        # residual = 650 - 520 - 0 - 0 - 520 = -390
-        # So there's a residual due to interaction effects.
-        # The test should just verify structure.
-        self.assertEqual(result["component"][0], "Previous period spend")
-        self.assertEqual(result["component"][-1], "Current period spend")
-        self.assertAlmostEqual(result["value"][0], 520.0)
-        self.assertAlmostEqual(result["value"][-1], 650.0)
+        self.assertIn("status", result.columns)
+        self.assertIn("order", result.columns)
+
+        # Verify components and values
+        comp_vals = {row["component"]: row["value"] for row in result.to_dicts()}
+
+        # Previous: 2 purchasers, 4 baskets total, spend 40 -> AOV = 10
+        # Current: 2 purchasers, 6 baskets total, spend 90 -> AOV = 15
+        # F_prev = 4/2 = 2, A_prev = 40/4 = 10
+        # F_curr = 6/2 = 3, A_curr = 90/6 = 15
+        # delta_N = (2-2) * 2 * 10 = 0
+        # delta_F = 2 * (3-2) * 10 = 20
+        # delta_A = 2 * 3 * (15-10) = 30
+        # total change = 90 - 40 = 50
+        # residual = 50 - 0 - 20 - 30 = 0
+
+        self.assertAlmostEqual(comp_vals["Previous period spend"], 40.0)
+        self.assertAlmostEqual(comp_vals["Purchasing customers"], 0.0)
+        self.assertAlmostEqual(comp_vals["Baskets per customer"], 20.0)
+        self.assertAlmostEqual(comp_vals["Spend per basket (AOV)"], 30.0)
+        self.assertAlmostEqual(comp_vals["Residual (rounding)"], 0.0, places=6)
+        self.assertAlmostEqual(comp_vals["Current period spend"], 90.0)
+
+        # Check status column - all should be None for valid decomposition
+        for row in result.to_dicts():
+            self.assertIsNone(row["status"])
+
+    def test_revenue_waterfall_zero_previous_activity(self):
+        # Previous period has no purchasing activity
+        current = pl.DataFrame({
+            "customer_id": ["A", "B"],
+            "purchases_90d": [2, 3],
+            "spend_90d": [20.0, 30.0],
+        }).lazy()
+
+        previous = pl.DataFrame({
+            "customer_id": ["A", "B"],
+            "purchases_90d": [0, 0],
+            "spend_90d": [0.0, 0.0],
+        }).lazy()
+
+        cutoff = date(2024, 6, 1)
+        result = revenue_waterfall(current, previous, cutoff)
+
+        self.assertEqual(result.height, 4)
+        comp_vals = {row["component"]: row["value"] for row in result.to_dicts()}
+        self.assertAlmostEqual(comp_vals["Previous period spend"], 0.0)
+        self.assertAlmostEqual(comp_vals["Current period spend"], 50.0)
+        self.assertAlmostEqual(comp_vals["Total change"], 50.0)
+        self.assertIsNone(comp_vals["Decomposition"])
+        self.assertEqual(result.filter(pl.col("component") == "Decomposition")["status"][0],
+                         "unavailable: zero purchasing customers or baskets in previous period")
+
+    def test_revenue_waterfall_zero_current_activity(self):
+        # Current period has no purchasing activity
+        current = pl.DataFrame({
+            "customer_id": ["A", "B"],
+            "purchases_90d": [0, 0],
+            "spend_90d": [0.0, 0.0],
+        }).lazy()
+
+        previous = pl.DataFrame({
+            "customer_id": ["A", "B"],
+            "purchases_90d": [2, 3],
+            "spend_90d": [20.0, 30.0],
+        }).lazy()
+
+        cutoff = date(2024, 6, 1)
+        result = revenue_waterfall(current, previous, cutoff)
+
+        self.assertEqual(result.height, 4)
+        comp_vals = {row["component"]: row["value"] for row in result.to_dicts()}
+        self.assertAlmostEqual(comp_vals["Previous period spend"], 50.0)
+        self.assertAlmostEqual(comp_vals["Current period spend"], 0.0)
+        self.assertAlmostEqual(comp_vals["Total change"], -50.0)
+        self.assertIsNone(comp_vals["Decomposition"])
+        self.assertEqual(result.filter(pl.col("component") == "Decomposition")["status"][0],
+                         "unavailable: zero purchasing customers or baskets in current period")
+
+    def test_revenue_waterfall_none_input(self):
+        # None input should return empty DataFrame
+        result = revenue_waterfall(None, None, date(2024, 6, 1))
+        self.assertEqual(result.height, 0)
 
 
 if __name__ == "__main__":

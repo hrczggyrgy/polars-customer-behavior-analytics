@@ -1303,11 +1303,12 @@ def display_results(root, coverage):
             )
 
     elif view == "Category Sankey":
-        st.subheader("Category participation Sankey")
+        st.subheader("Category participation comparison")
         st.caption(
-            "Shows category participation change between two snapshots. "
-            "Participation = customers buying from category / filtered population (same denominator). "
-            "Uses validated transaction data for both periods."
+            "Shows category participation change between two snapshots using 365-day windows. "
+            "Participation = customers buying from category / eligible population for each snapshot. "
+            "Uses validated transaction data for both periods. "
+            "Categories appearing in only one period are shown with zero participation in the other."
         )
 
         if len(history) < 2:
@@ -1322,48 +1323,44 @@ def display_results(root, coverage):
             else:
                 validated = pl.scan_parquet(validated_path)
 
-                # Fixed population: current filtered population
-                ids = rows.select("customer_id").unique()
-                n = collect(ids.select(pl.len())).item()
+                # Get customer populations for both snapshots
+                curr_ids = rows.select("customer_id").unique()
+                curr_n = collect(curr_ids.select(pl.len())).item()
 
-                # Current cutoff date ranges
+                prev_rows = apply_filters(
+                    pl.scan_parquet([str(p) for p in (root / "snapshots" / origin).glob("*.parquet")]),
+                    filters,
+                )
+                prev_ids = prev_rows.select("customer_id").unique()
+                prev_n = collect(prev_ids.select(pl.len())).item()
+
+                # Current cutoff date ranges (365-day window)
                 cutoff_curr = date.fromisoformat(chosen)
                 cutoff_prev = date.fromisoformat(origin)
 
-                from retail_analytics.core.constants import (
-                    WINDOW_YEAR,
-                )
+                from retail_analytics.core.constants import WINDOW_YEAR
 
-                # Current period: [C-364, C] (365-day window for category history)
                 curr_start = cutoff_curr - timedelta(days=WINDOW_YEAR - 1)
                 curr_end = cutoff_curr
-
-                # Previous period: [origin-364, origin]
                 prev_start = cutoff_prev - timedelta(days=WINDOW_YEAR - 1)
                 prev_end = cutoff_prev
 
                 # Current participation
                 curr_cats = (
                     validated.filter(pl.col("date").is_between(curr_start, curr_end))
-                    .join(ids, on="customer_id", how="semi")
+                    .join(curr_ids, on="customer_id", how="semi")
                     .group_by("department", "category")
                     .agg(
                         pl.col("customer_id").n_unique().alias("curr_customers"),
                         pl.col("value").sum().alias("curr_spend"),
                     )
                     .with_columns(
-                        pl.lit(n).alias("curr_population"),
-                        (pl.col("curr_customers") / pl.lit(n)).alias("curr_participation"),
+                        pl.lit(curr_n).alias("curr_population"),
+                        (pl.col("curr_customers") / pl.lit(curr_n)).alias("curr_participation"),
                     )
                 )
 
                 # Previous participation
-                prev_ids = apply_filters(
-                    pl.scan_parquet([str(p) for p in (root / "snapshots" / origin).glob("*.parquet")]),
-                    filters,
-                ).select("customer_id").unique()
-                prev_n = collect(prev_ids.select(pl.len())).item()
-
                 prev_cats = (
                     validated.filter(pl.col("date").is_between(prev_start, prev_end))
                     .join(prev_ids, on="customer_id", how="semi")
@@ -1378,8 +1375,9 @@ def display_results(root, coverage):
                     )
                 )
 
+                # Full join with coalesce to preserve previous-only and current-only categories
                 merged = collect(
-                    curr_cats.join(prev_cats, on=["department", "category"], how="full")
+                    curr_cats.join(prev_cats, on=["department", "category"], how="full", coalesce=True)
                     .with_columns(
                         pl.col("curr_participation").fill_null(0),
                         pl.col("prev_participation").fill_null(0),
@@ -1387,7 +1385,7 @@ def display_results(root, coverage):
                         pl.col("prev_customers").fill_null(0),
                         pl.col("curr_spend").fill_null(0),
                         pl.col("prev_spend").fill_null(0),
-                        pl.col("curr_population").fill_null(n),
+                        pl.col("curr_population").fill_null(curr_n),
                         pl.col("prev_population").fill_null(prev_n),
                     )
                     .with_columns(

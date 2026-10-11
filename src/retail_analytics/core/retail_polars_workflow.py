@@ -288,14 +288,14 @@ def prepare(
         or 0.0
     )
 
-    # Exact duplicate detection (on all 9 source columns after cleaning)
-    # Key uses parsed 'date' (business date), not original 'transaction_date' timestamp.
-    # This means distinct timestamped rows sharing a business date CAN be classified as duplicates.
-    raw_source_cols = [
+    # Exact duplicate detection - track both source-exact and normalized same-day
+    # Source-exact: identical on all 9 original columns including transaction_date timestamp
+    # Normalized same-day: identical on 9 columns but using parsed business date
+    exact_source_cols = [
         C,
+        "transaction_date",
         "transaction_id",
         "product_id",
-        "date",
         "product_description",
         "department",
         "category",
@@ -303,7 +303,7 @@ def prepare(
         "quantity",
     ]
     exact_dup_count = (
-        raw.group_by(raw_source_cols)
+        raw.group_by(exact_source_cols)
         .len()
         .filter(pl.col("len") > 1)
         .select((pl.col("len") - 1).sum())
@@ -314,7 +314,39 @@ def prepare(
     # Excess value = value beyond one representative line per duplicate group
     # For n identical lines worth v each: excess = (n-1) * v, not n*v*(n-1)
     exact_dup_value = (
-        raw.group_by(raw_source_cols)
+        raw.group_by(exact_source_cols)
+        .agg(pl.col("value").first().alias("line_value"), pl.len().alias("dup_count"))
+        .filter(pl.col("dup_count") > 1)
+        .select((pl.col("line_value") * (pl.col("dup_count") - 1)).sum())
+        .collect()
+        .item()
+        or 0.0
+    )
+
+    # Normalized same-day duplicate detection (for audit only - not used for removal)
+    # Identical on parsed date and normalized fields
+    norm_source_cols = [
+        C,
+        "transaction_id",
+        "product_id",
+        "date",
+        "product_description",
+        "department",
+        "category",
+        "price",
+        "quantity",
+    ]
+    norm_dup_count = (
+        raw.group_by(norm_source_cols)
+        .len()
+        .filter(pl.col("len") > 1)
+        .select((pl.col("len") - 1).sum())
+        .collect()
+        .item()
+        or 0
+    )
+    norm_dup_value = (
+        raw.group_by(norm_source_cols)
         .agg(pl.col("value").first().alias("line_value"), pl.len().alias("dup_count"))
         .filter(pl.col("dup_count") > 1)
         .select((pl.col("line_value") * (pl.col("dup_count") - 1)).sum())
@@ -366,6 +398,8 @@ def prepare(
             pl.lit(neg_qty_value).alias("negative_quantity_value"),
             pl.lit(exact_dup_count).alias("exact_duplicate_rows"),
             pl.lit(exact_dup_value).alias("exact_duplicate_value"),
+            pl.lit(norm_dup_count).alias("normalized_duplicate_rows"),
+            pl.lit(norm_dup_value).alias("normalized_duplicate_value"),
             pl.lit(baskets_with_rejected).alias("baskets_with_rejected_lines"),
             # Left-censoring fields
             pl.lit(left_censored_count).alias("left_censored_customers"),
@@ -404,7 +438,7 @@ def prepare(
         if not exclude:
             raise ValueError("Invalid rows: inspect quality.json and rejected.parquet")
     clean = raw.filter(pl.col("valid")).drop(
-        "valid", "transaction_date", "rejection_reason", "price_raw", "quantity_raw"
+        "valid", "rejection_reason", "price_raw", "quantity_raw"
     )
     maximum_date = clean.select(pl.col("date").max()).collect().item()
     if maximum_date is None:
@@ -443,6 +477,8 @@ def prepare(
             "quantity",
         ]
         clean = clean.unique(subset=exact_source_cols, maintain_order=True)
+    # Drop transaction_date after exact duplicate detection (no longer needed downstream)
+    clean = clean.drop("transaction_date")
     sink(clean, root / "validated.parquet")
     clean = pl.scan_parquet(root / "validated.parquet")
     audit["observed_through"] = str(end)

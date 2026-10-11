@@ -42,6 +42,51 @@ class ThresholdPolicy:
     z: float = WILSON_Z
     max_rel_ci: float = 0.5   # Reject if CI width > 50% of value
 
+    def __post_init__(self):
+        # Validate quantile pairs
+        if not (0 < self.value_quantile_low < self.value_quantile_high < 1):
+            raise ValueError("value_quantile_low must be < value_quantile_high and both in (0, 1)")
+        if not (0 < self.style_quantile_low < self.style_quantile_high < 1):
+            raise ValueError("style_quantile_low must be < style_quantile_high and both in (0, 1)")
+
+        # Validate min_n
+        if not isinstance(self.min_n, int) or isinstance(self.min_n, bool) or self.min_n < 0:
+            raise ValueError("min_n must be a non-negative integer")
+
+        # Validate z
+        if not isinstance(self.z, (int, float)) or not math.isfinite(self.z) or self.z <= 0:
+            raise ValueError("z must be a finite positive number")
+
+        # Validate max_rel_ci
+        if not isinstance(self.max_rel_ci, (int, float)) or not math.isfinite(self.max_rel_ci) or self.max_rel_ci < 0:
+            raise ValueError("max_rel_ci must be a finite non-negative number")
+
+    # Backward compatibility: support old constructor pattern
+    @classmethod
+    def from_legacy(cls, low_p: float = None, high_p: float = None, min_n: int = None, z: float = None, max_rel_ci: float = None, **kwargs):
+        """Create policy from legacy low_p/high_p parameters."""
+        v_low = kwargs.get("value_quantile_low", QUANTILE_VALUE_LOW)
+        v_high = kwargs.get("value_quantile_high", QUANTILE_VALUE_HIGH)
+        s_low = kwargs.get("style_quantile_low", QUANTILE_STYLE_LOW)
+        s_high = kwargs.get("style_quantile_high", QUANTILE_STYLE_HIGH)
+
+        if low_p is not None:
+            v_low = min(v_low, low_p)
+            s_low = min(s_low, low_p)
+        if high_p is not None:
+            v_high = max(v_high, high_p)
+            s_high = max(s_high, high_p)
+
+        return cls(
+            value_quantile_low=v_low,
+            value_quantile_high=v_high,
+            style_quantile_low=s_low,
+            style_quantile_high=s_high,
+            min_n=min_n if min_n is not None else MIN_REFERENCE_POPULATION,
+            z=z if z is not None else WILSON_Z,
+            max_rel_ci=max_rel_ci if max_rel_ci is not None else 0.5,
+        )
+
     # Backward compatibility properties
     @property
     def low_p(self) -> float:
@@ -427,6 +472,8 @@ def calibrate_thresholds(
                 "value": r.value,
                 "raw": r.raw,
                 "ci": r.ci,
+                "clamp_bounds": r.clamp_bounds,
+                "clamped_value": r.clamped_value,
                 "n": r.n,
                 "status": r.status,
                 "method": r.method,
@@ -649,8 +696,9 @@ def select_reference_cutoff(
                     "value_population": value_n,
                     "checked_snapshots": checked,
                 }
-        except Exception as e:
-            # Record the error but continue to next snapshot
+        except (ValueError, KeyError, IndexError) as e:
+            # Expected errors during calibration (schema issues, missing columns, etc.)
+            # Record and continue to next snapshot
             checked.append({
                 "date": str(d),
                 "status": "error",
@@ -658,6 +706,9 @@ def select_reference_cutoff(
                 "error_message": str(e)[:500],
             })
             continue
+        except Exception as e:
+            # Unexpected errors (I/O, programming errors) - propagate with context
+            raise RuntimeError(f"Reference selection failed at cutoff {d}: {type(e).__name__}: {e}") from e
 
     # No cutoff met criteria
     return None, None, {
