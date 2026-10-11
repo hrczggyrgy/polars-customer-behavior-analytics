@@ -1,4 +1,5 @@
 """Bounded, coverage-aware visual analytics for the shared Polars pipeline."""
+
 import hashlib
 import json
 import shutil
@@ -8,16 +9,35 @@ import tempfile
 import uuid
 from datetime import date
 from pathlib import Path
-import streamlit as st
-import polars as pl
+
 import plotly.graph_objects as go
-from retail_analytics.dashboard.dashboard_backend import cutoffs, wilson
+import polars as pl
+import streamlit as st
+
 from retail_analytics.core.retail_polars_workflow import COLS
+from retail_analytics.dashboard.dashboard_backend import cutoffs, wilson
 
 MAX_BYTES = 100 * 1024 * 1024
 PAGE_ROWS = 2000
 TIMEOUT = 600
-FEATURES = ["spend_90d", "purchases_90d", "recency", "median_basket", "median_gap", "gap_cv", "lateness", "new_share", "repeat_share", "established_share", "trial_conversion", "category_hhi", "products_last6days", "categories_last6days", "frequency_change", "basket_change"]
+FEATURES = [
+    "spend_90d",
+    "purchases_90d",
+    "recency",
+    "median_basket",
+    "median_gap",
+    "gap_cv",
+    "lateness",
+    "new_share",
+    "repeat_share",
+    "established_share",
+    "trial_conversion",
+    "category_hhi",
+    "products_last6days",
+    "categories_last6days",
+    "frequency_change",
+    "basket_change",
+]
 DIMS = ["behavior", "trajectory", "lifecycle", "value_tier", "evidence"]
 PALETTE = ["#2563eb", "#059669", "#d97706", "#7c3aed", "#dc2626", "#0891b2", "#be185d", "#64748b"]
 
@@ -43,7 +63,15 @@ def reset():
     workspace = st.session_state.pop("workspace", None)
     if workspace:
         workspace.cleanup()
-    for key in ["fingerprint", "inspection_key", "result", "result_key", "preview_schema", "preview_key", "column_mapping"]:
+    for key in [
+        "fingerprint",
+        "inspection_key",
+        "result",
+        "result_key",
+        "preview_schema",
+        "preview_key",
+        "column_mapping",
+    ]:
         st.session_state.pop(key, None)
 
 
@@ -64,14 +92,28 @@ def worker(job):
     status = root / "worker_status.json"
     status.unlink(missing_ok=True)
     try:
-        process = subprocess.run([sys.executable, str(Path(__file__).with_name("dashboard_backend.py")), "--job", str(control)], capture_output=True, text=True, timeout=TIMEOUT)
+        process = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).with_name("dashboard_backend.py")),
+                "--job",
+                str(control),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT,
+        )
     except subprocess.TimeoutExpired:
         raise ValueError("Analysis timed out. Use a smaller upload or fewer cutoffs.")
     if not status.exists():
         raise ValueError("Worker stopped unexpectedly; no result was accepted.")
     report = read_json(status)
     if process.returncode or not report["ok"]:
-        message = report.get("message", "Worker failed") if report.get("error_type") in ["ValueError", "AssertionError"] else "Processing failed. Check formats, dependencies and server resources."
+        message = (
+            report.get("message", "Worker failed")
+            if report.get("error_type") in ["ValueError", "AssertionError"]
+            else "Processing failed. Check formats, dependencies and server resources."
+        )
         raise ValueError(message)
 
 
@@ -80,20 +122,45 @@ def collect(frame):
 
 
 def table(frame):
-    data = collect(frame.limit(PAGE_ROWS)) if isinstance(frame, pl.LazyFrame) else frame.head(PAGE_ROWS)
+    data = (
+        collect(frame.limit(PAGE_ROWS))
+        if isinstance(frame, pl.LazyFrame)
+        else frame.head(PAGE_ROWS)
+    )
     st.dataframe(data, hide_index=True, use_container_width=True)
     st.caption("Tables display at most 2,000 rows.")
 
 
 def export_csv(data):
     columns = [x for x, dtype in data.schema.items() if dtype == pl.String]
-    safe = data.with_columns(*[pl.when(pl.col(x).str.contains(r"^[=+\-@\t\r]")).then(pl.concat_str([pl.lit("'"), pl.col(x)])).otherwise(pl.col(x)).alias(x) for x in columns])
+    safe = data.with_columns(
+        *[
+            pl.when(pl.col(x).str.contains(r"^[=+\-@\t\r]"))
+            .then(pl.concat_str([pl.lit("'"), pl.col(x)]))
+            .otherwise(pl.col(x))
+            .alias(x)
+            for x in columns
+        ]
+    )
     return safe.write_csv().encode("utf8")
 
 
 def chart(figure, title, key, x=None, y=None):
-    figure.update_layout(title=title, template="plotly_white", height=430, margin=dict(l=20, r=20, t=65, b=50), xaxis_title=x, yaxis_title=y, uirevision=key)
-    st.plotly_chart(figure, use_container_width=True, key=key, config={"displaylogo": False, "toImageButtonOptions": {"format": "png", "scale": 2}})
+    figure.update_layout(
+        title=title,
+        template="plotly_white",
+        height=430,
+        margin=dict(l=20, r=20, t=65, b=50),
+        xaxis_title=x,
+        yaxis_title=y,
+        uirevision=key,
+    )
+    st.plotly_chart(
+        figure,
+        use_container_width=True,
+        key=key,
+        config={"displaylogo": False, "toImageButtonOptions": {"format": "png", "scale": 2}},
+    )
 
 
 def bars(data, group, metric, title, key):
@@ -101,7 +168,20 @@ def bars(data, group, metric, title, key):
         st.info("No observations match this view.")
         return
     shown = data.sort(metric, descending=True).head(25).reverse()
-    chart(go.Figure(go.Bar(x=shown[metric].to_list(), y=shown[group].to_list(), orientation="h", marker_color=[color(v) for v in shown[group].to_list()])), title, key, metric, group)
+    chart(
+        go.Figure(
+            go.Bar(
+                x=shown[metric].to_list(),
+                y=shown[group].to_list(),
+                orientation="h",
+                marker_color=[color(v) for v in shown[group].to_list()],
+            )
+        ),
+        title,
+        key,
+        metric,
+        group,
+    )
     st.caption(f"Showing up to 25 groups out of {data.height}; omitted groups are not merged.")
 
 
@@ -115,7 +195,9 @@ def apply_filters(rows, filters):
 def display_results(root, coverage):
     manifest = read_json(root / "run.json")
     coverage = bool(coverage and manifest.get("coverage_confirmed"))
-    chosen = st.selectbox("Result cutoff", manifest["snapshots"], index=len(manifest["snapshots"]) - 1)
+    chosen = st.selectbox(
+        "Result cutoff", manifest["snapshots"], index=len(manifest["snapshots"]) - 1
+    )
     raw = pl.scan_parquet(str(root / "snapshots" / chosen / "*.parquet"))
     filters = {}
     with st.expander("Population filters", expanded=False):
@@ -123,26 +205,89 @@ def display_results(root, coverage):
             options = collect(raw.select(dim).unique().sort(dim))[dim].to_list()
             with box:
                 filters[dim] = st.multiselect(dim, options, key=f"{root.name}_{dim}")
-        st.caption("Empty selections mean all customers. Historical filters are evaluated separately at each cutoff; transitions filter the destination population.")
+        st.caption(
+            "Empty selections mean all customers. Historical filters are evaluated separately at each cutoff; transitions filter the destination population."
+        )
     rows = apply_filters(raw, filters)
-    metrics = collect(rows.select(pl.len().alias("customers"), pl.col("spend_90d").sum().alias("sales"), pl.col("purchases_90d").sum().alias("baskets"), (pl.col("purchases_90d") > 0).sum().alias("active"))).row(0, named=True)
-    for box, label, value in zip(st.columns(4), ["Filtered customers", "Recorded spend: 90d", "Baskets: 90d", "Active customers: 90d"], [metrics["customers"], f'{metrics["sales"]:,.2f}', metrics["baskets"], metrics["active"]]):
+    metrics = collect(
+        rows.select(
+            pl.len().alias("customers"),
+            pl.col("spend_90d").sum().alias("sales"),
+            pl.col("purchases_90d").sum().alias("baskets"),
+            (pl.col("purchases_90d") > 0).sum().alias("active"),
+        )
+    ).row(0, named=True)
+    for box, label, value in zip(
+        st.columns(4),
+        ["Filtered customers", "Recorded spend: 90d", "Baskets: 90d", "Active customers: 90d"],
+        [metrics["customers"], f"{metrics['sales']:,.2f}", metrics["baskets"], metrics["active"]],
+    ):
         box.metric(label, value)
-    st.caption("Recorded amounts are currency units, not profit. Windows end at the cutoff; inactive observed customers remain included.")
+    st.caption(
+        "Recorded amounts are currency units, not profit. Windows end at the cutoff; inactive observed customers remain included."
+    )
     if not metrics["customers"]:
         st.info("No customers match the filters. Clear or broaden the selections.")
         return
-    view = st.radio("Analytical view", ["Overview", "Segments", "Features", "Cohorts", "Transitions", "Quality", "Customer", "Methods"], horizontal=True)
+    view = st.radio(
+        "Analytical view",
+        [
+            "Overview",
+            "Segments",
+            "Features",
+            "Cohorts",
+            "Transitions",
+            "Quality",
+            "Customer",
+            "Methods",
+        ],
+        horizontal=True,
+    )
     history = [x for x in manifest["snapshots"] if x <= chosen]
     if view == "Overview":
-        historical = apply_filters(pl.scan_parquet([str(root / "snapshots" / d / p.name) for d in history for p in (root / "snapshots" / d).glob("*.parquet")]), filters)
-        trend = collect(historical.group_by("snapshot").agg(pl.col("spend_90d").sum().alias("spend"), (pl.col("purchases_90d") > 0).sum().alias("active"), pl.len().alias("customers")).sort("snapshot"))
+        historical = apply_filters(
+            pl.scan_parquet(
+                [
+                    str(root / "snapshots" / d / p.name)
+                    for d in history
+                    for p in (root / "snapshots" / d).glob("*.parquet")
+                ]
+            ),
+            filters,
+        )
+        trend = collect(
+            historical.group_by("snapshot")
+            .agg(
+                pl.col("spend_90d").sum().alias("spend"),
+                (pl.col("purchases_90d") > 0).sum().alias("active"),
+                pl.len().alias("customers"),
+            )
+            .sort("snapshot")
+        )
         for box, metric in zip(st.columns(2), ["spend", "active"]):
             with box:
-                chart(go.Figure(go.Scatter(x=trend["snapshot"].to_list(), y=trend[metric].to_list(), mode="lines+markers")), f"Rolling 90-day {metric}", f"trend_{metric}", "Cutoff", metric)
-        st.caption("Overlapping windows are not independent; filtered membership and observation exposure may change.")
+                chart(
+                    go.Figure(
+                        go.Scatter(
+                            x=trend["snapshot"].to_list(),
+                            y=trend[metric].to_list(),
+                            mode="lines+markers",
+                        )
+                    ),
+                    f"Rolling 90-day {metric}",
+                    f"trend_{metric}",
+                    "Cutoff",
+                    metric,
+                )
+        st.caption(
+            "Overlapping windows are not independent; filtered membership and observation exposure may change."
+        )
         dim = st.selectbox("Composition", DIMS, key="overview_dim")
-        data = collect(rows.group_by(dim).agg(pl.len().alias("customers"), pl.col("spend_90d").sum().alias("spend_90d")))
+        data = collect(
+            rows.group_by(dim).agg(
+                pl.len().alias("customers"), pl.col("spend_90d").sum().alias("spend_90d")
+            )
+        )
         for box, metric in zip(st.columns(2), ["customers", "spend_90d"]):
             with box:
                 bars(data, dim, metric, f"{metric} by {dim}", f"composition_{metric}")
@@ -151,7 +296,17 @@ def display_results(root, coverage):
         horizon = st.selectbox("Future-purchase horizon (days)", [30, 90])
         minimum = st.number_input("Minimum eligible customers per outcome estimate", 1, 10000, 20)
         outcome, eligible = f"future_purchases_{horizon}d", f"eligible_followup_{horizon}d"
-        data = collect(rows.group_by(dim).agg(pl.len().alias("customers"), pl.col("spend_90d").sum().alias("spend_90d"), pl.col("median_gap").median().alias("median_gap"), pl.col(outcome).filter(pl.col(eligible)).count().alias("followup_n"), (pl.col(outcome) > 0).filter(pl.col(eligible)).sum().alias("future_buyers")).sort("customers", descending=True))
+        data = collect(
+            rows.group_by(dim)
+            .agg(
+                pl.len().alias("customers"),
+                pl.col("spend_90d").sum().alias("spend_90d"),
+                pl.col("median_gap").median().alias("median_gap"),
+                pl.col(outcome).filter(pl.col(eligible)).count().alias("followup_n"),
+                (pl.col(outcome) > 0).filter(pl.col(eligible)).sum().alias("future_buyers"),
+            )
+            .sort("customers", descending=True)
+        )
         records = []
         for record in data.to_dicts():
             n, buyers = record["followup_n"], record["future_buyers"]
@@ -162,17 +317,50 @@ def display_results(root, coverage):
                 record["followup_n"], record["future_buyers"] = None, None
             records.append(record)
         data = pl.DataFrame(records)
-        bars(data, dim, st.selectbox("Segment bar measure", ["customers", "spend_90d"]), "Segment comparison", "segment_bars")
+        bars(
+            data,
+            dim,
+            st.selectbox("Segment bar measure", ["customers", "spend_90d"]),
+            "Segment comparison",
+            "segment_bars",
+        )
         valid = [r for r in records if r["rate"] is not None][:25]
         if valid:
-            fig = go.Figure(go.Scatter(x=[r["rate"] for r in valid], y=[r[dim] for r in valid], mode="markers", marker=dict(size=10, color=[color(r[dim]) for r in valid]), error_x=dict(type="data", symmetric=False, array=[r["high"] - r["rate"] for r in valid], arrayminus=[r["rate"] - r["low"] for r in valid]), customdata=[[r["future_buyers"], r["followup_n"]] for r in valid], hovertemplate="%{y}<br>Rate: %{x:.1%}<br>Buyers: %{customdata[0]} / %{customdata[1]}<extra></extra>"))
+            fig = go.Figure(
+                go.Scatter(
+                    x=[r["rate"] for r in valid],
+                    y=[r[dim] for r in valid],
+                    mode="markers",
+                    marker=dict(size=10, color=[color(r[dim]) for r in valid]),
+                    error_x=dict(
+                        type="data",
+                        symmetric=False,
+                        array=[r["high"] - r["rate"] for r in valid],
+                        arrayminus=[r["rate"] - r["low"] for r in valid],
+                    ),
+                    customdata=[[r["future_buyers"], r["followup_n"]] for r in valid],
+                    hovertemplate="%{y}<br>Rate: %{x:.1%}<br>Buyers: %{customdata[0]} / %{customdata[1]}<extra></extra>",
+                )
+            )
             fig.update_xaxes(range=[0, 1], tickformat=".0%")
-            chart(fig, f"Next-{horizon}-day purchase rate: 95% Wilson intervals", "outcome_intervals", "Purchase proportion", dim)
+            chart(
+                fig,
+                f"Next-{horizon}-day purchase rate: 95% Wilson intervals",
+                "outcome_intervals",
+                "Purchase proportion",
+                dim,
+            )
         else:
-            st.info("No outcome estimates: coverage is unconfirmed, follow-up is incomplete, or groups are too small.")
-        st.caption("Intervals assume independent customers at one cutoff, not causal effects. Up to 25 estimates are shown; exploratory comparisons are not multiplicity-adjusted.")
+            st.info(
+                "No outcome estimates: coverage is unconfirmed, follow-up is incomplete, or groups are too small."
+            )
+        st.caption(
+            "Intervals assume independent customers at one cutoff, not causal effects. Up to 25 estimates are shown; exploratory comparisons are not multiplicity-adjusted."
+        )
         table(data)
-        st.download_button("Export filtered segment summary", export_csv(data), "segments.csv", "text/csv")
+        st.download_button(
+            "Export filtered segment summary", export_csv(data), "segments.csv", "text/csv"
+        )
     elif view == "Features":
         features = [f for f in FEATURES if f in rows.collect_schema().names()]
         expressions = [pl.len().alias("n")]
@@ -180,35 +368,118 @@ def display_results(root, coverage):
             finite = pl.col(f).filter(pl.col(f).is_finite())
             expressions += [finite.count().alias(f + "_n"), finite.median().alias(f + "_median")]
         stats = collect(rows.select(expressions)).row(0, named=True)
-        diagnostic = pl.DataFrame([dict(feature=f, finite=stats[f + "_n"], unavailable=stats["n"] - stats[f + "_n"], median=stats[f + "_median"]) for f in features])
-        bars(diagnostic, "feature", "unavailable", "Missing or non-finite feature values", "missingness")
+        diagnostic = pl.DataFrame(
+            [
+                dict(
+                    feature=f,
+                    finite=stats[f + "_n"],
+                    unavailable=stats["n"] - stats[f + "_n"],
+                    median=stats[f + "_median"],
+                )
+                for f in features
+            ]
+        )
+        bars(
+            diagnostic,
+            "feature",
+            "unavailable",
+            "Missing or non-finite feature values",
+            "missingness",
+        )
         table(diagnostic)
         feature = st.selectbox("Distribution feature", features)
-        sample = collect(rows.filter(pl.col(feature).is_finite()).sort(pl.col("customer_id").hash(seed=29)).limit(PAGE_ROWS).select(feature))
+        sample = collect(
+            rows.filter(pl.col(feature).is_finite())
+            .sort(pl.col("customer_id").hash(seed=29))
+            .limit(PAGE_ROWS)
+            .select(feature)
+        )
         if sample.height:
-            for box, trace, title in zip(st.columns(2), [go.Histogram(x=sample[feature].to_list(), nbinsx=30), go.Box(x=sample[feature].to_list(), boxpoints=False)], ["Histogram", "Box plot"]):
+            for box, trace, title in zip(
+                st.columns(2),
+                [
+                    go.Histogram(x=sample[feature].to_list(), nbinsx=30),
+                    go.Box(x=sample[feature].to_list(), boxpoints=False),
+                ],
+                ["Histogram", "Box plot"],
+            ):
                 with box:
-                    chart(go.Figure(trace), title, title.lower().replace(" ", "_"), feature, "Sample count" if title == "Histogram" else None)
+                    chart(
+                        go.Figure(trace),
+                        title,
+                        title.lower().replace(" ", "_"),
+                        feature,
+                        "Sample count" if title == "Histogram" else None,
+                    )
         x = st.selectbox("Scatter X", features)
         y = st.selectbox("Scatter Y", features, index=min(1, len(features) - 1))
         dim = st.selectbox("Scatter color", DIMS)
         if x != y:
-            sample = collect(rows.filter(pl.col(x).is_finite() & pl.col(y).is_finite()).sort(pl.col("customer_id").hash(seed=29)).limit(PAGE_ROWS).select(x, y, dim))
+            sample = collect(
+                rows.filter(pl.col(x).is_finite() & pl.col(y).is_finite())
+                .sort(pl.col("customer_id").hash(seed=29))
+                .limit(PAGE_ROWS)
+                .select(x, y, dim)
+            )
             fig = go.Figure()
             for name in sorted(sample[dim].unique().to_list()):
                 part = sample.filter(pl.col(dim) == name)
-                fig.add_trace(go.Scattergl(x=part[x].to_list(), y=part[y].to_list(), mode="markers", name=name, marker=dict(size=6, opacity=.55, color=color(name))))
+                fig.add_trace(
+                    go.Scattergl(
+                        x=part[x].to_list(),
+                        y=part[y].to_list(),
+                        mode="markers",
+                        name=name,
+                        marker=dict(size=6, opacity=0.55, color=color(name)),
+                    )
+                )
             chart(fig, "Feature relationships", "scatter", x, y)
-        st.caption("Distributions and scatter use at most 2,000 hash-selected finite observations, not the full population. Missing values are not zeros. No customer IDs are sent to these charts.")
-        st.caption("repeat_share begins on the second distinct product-purchase day; established_share begins on the third. Existing repeat-style rules use established_share.")
+        st.caption(
+            "Distributions and scatter use at most 2,000 hash-selected finite observations, not the full population. Missing values are not zeros. No customer IDs are sent to these charts."
+        )
+        st.caption(
+            "repeat_share begins on the second distinct product-purchase day; established_share begins on the third. Existing repeat-style rules use established_share."
+        )
     elif view == "Cohorts":
-        historical = apply_filters(pl.scan_parquet([str(p) for d in history for p in (root / "snapshots" / d).glob("*.parquet")]), filters)
-        cohort = collect(historical.with_columns(pl.col("first_purchase").dt.truncate("1mo").alias("cohort")).group_by("cohort", "snapshot").agg(pl.len().alias("customers"), (pl.col("purchases_30d") > 0).mean().alias("activity")))
+        historical = apply_filters(
+            pl.scan_parquet(
+                [str(p) for d in history for p in (root / "snapshots" / d).glob("*.parquet")]
+            ),
+            filters,
+        )
+        cohort = collect(
+            historical.with_columns(pl.col("first_purchase").dt.truncate("1mo").alias("cohort"))
+            .group_by("cohort", "snapshot")
+            .agg(
+                pl.len().alias("customers"), (pl.col("purchases_30d") > 0).mean().alias("activity")
+            )
+        )
         xs, ys, z = bounded_grid(cohort.to_dicts(), "cohort", "snapshot", "activity")
         _, _, counts = bounded_grid(cohort.to_dicts(), "cohort", "snapshot", "customers")
-        fig = go.Figure(go.Heatmap(x=xs, y=ys, z=z, customdata=counts, zmin=0, zmax=1, colorscale="Blues", colorbar=dict(tickformat=".0%"), hovertemplate="Cohort %{y}<br>Cutoff %{x}<br>30-day activity %{z:.1%}<br>Customers %{customdata}<extra></extra>", hoverongaps=False))
-        chart(fig, "First-observed cohorts: rolling 30-day activity", "cohort_heatmap", "Calendar cutoff", "First-observed month")
-        st.caption("Latest 24 cohorts/cutoffs only. Blank cells are absent observations, not zero activity. This is calendar activity, not age-aligned retention or verified acquisition cohorts; exposure and filtered membership differ.")
+        fig = go.Figure(
+            go.Heatmap(
+                x=xs,
+                y=ys,
+                z=z,
+                customdata=counts,
+                zmin=0,
+                zmax=1,
+                colorscale="Blues",
+                colorbar=dict(tickformat=".0%"),
+                hovertemplate="Cohort %{y}<br>Cutoff %{x}<br>30-day activity %{z:.1%}<br>Customers %{customdata}<extra></extra>",
+                hoverongaps=False,
+            )
+        )
+        chart(
+            fig,
+            "First-observed cohorts: rolling 30-day activity",
+            "cohort_heatmap",
+            "Calendar cutoff",
+            "First-observed month",
+        )
+        st.caption(
+            "Latest 24 cohorts/cutoffs only. Blank cells are absent observations, not zero activity. This is calendar activity, not age-aligned retention or verified acquisition cohorts; exposure and filtered membership differ."
+        )
         table(cohort.sort("cohort", "snapshot"))
     elif view == "Transitions":
         if len(history) < 2:
@@ -220,33 +491,91 @@ def display_results(root, coverage):
         for destination in (root / "snapshots" / chosen).glob("*.parquet"):
             source = root / "snapshots" / origin / destination.name
             if source.exists():
-                before = pl.scan_parquet(source).select("customer_id", pl.col(dim).alias("from_label"))
-                after = apply_filters(pl.scan_parquet(destination), filters).select("customer_id", pl.col(dim).alias("to_label"))
-                parts.append(before.join(after, on="customer_id", how="inner", validate="1:1").group_by("from_label", "to_label").len())
+                before = pl.scan_parquet(source).select(
+                    "customer_id", pl.col(dim).alias("from_label")
+                )
+                after = apply_filters(pl.scan_parquet(destination), filters).select(
+                    "customer_id", pl.col(dim).alias("to_label")
+                )
+                parts.append(
+                    before.join(after, on="customer_id", how="inner", validate="1:1")
+                    .group_by("from_label", "to_label")
+                    .len()
+                )
         if not parts:
             st.info("No shared customer partitions for this comparison.")
             return
-        flows = collect(pl.concat(parts).group_by("from_label", "to_label").agg(pl.col("len").sum()).with_columns((pl.col("len") / pl.col("len").sum().over("from_label")).alias("rate")).sort("len", descending=True))
+        flows = collect(
+            pl.concat(parts)
+            .group_by("from_label", "to_label")
+            .agg(pl.col("len").sum())
+            .with_columns((pl.col("len") / pl.col("len").sum().over("from_label")).alias("rate"))
+            .sort("len", descending=True)
+        )
         if flows.is_empty():
             st.info("No matched customers at both cutoffs.")
             return
         shown = flows.head(30).to_dicts()
         sources = sorted({r["from_label"] for r in shown})
         targets = sorted({r["to_label"] for r in shown})
-        fig = go.Figure(go.Sankey(node=dict(label=["From: " + s for s in sources] + ["To: " + t for t in targets], color=[color(s) for s in sources + targets], pad=15), link=dict(source=[sources.index(r["from_label"]) for r in shown], target=[len(sources) + targets.index(r["to_label"]) for r in shown], value=[r["len"] for r in shown])))
+        fig = go.Figure(
+            go.Sankey(
+                node=dict(
+                    label=["From: " + s for s in sources] + ["To: " + t for t in targets],
+                    color=[color(s) for s in sources + targets],
+                    pad=15,
+                ),
+                link=dict(
+                    source=[sources.index(r["from_label"]) for r in shown],
+                    target=[len(sources) + targets.index(r["to_label"]) for r in shown],
+                    value=[r["len"] for r in shown],
+                ),
+            )
+        )
         chart(fig, f"{dim}: {origin} to {chosen}", "transition_sankey")
         xs, ys, z = bounded_grid(flows.to_dicts(), "from_label", "to_label", "rate", limit=20)
-        fig = go.Figure(go.Heatmap(x=xs, y=ys, z=z, zmin=0, zmax=1, colorscale="Blues", colorbar=dict(tickformat=".0%"), hoverongaps=False))
-        chart(fig, "Origin-normalized transition proportions", "transition_matrix", "Destination label", "Origin label")
-        st.caption(f"Matched customers: {flows['len'].sum():,}. Sankey shows the 30 largest of {flows.height} flows; heatmap axes are capped at 20 labels. Rates use all matched, destination-filtered customers per origin, so displayed cells need not sum to 100%. Missing pairs are blank. New arrivals are excluded, not counted as churn.")
+        fig = go.Figure(
+            go.Heatmap(
+                x=xs,
+                y=ys,
+                z=z,
+                zmin=0,
+                zmax=1,
+                colorscale="Blues",
+                colorbar=dict(tickformat=".0%"),
+                hoverongaps=False,
+            )
+        )
+        chart(
+            fig,
+            "Origin-normalized transition proportions",
+            "transition_matrix",
+            "Destination label",
+            "Origin label",
+        )
+        st.caption(
+            f"Matched customers: {flows['len'].sum():,}. Sankey shows the 30 largest of {flows.height} flows; heatmap axes are capped at 20 labels. Rates use all matched, destination-filtered customers per origin, so displayed cells need not sum to 100%. Missing pairs are blank. New arrivals are excluded, not counted as churn."
+        )
         table(flows)
-        st.download_button("Export transition summary", export_csv(flows), "transitions.csv", "text/csv")
+        st.download_button(
+            "Export transition summary", export_csv(flows), "transitions.csv", "text/csv"
+        )
     elif view == "Quality":
-        inspection, quality = read_json(root.parent / "inspection.json"), read_json(root / "quality.json")
-        labels = ["invalid_rows", "invalid_dates", "unknown_department_rows", "unknown_category_rows"]
+        inspection, quality = (
+            read_json(root.parent / "inspection.json"),
+            read_json(root / "quality.json"),
+        )
+        labels = [
+            "invalid_rows",
+            "invalid_dates",
+            "unknown_department_rows",
+            "unknown_category_rows",
+        ]
         counts = pl.DataFrame({"issue": labels, "rows": [inspection.get(k, 0) for k in labels]})
         bars(counts, "issue", "rows", "Upload-wide quality flags", "quality_flags")
-        st.caption("Flags can overlap; these counts cover the upload, not the filtered customer population.")
+        st.caption(
+            "Flags can overlap; these counts cover the upload, not the filtered customer population."
+        )
         st.json(inspection)
         st.json(quality)
         table(pl.scan_parquet(root / "product_variation.parquet"))
@@ -260,34 +589,73 @@ def display_results(root, coverage):
             table(profile)
             ids = rows.filter(pl.col("customer_id") == customer).select("customer_id")
             paths = list((root / "events" / chosen).glob("*/baskets.parquet"))
-            timeline = collect(pl.scan_parquet(paths).join(ids, on="customer_id", how="inner", validate="m:1").group_by("date").agg(pl.col("spend").sum().alias("spend"), pl.len().alias("baskets")).sort("date").with_columns(pl.col("spend").cum_sum().alias("cumulative_spend")).tail(PAGE_ROWS))
+            timeline = collect(
+                pl.scan_parquet(paths)
+                .join(ids, on="customer_id", how="inner", validate="m:1")
+                .group_by("date")
+                .agg(pl.col("spend").sum().alias("spend"), pl.len().alias("baskets"))
+                .sort("date")
+                .with_columns(pl.col("spend").cum_sum().alias("cumulative_spend"))
+                .tail(PAGE_ROWS)
+            )
             if timeline.height:
                 for box, metric in zip(st.columns(2), ["spend", "cumulative_spend"]):
                     with box:
-                        chart(go.Figure(go.Scatter(x=timeline["date"].to_list(), y=timeline[metric].to_list(), mode="lines+markers")), metric, "customer_" + metric, "Purchase day", "Recorded amount")
-                st.caption("Latest 2,000 purchase days; cumulative values include all historical purchase days through this cutoff.")
+                        chart(
+                            go.Figure(
+                                go.Scatter(
+                                    x=timeline["date"].to_list(),
+                                    y=timeline[metric].to_list(),
+                                    mode="lines+markers",
+                                )
+                            ),
+                            metric,
+                            "customer_" + metric,
+                            "Purchase day",
+                            "Recorded amount",
+                        )
+                st.caption(
+                    "Latest 2,000 purchase days; cumulative values include all historical purchase days through this cutoff."
+                )
             else:
                 st.info("Customer not found in this filtered population.")
     else:
-        visual_manifest = dict(manifest, result_cutoff=chosen, population_filters=filters, chart_sample_limit=PAGE_ROWS)
+        visual_manifest = dict(
+            manifest, result_cutoff=chosen, population_filters=filters, chart_sample_limit=PAGE_ROWS
+        )
         st.json(visual_manifest)
         st.json(read_json(root / "thresholds.json"))
-        st.info("Descriptive rules, not calibrated prediction, causal effects, permanent churn, profit CLV or price elasticity. No seasonal adjustment or package-attribute inference.")
-        st.caption("Colors are deterministic labels, not ranks or confidence. Charts support zoom, hover, legend toggles and PNG export. Only the selected view computes; no shared customer-data cache is used. Files remain on this app server in the temporary session workspace; clearing is not secure erasure.")
-        st.download_button("Export analysis and population manifest", json.dumps(visual_manifest, indent=2), "analysis_manifest.json", "application/json")
+        st.info(
+            "Descriptive rules, not calibrated prediction, causal effects, permanent churn, profit CLV or price elasticity. No seasonal adjustment or package-attribute inference."
+        )
+        st.caption(
+            "Colors are deterministic labels, not ranks or confidence. Charts support zoom, hover, legend toggles and PNG export. Only the selected view computes; no shared customer-data cache is used. Files remain on this app server in the temporary session workspace; clearing is not secure erasure."
+        )
+        st.download_button(
+            "Export analysis and population manifest",
+            json.dumps(visual_manifest, indent=2),
+            "analysis_manifest.json",
+            "application/json",
+        )
 
 
 def main():
     st.set_page_config(page_title="Retail behavioral science", page_icon="📊", layout="wide")
     st.title("Retail behavioral science dashboard")
-    st.caption("Polars analytics · bounded interactive charts · explicit eligibility and uncertainty")
-    st.sidebar.warning("Uploads are processed on this server. Use a trusted, access-controlled deployment.")
+    st.caption(
+        "Polars analytics · bounded interactive charts · explicit eligibility and uncertainty"
+    )
+    st.sidebar.warning(
+        "Uploads are processed on this server. Use a trusted, access-controlled deployment."
+    )
     if st.sidebar.button("Clear data and results"):
         reset()
         st.session_state["upload_nonce"] = st.session_state.get("upload_nonce", 0) + 1
         st.rerun()
     nonce = st.session_state.get("upload_nonce", 0)
-    uploaded = st.sidebar.file_uploader("Upload Parquet or UTF-8 CSV", type=["parquet", "csv"], key=f"upload_{nonce}")
+    uploaded = st.sidebar.file_uploader(
+        "Upload Parquet or UTF-8 CSV", type=["parquet", "csv"], key=f"upload_{nonce}"
+    )
     if uploaded is None:
         reset()
         st.info("Required columns: " + ", ".join(COLS))
@@ -300,19 +668,40 @@ def main():
         reset()
         st.session_state["workspace"] = tempfile.TemporaryDirectory(prefix="retail_dashboard_")
         st.session_state["fingerprint"] = digest
-        source = Path(st.session_state["workspace"].name) / ("input" + Path(uploaded.name).suffix.lower())
+        source = Path(st.session_state["workspace"].name) / (
+            "input" + Path(uploaded.name).suffix.lower()
+        )
         source.write_bytes(uploaded.getbuffer())
     root = Path(st.session_state["workspace"].name)
     source = next(root.glob("input.*"))
     kind = "parquet" if source.suffix == ".parquet" else "csv"
-    mode = st.sidebar.selectbox("Meaning of price", ["Select explicitly", "Unit selling price", "Line total"])
+    mode = st.sidebar.selectbox(
+        "Meaning of price", ["Select explicitly", "Unit selling price", "Line total"]
+    )
     if mode == "Select explicitly":
         st.info("Confirm what price represents before analysis.")
         return
     fmt = st.sidebar.text_input("Date format (blank = ISO YYYY-MM-DD)")
     decimal = st.sidebar.checkbox("Decimal comma; no thousands separators")
-    separator = st.sidebar.selectbox("CSV delimiter", [",", ";", "\t", "|"]) if kind == "csv" else ","
-    base = dict(workspace=str(root), source=str(source), kind=kind, separator=separator, date_format=fmt or None, decimal_comma=decimal, price_mode="unit" if mode == "Unit selling price" else "line_total", sha256=digest)
+    separator = (
+        st.sidebar.selectbox("CSV delimiter", [",", ";", "\t", "|"]) if kind == "csv" else ","
+    )
+    timezone = st.sidebar.text_input(
+        "Timezone (for timezone-aware Datetime)",
+        value="",
+        help="e.g., 'UTC', 'US/Eastern'. Leave empty for naive dates.",
+    )
+    base = dict(
+        workspace=str(root),
+        source=str(source),
+        kind=kind,
+        separator=separator,
+        date_format=fmt or None,
+        decimal_comma=decimal,
+        price_mode="unit" if mode == "Unit selling price" else "line_total",
+        sha256=digest,
+        timezone=timezone or None,
+    )
     preview_key = json.dumps(base, sort_keys=True)
     if st.session_state.get("preview_key") != preview_key:
         st.session_state.pop("preview_schema", None)
@@ -335,7 +724,9 @@ def main():
         st.sidebar.subheader("Column mapping")
         for required in COLS:
             default = options.index(required) if required in options else 0
-            selected = st.sidebar.selectbox(required, options, index=default, key=f"map_{root.name}_{required}")
+            selected = st.sidebar.selectbox(
+                required, options, index=default, key=f"map_{root.name}_{required}"
+            )
             if selected:
                 mapping[required] = selected
         if len(mapping) != len(COLS) or len(set(mapping.values())) != len(COLS):
@@ -348,7 +739,9 @@ def main():
     if st.session_state.get("inspection_key") != inspection_key:
         drop_result()
         if not st.sidebar.button("Validate upload"):
-            st.info("Validate the upload to continue. Preview and mapping are optional for canonical column names.")
+            st.info(
+                "Validate the upload to continue. Preview and mapping are optional for canonical column names."
+            )
             return
         try:
             with st.spinner("Validating upload in a separate worker..."):
@@ -362,21 +755,42 @@ def main():
                 st.json(read_json(root / "inspection.json"))
             return
     metadata = read_json(root / "inspection.json")
-    first, last = date.fromisoformat(metadata["minimum_date"]), date.fromisoformat(metadata["maximum_date"])
-    st.sidebar.caption(f'{metadata["rows"]:,} rows · {metadata["valid_customers"]:,} customers · {first} to {last}')
+    first, last = (
+        date.fromisoformat(metadata["minimum_date"]),
+        date.fromisoformat(metadata["maximum_date"]),
+    )
+    st.sidebar.caption(
+        f"{metadata['rows']:,} rows · {metadata['valid_customers']:,} customers · {first} to {last}"
+    )
     exclude = st.sidebar.checkbox("Exclude invalid records after review")
     if metadata["invalid_rows"] and not exclude:
         st.warning("Review invalid rows and explicitly select exclusion to continue.")
         st.json(metadata)
         return
     coverage = st.sidebar.checkbox("I confirm complete purchase capture through the date below")
-    end = st.sidebar.date_input("Confirmed coverage end", value=last, min_value=last, max_value=max(last, date.today())) if coverage else last
-    chosen = st.sidebar.date_input("Latest analysis cutoff", value=last, min_value=first, max_value=end)
+    end = (
+        st.sidebar.date_input(
+            "Confirmed coverage end", value=last, min_value=last, max_value=max(last, date.today())
+        )
+        if coverage
+        else last
+    )
+    chosen = st.sidebar.date_input(
+        "Latest analysis cutoff", value=last, min_value=first, max_value=end
+    )
     count = st.sidebar.slider("Historical cutoffs", 1, 12, 3)
     partitions = st.sidebar.slider("Customer partitions", 1, 32, 8)
     dates = cutoffs(chosen, first, count)
     st.sidebar.caption("Cutoffs: " + ", ".join(map(str, dates)))
-    job = dict(base, action="analyze", snapshots=[str(x) for x in dates], buckets=partitions, exclude_invalid=exclude, coverage_confirmed=coverage, observed_through=str(end))
+    job = dict(
+        base,
+        action="analyze",
+        snapshots=[str(x) for x in dates],
+        buckets=partitions,
+        exclude_invalid=exclude,
+        coverage_confirmed=coverage,
+        observed_through=str(end),
+    )
     result_key = json.dumps(job, sort_keys=True)
     if st.session_state.get("result_key") != result_key:
         drop_result()
@@ -399,7 +813,9 @@ def main():
         try:
             display_results(Path(st.session_state["result"]), coverage)
         except Exception as exc:
-            st.error("A view could not render. Check output schemas, dependencies and server resources.")
+            st.error(
+                "A view could not render. Check output schemas, dependencies and server resources."
+            )
             st.caption(type(exc).__name__)
     else:
         st.json(metadata)

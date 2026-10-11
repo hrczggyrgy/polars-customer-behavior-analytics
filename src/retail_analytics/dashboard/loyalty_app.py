@@ -1,6 +1,7 @@
 """Launch with streamlit run loyalty_app.py; app.py stays unchanged."""
-import streamlit as st
+
 import app
+import streamlit as st
 from patronage_dashboard import render
 
 if not hasattr(app, "_patronage_original_display"):
@@ -9,7 +10,12 @@ original_display = app._patronage_original_display
 
 
 def display_results(root, coverage):
-    workspace = st.radio("Dashboard workspace", ["Visual analytics", "Observed patronage"], horizontal=True, key="dashboard_workspace")
+    workspace = st.radio(
+        "Dashboard workspace",
+        ["Visual analytics", "Observed patronage"],
+        horizontal=True,
+        key="dashboard_workspace",
+    )
     if workspace == "Observed patronage":
         render(root, coverage)
     else:

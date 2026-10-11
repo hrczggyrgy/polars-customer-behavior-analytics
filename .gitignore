@@ -44,6 +44,7 @@ dmypy.json
 data/*.parquet
 results/
 *.parquet
+tests/*export*.csv
 
 # OS
 .DS_Store
@@ -58,6 +59,3 @@ Thumbs.db
 # Build artifacts
 *.egg
 *.whl
-
-# Type stubs
-*.pyi

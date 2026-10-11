@@ -6,10 +6,12 @@ A customer behavior analytics pipeline built with [Polars](https://pola.rs) for 
 
 | Document | Description |
 |--------|-------------|
-| [METRICS.md](METRICS.md) | Complete metric specifications with formulas, denominators, windows, and null semantics |
-| [DATA_CONTRACT.md](DATA_CONTRACT.md) | Input/output schemas, validation rules, and CLI reference |
+| [METRICS.md](../METRICS.md) | Complete metric specifications with formulas, denominators, windows, and null semantics |
+| [DATA_CONTRACT.md](../DATA_CONTRACT.md) | Input/output schemas, validation rules, and CLI reference |
 | [workflow.md](workflow.md) | Pipeline architecture diagram and data flow |
 | [DASHBOARD.md](DASHBOARD.md) | Streamlit dashboard usage and limitations |
+| [VISUAL_INSIGHTS.md](VISUAL_INSIGHTS.md) | Visual analytics module documentation |
+| [PATRONAGE.md](PATRONAGE.md) | Observed patronage layer documentation |
 
 ## Data Workflow
 
@@ -55,7 +57,7 @@ flowchart TD
 
     subgraph LABEL["LABELING & CLASSIFICATION"]
         THRESH["Quantile Thresholds\n(value/basket/gap low/high)\nComputed at first snapshot"]
-        STYLE["Behavioral Style Tags (precedence order)\n- routine_repeat (gap_cv≤.75, established≥.7)\n- focused_repeat (dominant≥.7, established≥.7)\n- broad_repeat (breadth≥3, established≥.7)\n- exploration_heavy (new_share≥.4)\n- large_basket_episodic (quantile-based)\n- small_basket_frequent (quantile-based)"]
+        STYLE["Behavioral Style Tags (all matching tags collected in order)\n- routine_repeat (gap_cv≤.75, established≥.7)\n- focused_repeat (dominant≥.7, established≥.7)\n- broad_repeat (breadth≥3, established≥.7)\n- exploration_heavy (new_share≥.4)\n- large_basket_episodic (quantile-based)\n- small_basket_frequent (quantile-based)"]
         TRAJ["Trajectory Tags (multi-label)\n- slowing / smaller_baskets\n- narrowing / broad_decline\n- expanding / overdue / reactivated / stable"]
         LIFECYCLE["Lifecycle (mutually exclusive)\n- first_observed / one_shopping_day\n- early_repeat / established_repeat"]
         EVIDENCE["Evidence Level (mutually exclusive)\n- stronger / limited / insufficient"]
@@ -120,10 +122,10 @@ flowchart TD
 
 ```bash
 # Install dependencies
-pip install -r requirements.txt
+pip install -e ".[dev]"
 
 # Run pipeline
-python retail_polars_workflow.py \
+retail-analytics \
   --input customer_transactions.parquet \
   --output results \
   --price-mode unit \
@@ -139,7 +141,7 @@ python retail_polars_workflow.py \
 | `results/quality.json` | Data quality audit with rejection breakdown |
 | `results/rejected.parquet` | Rejected rows with `rejection_reason` column |
 | `results/validated.parquet` | Cleaned transactions |
-| `results/snapshots/{date}/b{N}.parquet` | Customer features (79 cols) with labels |
+| `results/snapshots/{date}/b{N}.parquet` | Customer features (78 cols) with labels |
 | `results/segment_profiles.parquet` | Segment metrics per cutoff |
 | `results/segment_transitions.parquet` | Transition rates between segments |
 | `results/cohort_profiles.parquet` | Cohort analysis by first purchase month (includes observation_months) |
@@ -152,14 +154,14 @@ python retail_polars_workflow.py \
 
 ```bash
 # Run all tests (discovers all test_*.py modules)
-python -m unittest discover -v
+pytest -q
 
 # Run individual test modules
-python -m unittest test_retail_polars_workflow -v
-python -m unittest test_dashboard -v
-python -m unittest test_metrics_contract -v
-python -m unittest test_patronage -v
-python -m unittest test_visual_insights -v
+pytest tests/test_retail_polars_workflow.py -v
+pytest tests/test_dashboard.py -v
+pytest tests/test_metrics_contract.py -v
+pytest tests/test_patronage.py -v
+pytest tests/test_visual_insights.py -v
 ```
 
 ## Key Methodological Notes
@@ -175,9 +177,9 @@ python -m unittest test_visual_insights -v
 ## Requirements
 
 ```
-polars
-streamlit
-plotly
+polars>=1.31
+streamlit>=1.28.0
+plotly>=5.17.0
 ```
 
-Install with `pip install -r requirements.txt`.
+Install with `pip install -e ".[dev]"`.

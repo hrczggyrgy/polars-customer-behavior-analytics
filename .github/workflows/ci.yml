@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install package with dev dependencies
+        run: pip install -e ".[dev]"
+      - name: Run ruff check
+        run: ruff check src tests
+      - name: Run ruff format check
+        run: ruff format --check src tests
+      - name: Run tests
+        run: pytest -q -rs --strict-markers
+      - name: Fail if any tests skipped
+        run: |
+          python -c "
+import subprocess
+result = subprocess.run(['pytest', '-q', '--collect-only'], capture_output=True, text=True)
+print(result.stdout)
+# Check for skipped tests by running with -rs and parsing output
+result2 = subprocess.run(['pytest', '-q', '-rs'], capture_output=True, text=True)
+print(result2.stdout)
+if 'skipped' in result2.stdout.lower() and '1 skipped' in result2.stdout.lower() or 'skipped' in result2.stdout.lower() and 'skipped' in result2.stdout.split()[-2]:
+    # More precise check
+    import re
+    match = re.search(r'(\d+) skipped', result2.stdout)
+    if match and int(match.group(1)) > 0:
+        print(f'FAIL: {match.group(1)} test(s) skipped')
+        exit(1)
+"
