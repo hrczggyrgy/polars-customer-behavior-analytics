@@ -11,8 +11,8 @@ from pathlib import Path
 import streamlit as st
 import polars as pl
 import plotly.graph_objects as go
-from dashboard_backend import cutoffs, wilson
-from retail_polars_workflow import COLS
+from retail_analytics.dashboard.dashboard_backend import cutoffs, wilson
+from retail_analytics.core.retail_polars_workflow import COLS
 
 MAX_BYTES = 100 * 1024 * 1024
 PAGE_ROWS = 2000

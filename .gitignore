@@ -1,8 +1,63 @@
+# Byte-compiled / optimized / DLL files
 __pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
 .venv/
+venv/
+env/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+pip-wheel-metadata/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
 .pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Local configuration
+.env
+.env.local
+*.local
+
+# Data files (large, regenerated)
+data/*.parquet
+results/
 *.parquet
-*.csv
-*.zip
-results*/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Streamlit
 .streamlit/secrets.toml
+
+# Build artifacts
+*.egg
+*.whl
+
+# Type stubs
+*.pyi

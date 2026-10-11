@@ -8,7 +8,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import polars as pl
-from retail_polars_workflow import run, prepare, snapshot, label, ratio
+from retail_analytics.core.retail_polars_workflow import run, prepare, snapshot, label, ratio
 
 
 class MetricContractTests(unittest.TestCase):

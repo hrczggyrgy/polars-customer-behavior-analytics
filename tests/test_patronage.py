@@ -5,7 +5,7 @@ from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from dataclasses import replace
-from patronage import Rules, month_bounds, classify, label_frame, build
+from retail_analytics.patronage.patronage import Rules, month_bounds, classify, label_frame, build
 
 
 def profile(**changes):
@@ -78,8 +78,8 @@ class IntegrationTests(unittest.TestCase):
 
     def test_build_reconciliation_and_cutoff_integrity(self):
         import polars as pl
-        from retail_polars_workflow import run
-        from test_retail_polars_workflow import fixture
+        from retail_analytics.core.retail_polars_workflow import run
+        from tests.test_retail_polars_workflow import fixture
         import json
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

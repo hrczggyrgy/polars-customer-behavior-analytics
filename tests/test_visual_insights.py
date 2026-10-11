@@ -1,11 +1,11 @@
 import importlib.util
 import unittest
 from datetime import date
-from visual_insights_core import share, top_count, month_windows, wilson
+from retail_analytics.visualization.visual_insights_core import share, top_count, month_windows, wilson
 HAS_POLARS=importlib.util.find_spec("polars") is not None
 if HAS_POLARS:
     import polars as pl
-    from visual_insights_core import concentration, cohort_summary, transition_summary
+    from retail_analytics.visualization.visual_insights_core import concentration, cohort_summary, transition_summary
 
 class Definitions(unittest.TestCase):
     def test_definitions(self):

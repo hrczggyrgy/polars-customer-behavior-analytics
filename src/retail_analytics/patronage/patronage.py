@@ -97,7 +97,7 @@ def destination(root, rules, capture_confirmed):
 
 def build(root, rules=Rules(), capture_confirmed=False):
     import polars as pl
-    from retail_polars_workflow import sink
+    from retail_analytics.core.retail_polars_workflow import sink
     root = Path(root)
     source_run = json.loads((root / "run.json").read_text())
     capture_confirmed = bool(capture_confirmed and source_run.get("coverage_confirmed"))

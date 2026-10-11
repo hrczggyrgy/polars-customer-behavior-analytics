@@ -6,7 +6,7 @@ import shutil
 from datetime import date, timedelta
 from pathlib import Path
 import polars as pl
-from retail_polars_workflow import COLS, prepare, snapshot, label, sink
+from retail_analytics.core.retail_polars_workflow import COLS, prepare, snapshot, label, sink
 
 MAX_ROWS = 2_000_000
 MAX_CUTOFFS = 12

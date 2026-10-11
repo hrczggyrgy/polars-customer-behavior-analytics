@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import polars as pl
 from polars.testing import assert_frame_equal
-from retail_polars_workflow import run, prepare
+from retail_analytics.core.retail_polars_workflow import run, prepare
 
 
 def fixture():

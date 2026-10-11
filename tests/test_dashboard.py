@@ -6,8 +6,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 import polars as pl
-from dashboard_backend import inspect, analyze, cutoffs, wilson
-from test_retail_polars_workflow import fixture
+from retail_analytics.dashboard.dashboard_backend import inspect, analyze, cutoffs, wilson
+from tests.test_retail_polars_workflow import fixture
 
 
 class DashboardTests(unittest.TestCase):
@@ -53,7 +53,7 @@ class DashboardTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 inspect(job)
             fixture().write_parquet(source)
-            with patch("dashboard_backend.MAX_ROWS", 2):
+            with patch("retail_analytics.dashboard.dashboard_backend.MAX_ROWS", 2):
                 with self.assertRaises(ValueError):
                     inspect(job)
 
@@ -126,7 +126,7 @@ class DashboardTests(unittest.TestCase):
             source = root / "input.csv"
             source.write_text(rows)
             job = dict(workspace=str(root), source=str(source), kind="csv", price_mode="unit", separator=",")
-            from dashboard_backend import preview
+            from retail_analytics.dashboard.dashboard_backend import preview
             preview(job)
             preview_data = json.loads((root / "preview.json").read_text())
             # Should have normalized column names
