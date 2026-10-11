@@ -42,6 +42,25 @@ from retail_analytics.visualization.visual_insights_core import (
     value_tier_transition_waterfall,
 )
 
+
+def safe_list(series):
+    """Safely convert a Polars Series to a Python list, handling nulls and type conversion."""
+    try:
+        # Convert to Python native types, replacing nulls with None
+        return [None if v is None or (isinstance(v, float) and math.isnan(v)) else v for v in series.to_list()]
+    except Exception:
+        return []
+
+
+def safe_to_python(val):
+    """Convert a single value to Python native type."""
+    if val is None or (isinstance(val, float) and math.isnan(val)):
+        return None
+    if hasattr(val, 'item'):  # numpy/polars scalar
+        return val.item()
+    return val
+
+
 MAX_BYTES = 100 * 1024 * 1024
 PAGE_ROWS = 2000
 TIMEOUT = 600
@@ -193,21 +212,26 @@ def export_csv(data):
 
 
 def chart(figure, title, key, x=None, y=None):
-    figure.update_layout(
-        title=title,
-        template="plotly_white",
-        height=430,
-        margin=dict(l=20, r=20, t=65, b=50),
-        xaxis_title=x,
-        yaxis_title=y,
-        uirevision=key,
-    )
-    st.plotly_chart(
-        figure,
-        use_container_width=True,
-        key=key,
-        config={"displaylogo": False, "toImageButtonOptions": {"format": "png", "scale": 2}},
-    )
+    """Render a Plotly chart with error handling."""
+    try:
+        figure.update_layout(
+            title=title,
+            template="plotly_white",
+            height=430,
+            margin=dict(l=20, r=20, t=65, b=50),
+            xaxis_title=x,
+            yaxis_title=y,
+            uirevision=key,
+        )
+        st.plotly_chart(
+            figure,
+            use_container_width=True,
+            key=key,
+            config={"displaylogo": False, "toImageButtonOptions": {"format": "png", "scale": 2}},
+        )
+    except Exception as e:
+        st.error(f"Chart rendering failed for '{title}': {type(e).__name__}: {e}")
+        st.caption("This may be due to empty data, invalid data types, or missing columns. Check the data and filters.")
 
 
 def bars(data, group, metric, title, key, color_map=None):
@@ -764,79 +788,83 @@ def display_results(root, coverage):
         if not validated_path.exists():
             st.info("No validated data available for this analysis.")
         else:
-            validated = pl.scan_parquet(validated_path)
-            part = category_participation_comparison(validated, rows)
+            try:
+                validated = pl.scan_parquet(validated_path)
+                part = category_participation_comparison(validated, rows)
 
-            if part.is_empty():
-                st.info("No category participation data for this population.")
-            else:
-                # Top categories by recent participation
-                top_n = st.slider("Top N categories to show", 5, 50, 20)
-                display = part.head(top_n)
+                if part.is_empty():
+                    st.info("No category participation data for this population. This may be due to filters removing all customers, or no transactions in the comparison windows.")
+                else:
+                    # Top categories by recent participation
+                    top_n = st.slider("Top N categories to show", 5, 50, 20)
+                    display = part.head(top_n)
 
-                # Paired horizontal bar chart
-                fig = go.Figure()
-                fig.add_trace(go.Bar(
-                    y=display["label"].to_list(),
-                    x=display["recent_participation"].to_list(),
-                    name="Recent 90d",
-                    orientation="h",
-                    marker_color="#0072B2",
-                    customdata=list(zip(
-                        display["recent_buyers"].to_list(),
-                        display["recent_spend"].to_list(),
-                        display["previous_buyers"].to_list(),
-                        display["previous_spend"].to_list(),
-                        display["participation_change_pp"].to_list(),
-                    )),
-                    hovertemplate=(
-                        "%{y}<br>"
-                        "Recent participation: %{x:.1%}<br>"
-                        "Recent buyers: %{customdata[0]:,}<br>"
-                        "Recent spend: %{customdata[1]:,.2f}<br>"
-                        "Previous buyers: %{customdata[2]:,}<br>"
-                        "Previous spend: %{customdata[3]:,.2f}<br>"
-                        "Change (pp): %{customdata[4]:.2f}<extra></extra>"
-                    ),
-                ))
-                fig.add_trace(go.Bar(
-                    y=display["label"].to_list(),
-                    x=display["previous_participation"].to_list(),
-                    name="Previous 90d",
-                    orientation="h",
-                    marker_color="#E69F00",
-                    opacity=0.6,
-                    customdata=list(zip(
-                        display["recent_buyers"].to_list(),
-                        display["recent_spend"].to_list(),
-                        display["previous_buyers"].to_list(),
-                        display["previous_spend"].to_list(),
-                        display["participation_change_pp"].to_list(),
-                    )),
-                    hovertemplate=(
-                        "%{y}<br>"
-                        "Previous participation: %{x:.1%}<br>"
-                        "Recent buyers: %{customdata[0]:,}<br>"
-                        "Recent spend: %{customdata[1]:,.2f}<br>"
-                        "Previous buyers: %{customdata[2]:,}<br>"
-                        "Previous spend: %{customdata[3]:,.2f}<br>"
-                        "Change (pp): %{customdata[4]:.2f}<extra></extra>"
-                    ),
-                ))
-                fig.update_layout(barmode="group")
-                chart(fig, f"Category participation (top {top_n})", "cat_participation_bars",
-                      "Participation (share of filtered population)", "Category")
+                    # Paired horizontal bar chart - use safe_list for Plotly compatibility
+                    fig = go.Figure()
+                    fig.add_trace(go.Bar(
+                        y=safe_list(display["label"]),
+                        x=safe_list(display["recent_participation"]),
+                        name="Recent 90d",
+                        orientation="h",
+                        marker_color="#0072B2",
+                        customdata=list(zip(
+                            safe_list(display["recent_buyers"]),
+                            safe_list(display["recent_spend"]),
+                            safe_list(display["previous_buyers"]),
+                            safe_list(display["previous_spend"]),
+                            safe_list(display["participation_change_pp"]),
+                        )),
+                        hovertemplate=(
+                            "%{y}<br>"
+                            "Recent participation: %{x:.1%}<br>"
+                            "Recent buyers: %{customdata[0]:,}<br>"
+                            "Recent spend: %{customdata[1]:,.2f}<br>"
+                            "Previous buyers: %{customdata[2]:,}<br>"
+                            "Previous spend: %{customdata[3]:,.2f}<br>"
+                            "Change (pp): %{customdata[4]:.2f}<extra></extra>"
+                        ),
+                    ))
+                    fig.add_trace(go.Bar(
+                        y=safe_list(display["label"]),
+                        x=safe_list(display["previous_participation"]),
+                        name="Previous 90d",
+                        orientation="h",
+                        marker_color="#E69F00",
+                        opacity=0.6,
+                        customdata=list(zip(
+                            safe_list(display["recent_buyers"]),
+                            safe_list(display["recent_spend"]),
+                            safe_list(display["previous_buyers"]),
+                            safe_list(display["previous_spend"]),
+                            safe_list(display["participation_change_pp"]),
+                        )),
+                        hovertemplate=(
+                            "%{y}<br>"
+                            "Previous participation: %{x:.1%}<br>"
+                            "Recent buyers: %{customdata[0]:,}<br>"
+                            "Recent spend: %{customdata[1]:,.2f}<br>"
+                            "Previous buyers: %{customdata[2]:,}<br>"
+                            "Previous spend: %{customdata[3]:,.2f}<br>"
+                            "Change (pp): %{customdata[4]:.2f}<extra></extra>"
+                        ),
+                    ))
+                    fig.update_layout(barmode="group")
+                    chart(fig, f"Category participation (top {top_n})", "cat_participation_bars",
+                          "Participation (share of filtered population)", "Category")
 
-                # Table with changes
-                table(display.select("label", "population_n", "recent_participation", "previous_participation",
-                                     "participation_change_pp", "buyer_change", "recent_buyers", "previous_buyers",
-                                     "recent_spend", "previous_spend"))
+                    # Table with changes
+                    table(display.select("label", "population_n", "recent_participation", "previous_participation",
+                                          "participation_change_pp", "buyer_change", "recent_buyers", "previous_buyers",
+                                          "recent_spend", "previous_spend"))
 
-                st.caption(
-                    f"Population (denominator): {part['population_n'][0] if part.height > 0 else 0:,} customers (fixed for both periods). "
-                    f"Participation is share of this population. Change in percentage points = recent - previous. "
-                    f"Categories with zero buyers in a period show 0% participation, not missing."
-                )
+                    st.caption(
+                        f"Population (denominator): {part['population_n'][0] if part.height > 0 else 0:,} customers (fixed for both periods). "
+                        f"Participation is share of this population. Change in percentage points = recent - previous. "
+                        f"Categories with zero buyers in a period show 0% participation, not missing."
+                    )
+            except Exception as e:
+                st.error(f"Category participation analysis failed: {type(e).__name__}: {e}")
+                st.caption("This may be due to missing columns in validated data, or no customers matching the filters.")
 
     elif view == "Trial to Repeat":
         st.subheader("Product discovery to repeat: trial conversion by product")
@@ -1555,133 +1583,140 @@ def display_results(root, coverage):
         )
 
         # Calendar activity heatmap (existing)
-        cohort = collect(
-            historical.with_columns(pl.col("first_purchase").dt.truncate("1mo").alias("cohort"))
-            .group_by("cohort", "snapshot")
-            .agg(
-                pl.len().alias("customers"), (pl.col("purchases_30d") > 0).mean().alias("activity")
+        try:
+            cohort = collect(
+                historical.with_columns(pl.col("first_purchase").dt.truncate("1mo").alias("cohort"))
+                .group_by("cohort", "snapshot")
+                .agg(
+                    pl.len().alias("customers"), (pl.col("purchases_30d") > 0).mean().alias("activity")
+                )
             )
-        )
-        xs, ys, z = bounded_grid(cohort.to_dicts(), "cohort", "snapshot", "activity")
-        _, _, counts = bounded_grid(cohort.to_dicts(), "cohort", "snapshot", "customers")
-        fig = go.Figure(
-            go.Heatmap(
-                x=xs,
-                y=ys,
-                z=z,
-                customdata=counts,
-                zmin=0,
-                zmax=1,
-                colorscale="Blues",
-                colorbar=dict(tickformat=".0%"),
-                hovertemplate="Cohort %{y}<br>Cutoff %{x}<br>30-day activity %{z:.1%}<br>Customers %{customdata}<extra></extra>",
-                hoverongaps=False,
+            xs, ys, z = bounded_grid(cohort.to_dicts(), "cohort", "snapshot", "activity")
+            _, _, counts = bounded_grid(cohort.to_dicts(), "cohort", "snapshot", "customers")
+            fig = go.Figure(
+                go.Heatmap(
+                    x=xs,
+                    y=ys,
+                    z=z,
+                    customdata=counts,
+                    zmin=0,
+                    zmax=1,
+                    colorscale="Blues",
+                    colorbar=dict(tickformat=".0%"),
+                    hovertemplate="Cohort %{y}<br>Cutoff %{x}<br>30-day activity %{z:.1%}<br>Customers %{customdata}<extra></extra>",
+                    hoverongaps=False,
+                )
             )
-        )
-        chart(
-            fig,
-            "First-observed cohorts: rolling 30-day activity",
-            "cohort_heatmap",
-            "Calendar cutoff",
-            "First-observed month",
-        )
-        st.caption(
-            "Latest 24 cohorts/cutoffs only. Blank cells are absent observations, not zero activity. This is calendar activity, not age-aligned retention or verified acquisition cohorts; exposure and filtered membership differ."
-        )
-        table(cohort.sort("cohort", "snapshot"))
+            chart(
+                fig,
+                "First-observed cohorts: rolling 30-day activity",
+                "cohort_heatmap",
+                "Calendar cutoff",
+                "First-observed month",
+            )
+            st.caption(
+                "Latest 24 cohorts/cutoffs only. Blank cells are absent observations, not zero activity. This is calendar activity, not age-aligned retention or verified acquisition cohorts; exposure and filtered membership differ."
+            )
+            table(cohort.sort("cohort", "snapshot"))
+        except Exception as e:
+            st.error(f"Cohort heatmap failed: {type(e).__name__}: {e}")
 
         # Age-aligned repeat purchase chart using cohort_summary (Wilson intervals)
         st.subheader("Age-aligned repeat purchase (cohort_summary)")
-        cutoff_date = date.fromisoformat(chosen)
-        first_date = collect(historical.select(pl.col("first_purchase").min())).item()
-        if first_date is not None:
-            # Get baskets for the chosen cutoff
-            baskets_cutoff = pl.scan_parquet(
-                [str(p) for p in (root / "events" / chosen).glob("*/baskets.parquet")]
-            )
-            # Filter to chosen cutoff population
-            ids = rows.select("customer_id", "first_purchase").unique()
-            cohort_data = cohort_summary(
-                baskets_cutoff, ids.lazy(), cutoff_date, coverage, minimum=20
-            )
-            if not cohort_data.is_empty():
-                # Show for 30-day horizon
-                horizon_data = cohort_data.filter(pl.col("horizon") == 30)
-                if not horizon_data.is_empty():
-                    fig = go.Figure()
-                    for status in ["eligible", "capture_unconfirmed", "insufficient_followup_or_n"]:
-                        subset = horizon_data.filter(pl.col("status") == status)
-                        if not subset.is_empty():
-                            label = {
-                                "eligible": "Eligible (Wilson 95%)",
-                                "capture_unconfirmed": "Capture unconfirmed",
-                                "insufficient_followup_or_n": "Insufficient follow-up or N",
-                            }.get(status, status)
-                            color = {
-                                "eligible": "#0072B2",
-                                "capture_unconfirmed": "#CC79A7",
-                                "insufficient_followup_or_n": "#D55E00",
-                            }.get(status, "#64748b")
-                            fig.add_trace(
-                                go.Scatter(
-                                    x=subset["cohort"].dt.strftime("%Y-%m").to_list(),
-                                    y=subset["rate"].to_list()
-                                    if status == "eligible"
-                                    else [None] * subset.height,
-                                    mode="markers+lines" if status == "eligible" else "markers",
-                                    name=label,
-                                    marker=dict(size=10, color=color),
-                                    error_y=dict(
-                                        type="data",
-                                        symmetric=False,
-                                        array=(subset["high"] - subset["rate"]).to_list()
+        try:
+            cutoff_date = date.fromisoformat(chosen)
+            first_date = collect(historical.select(pl.col("first_purchase").min())).item()
+            if first_date is not None:
+                # Get baskets for the chosen cutoff
+                baskets_cutoff = pl.scan_parquet(
+                    [str(p) for p in (root / "events" / chosen).glob("*/baskets.parquet")]
+                )
+                # Filter to chosen cutoff population
+                ids = rows.select("customer_id", "first_purchase").unique()
+                cohort_data = cohort_summary(
+                    baskets_cutoff, ids.lazy(), cutoff_date, coverage, minimum=20
+                )
+                if not cohort_data.is_empty():
+                    # Show for 30-day horizon
+                    horizon_data = cohort_data.filter(pl.col("horizon") == 30)
+                    if not horizon_data.is_empty():
+                        fig = go.Figure()
+                        for status in ["eligible", "capture_unconfirmed", "insufficient_followup_or_n"]:
+                            subset = horizon_data.filter(pl.col("status") == status)
+                            if not subset.is_empty():
+                                label = {
+                                    "eligible": "Eligible (Wilson 95%)",
+                                    "capture_unconfirmed": "Capture unconfirmed",
+                                    "insufficient_followup_or_n": "Insufficient follow-up or N",
+                                }.get(status, status)
+                                color = {
+                                    "eligible": "#0072B2",
+                                    "capture_unconfirmed": "#CC79A7",
+                                    "insufficient_followup_or_n": "#D55E00",
+                                }.get(status, "#64748b")
+                                fig.add_trace(
+                                    go.Scatter(
+                                        x=safe_list(subset["cohort"].dt.strftime("%Y-%m")),
+                                        y=safe_list(subset["rate"])
                                         if status == "eligible"
-                                        else None,
-                                        arrayminus=(subset["rate"] - subset["low"]).to_list()
-                                        if status == "eligible"
-                                        else None,
-                                        visible=True,
-                                    )
-                                    if status == "eligible"
-                                    else None,
-                                    hovertemplate="Cohort: %{x}<br>Repeat rate: %{y:.1%}<br>Eligible: %{customdata[0]}<br>Repeats: %{customdata[1]}<extra></extra>",
-                                    customdata=list(
-                                        zip(
-                                            subset["eligible_n"].to_list()
-                                            if "eligible_n" in subset.columns
-                                            else [None] * subset.height,
-                                            subset["repeat_n"].to_list()
-                                            if "repeat_n" in subset.columns
-                                            else [None] * subset.height,
+                                        else [None] * subset.height,
+                                        mode="markers+lines" if status == "eligible" else "markers",
+                                        name=label,
+                                        marker=dict(size=10, color=color),
+                                        error_y=dict(
+                                            type="data",
+                                            symmetric=False,
+                                            array=safe_list(subset["high"] - subset["rate"])
+                                            if status == "eligible"
+                                            else None,
+                                            arrayminus=safe_list(subset["rate"] - subset["low"])
+                                            if status == "eligible"
+                                            else None,
+                                            visible=True,
                                         )
+                                        if status == "eligible"
+                                        else None,
+                                        hovertemplate="Cohort: %{x}<br>Repeat rate: %{y:.1%}<br>Eligible: %{customdata[0]}<br>Repeats: %{customdata[1]}<extra></extra>",
+                                        customdata=list(
+                                            zip(
+                                                safe_list(subset["eligible_n"])
+                                                if "eligible_n" in subset.columns
+                                                else [None] * subset.height,
+                                                safe_list(subset["repeat_n"])
+                                                if "repeat_n" in subset.columns
+                                                else [None] * subset.height,
+                                            )
+                                        )
+                                        if status == "eligible"
+                                        else None,
                                     )
-                                    if status == "eligible"
-                                    else None,
                                 )
+                        # Mark first cohort as left-censored
+                        first_cohort = cohort_data["cohort"].min()
+                        if first_cohort is not None:
+                            fig.add_vline(
+                                x=first_cohort.strftime("%Y-%m"),
+                                line_dash="dash",
+                                line_color="red",
+                                annotation_text="First cohort (left-censored)",
+                                annotation_position="top left",
                             )
-                    # Mark first cohort as left-censored
-                    first_cohort = cohort_data["cohort"].min()
-                    if first_cohort is not None:
-                        fig.add_vline(
-                            x=first_cohort.strftime("%Y-%m"),
-                            line_dash="dash",
-                            line_color="red",
-                            annotation_text="First cohort (left-censored)",
-                            annotation_position="top left",
+                        fig.update_xaxes(tickformat="%Y-%m")
+                        fig.update_yaxes(range=[0, 1], tickformat=".0%")
+                        chart(
+                            fig,
+                            "Age-aligned 30-day repeat purchase rate by cohort (Wilson 95% CI)",
+                            "cohort_repeat_rate",
+                            "Cohort month",
+                            "Repeat rate",
                         )
-                    fig.update_xaxes(tickformat="%Y-%m")
-                    fig.update_yaxes(range=[0, 1], tickformat=".0%")
-                    chart(
-                        fig,
-                        "Age-aligned 30-day repeat purchase rate by cohort (Wilson 95% CI)",
-                        "cohort_repeat_rate",
-                        "Cohort month",
-                        "Repeat rate",
-                    )
-                    st.caption(
-                        "Age-aligned: repeat purchase within 30 days of first purchase. Wilson 95% CI for eligible cohorts (min 20 customers). First cohort marked as left-censored (first purchase = observation start)."
-                    )
-                    table(horizon_data.sort("cohort"))
+                        st.caption(
+                            "Age-aligned: repeat purchase within 30 days of first purchase. Wilson 95% CI for eligible cohorts (min 20 customers). First cohort marked as left-censored (first purchase = observation start)."
+                        )
+                        table(horizon_data.sort("cohort"))
+        except Exception as e:
+            st.error(f"Age-aligned repeat purchase analysis failed: {type(e).__name__}: {e}")
+            st.caption("This may be due to missing baskets data, or insufficient cohort data.")
 
         # Concentration (Lorenz) chart
         st.subheader("Customer concentration (Lorenz curve)")
@@ -1743,45 +1778,53 @@ def display_results(root, coverage):
             return
         origin = st.selectbox("Origin cutoff", history[:-1], index=len(history) - 2)
         dim = st.selectbox("Transition layer", DIMS[:-1])
-        before = apply_filters(
-            pl.scan_parquet([str(p) for p in (root / "snapshots" / origin).glob("*.parquet")]),
-            filters,
-        )
-        after = apply_filters(
-            pl.scan_parquet([str(p) for p in (root / "snapshots" / chosen).glob("*.parquet")]),
-            filters,
-        )
-        flows, counts = transition_summary(before, after, dim)
-        if flows.is_empty():
-            st.info("No matched customers at both cutoffs.")
-            return
-        # Show reconciliation counts
-        st.caption(
-            f"Reconciliation: origin={counts['origin_n']}, destination={counts['destination_n']}, "
-            f"matched={counts['matched_n']}, origin_unmatched={counts['origin_unmatched']}, "
-            f"destination_unmatched={counts['destination_unmatched']}. "
-            f"Unmatched origin customers are not churn; unmatched destination customers are new arrivals."
-        )
-        # Sankey diagram
-        sources = sorted(flows["from_label"].unique().to_list())
-        targets = sorted(flows["to_label"].unique().to_list())
-        fig = go.Figure(
-            go.Sankey(
-                node=dict(
-                    label=["From: " + s for s in sources] + ["To: " + t for t in targets],
-                    color=[get_color(s, color_map) for s in sources + targets],
-                    pad=15,
-                ),
-                link=dict(
-                    source=[sources.index(r["from_label"]) for r in flows.to_dicts()],
-                    target=[len(sources) + targets.index(r["to_label"]) for r in flows.to_dicts()],
-                    value=flows["len"].to_list(),
-                ),
+        
+        if dim != "value_tier":
+            st.info(f"Showing {dim} transitions as Sankey diagram. For value-tier waterfall chart, use the 'Value-Tier Transitions' view.")
+        
+        try:
+            before = apply_filters(
+                pl.scan_parquet([str(p) for p in (root / "snapshots" / origin).glob("*.parquet")]),
+                filters,
             )
-        )
-        chart(fig, f"{dim}: {origin} to {chosen}", "transition_sankey")
-        # Heatmap
-        xs, ys, z = bounded_grid(flows.to_dicts(), "from_label", "to_label", "rate", limit=20)
+            after = apply_filters(
+                pl.scan_parquet([str(p) for p in (root / "snapshots" / chosen).glob("*.parquet")]),
+                filters,
+            )
+            flows, counts = transition_summary(before, after, dim)
+            if flows.is_empty():
+                st.info("No matched customers at both cutoffs.")
+                return
+            # Show reconciliation counts
+            st.caption(
+                f"Reconciliation: origin={counts['origin_n']}, destination={counts['destination_n']}, "
+                f"matched={counts['matched_n']}, origin_unmatched={counts['origin_unmatched']}, "
+                f"destination_unmatched={counts['destination_unmatched']}. "
+                f"Unmatched origin customers are not churn; unmatched destination customers are new arrivals."
+            )
+            # Sankey diagram
+            sources = sorted(flows["from_label"].unique().to_list())
+            targets = sorted(flows["to_label"].unique().to_list())
+            fig = go.Figure(
+                go.Sankey(
+                    node=dict(
+                        label=["From: " + s for s in sources] + ["To: " + t for t in targets],
+                        color=[get_color(s, color_map) for s in sources + targets],
+                        pad=15,
+                    ),
+                    link=dict(
+                        source=[sources.index(r["from_label"]) for r in flows.to_dicts()],
+                        target=[len(sources) + targets.index(r["to_label"]) for r in flows.to_dicts()],
+                        value=safe_list(flows["len"]),
+                    ),
+                )
+            )
+            chart(fig, f"{dim}: {origin} to {chosen}", "transition_sankey")
+            # Heatmap
+            xs, ys, z = bounded_grid(flows.to_dicts(), "from_label", "to_label", "rate", limit=20)
+        except Exception as e:
+            st.error(f"Transitions analysis failed: {type(e).__name__}: {e}")
+            st.caption("This may be due to missing transition data, or no matched customers between cutoffs.")
         fig = go.Figure(
             go.Heatmap(
                 x=xs,
