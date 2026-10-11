@@ -130,7 +130,13 @@ class MetricContractTests(unittest.TestCase):
         return pl.DataFrame(rows)
 
     def _run_pipeline(
-        self, source_df, cutoff, buckets=1, coverage_confirmed=False, observed_through=None
+        self,
+        source_df,
+        cutoff,
+        buckets=1,
+        coverage_confirmed=False,
+        observed_through=None,
+        min_reference_population=0,
     ):
         """Run pipeline on fixture and return snapshot frame."""
         with TemporaryDirectory() as tmp:
@@ -153,6 +159,7 @@ class MetricContractTests(unittest.TestCase):
                 buckets=buckets,
                 coverage_confirmed=coverage_confirmed,
                 observed_through=observed_through,
+                min_reference_population=min_reference_population,
             )
             # Read all bucket files for the snapshot
             frames = []

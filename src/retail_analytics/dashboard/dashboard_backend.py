@@ -12,6 +12,7 @@ from retail_analytics.core.constants import (
     MAX_CUTOFFS,
     MIN_DAYS_STYLE,
     MIN_GAP_COUNT_STYLE,
+    MIN_REFERENCE_POPULATION,
     MIN_TENURE_STYLE,
     MIN_TENURE_VALUE_TIER,
     QUANTILE_STYLE_HIGH,
@@ -308,31 +309,77 @@ def analyze(job):
     if not numeric:
         raise ValueError("No customers at the selected cutoffs")
     ref = pl.scan_parquet([str(p) for p in numeric if p.parent.name == str(dates[0])])
-    thresholds = (
+
+    # Get threshold parameters from job or use defaults
+    value_quantile_low = job.get("value_quantile_low", QUANTILE_VALUE_LOW)
+    value_quantile_high = job.get("value_quantile_high", QUANTILE_VALUE_HIGH)
+    style_quantile_low = job.get("style_quantile_low", QUANTILE_STYLE_LOW)
+    style_quantile_high = job.get("style_quantile_high", QUANTILE_STYLE_HIGH)
+    min_reference_population = job.get("min_reference_population", MIN_REFERENCE_POPULATION)
+    reference_date = job.get("reference_date")
+
+    # Compute reference populations
+    value_pop = (
+        ref.filter((pl.col("tenure") >= MIN_TENURE_VALUE_TIER) & (pl.col("spend_90d") > 0))
+        .select(pl.len())
+        .collect()
+        .item()
+    )
+    style_pop = (
+        ref.filter(
+            (pl.col("days_365d") >= MIN_DAYS_STYLE)
+            & (pl.col("tenure") >= MIN_TENURE_STYLE)
+            & (pl.col("gap_count") >= MIN_GAP_COUNT_STYLE)
+        )
+        .select(pl.len())
+        .collect()
+        .item()
+    )
+
+    # Compute value thresholds with population counts
+    value_thresholds = (
         ref.filter((pl.col("tenure") >= MIN_TENURE_VALUE_TIER) & (pl.col("spend_90d") > 0))
         .select(
-            pl.col("spend_90d").quantile(QUANTILE_VALUE_LOW).alias("value_low"),
-            pl.col("spend_90d").quantile(QUANTILE_VALUE_HIGH).alias("value_high"),
+            pl.col("spend_90d").quantile(value_quantile_low).alias("value_low"),
+            pl.col("spend_90d").quantile(value_quantile_high).alias("value_high"),
         )
         .collect()
         .to_dicts()[0]
     )
-    thresholds.update(
+
+    # Compute style thresholds with population counts
+    style_thresholds = (
         ref.filter(
             (pl.col("days_365d") >= MIN_DAYS_STYLE)
             & (pl.col("tenure") >= MIN_TENURE_STYLE)
             & (pl.col("gap_count") >= MIN_GAP_COUNT_STYLE)
         )
         .select(
-            pl.col("median_basket").quantile(QUANTILE_STYLE_LOW).alias("basket_low"),
-            pl.col("median_basket").quantile(QUANTILE_STYLE_HIGH).alias("basket_high"),
-            pl.col("median_gap").quantile(QUANTILE_STYLE_LOW).alias("gap_low"),
-            pl.col("median_gap").quantile(QUANTILE_STYLE_HIGH).alias("gap_high"),
+            pl.col("median_basket").quantile(style_quantile_low).alias("basket_low"),
+            pl.col("median_basket").quantile(style_quantile_high).alias("basket_high"),
+            pl.col("median_gap").quantile(style_quantile_low).alias("gap_low"),
+            pl.col("median_gap").quantile(style_quantile_high).alias("gap_high"),
         )
         .collect()
         .to_dicts()[0]
     )
-    thresholds["reference_date"] = str(dates[0])
+
+    # Null out thresholds if population is below minimum
+    if value_pop < min_reference_population:
+        value_thresholds["value_low"] = None
+        value_thresholds["value_high"] = None
+    if style_pop < min_reference_population:
+        style_thresholds["basket_low"] = None
+        style_thresholds["basket_high"] = None
+        style_thresholds["gap_low"] = None
+        style_thresholds["gap_high"] = None
+
+    thresholds = value_thresholds
+    thresholds.update(style_thresholds)
+    thresholds["reference_date"] = str(reference_date if reference_date is not None else dates[0])
+    thresholds["reference_population"] = style_pop
+    thresholds["value_population"] = value_pop
+    thresholds["style_population"] = style_pop
     write_json(root / "thresholds.json", thresholds)
     for path in numeric:
         frame = label(pl.scan_parquet(path), thresholds).with_columns(

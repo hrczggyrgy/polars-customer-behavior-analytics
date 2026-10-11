@@ -25,6 +25,7 @@ from retail_analytics.core.constants import (
     MIN_DAYS_STYLE,
     MIN_GAP_COUNT_STRONGER,
     MIN_GAP_COUNT_STYLE,
+    MIN_REFERENCE_POPULATION,
     MIN_TENURE_COMPARABLE,
     MIN_TENURE_ONE_SHOPPING_DAY,
     MIN_TENURE_STYLE,
@@ -1110,6 +1111,12 @@ def run(
     drop_exact_duplicates=False,
     overwrite=False,
     timezone=None,
+    value_quantile_low=QUANTILE_VALUE_LOW,
+    value_quantile_high=QUANTILE_VALUE_HIGH,
+    style_quantile_low=QUANTILE_STYLE_LOW,
+    style_quantile_high=QUANTILE_STYLE_HIGH,
+    min_reference_population=MIN_REFERENCE_POPULATION,
+    reference_date=None,
 ):
     if buckets < 1 or price_mode not in ["unit", "line_total"]:
         raise ValueError("Invalid buckets or price_mode")
@@ -1137,6 +1144,12 @@ def run(
                 observed_through=observed_through,
                 coverage_confirmed=bool(coverage_confirmed),
                 timezone=timezone,
+                value_quantile_low=value_quantile_low,
+                value_quantile_high=value_quantile_high,
+                style_quantile_low=style_quantile_low,
+                style_quantile_high=style_quantile_high,
+                min_reference_population=min_reference_population,
+                reference_date=reference_date,
                 version=VERSION,
             ),
             indent=2,
@@ -1184,35 +1197,76 @@ def run(
             "gap_low": None,
             "gap_high": None,
             "reference_date": str(dates[0]),
+            "reference_population": 0,
+            "value_population": 0,
+            "style_population": 0,
         }
         (root / "thresholds.json").write_text(json.dumps(thresholds, indent=2))
         return
     ref = pl.scan_parquet([str(x) for x in numeric if x.parent.name == str(dates[0])])
-    thresholds = (
+
+    # Compute reference populations
+    value_pop = (
+        ref.filter((pl.col("tenure") >= MIN_TENURE_VALUE_TIER) & (pl.col("spend_90d") > 0))
+        .select(pl.len())
+        .collect()
+        .item()
+    )
+    style_pop = (
+        ref.filter(
+            (pl.col("days_365d") >= MIN_DAYS_STYLE)
+            & (pl.col("tenure") >= MIN_TENURE_STYLE)
+            & (pl.col("gap_count") >= MIN_GAP_COUNT_STYLE)
+        )
+        .select(pl.len())
+        .collect()
+        .item()
+    )
+
+    # Compute value thresholds with population counts
+    value_thresholds = (
         ref.filter((pl.col("tenure") >= MIN_TENURE_VALUE_TIER) & (pl.col("spend_90d") > 0))
         .select(
-            pl.col("spend_90d").quantile(QUANTILE_VALUE_LOW).alias("value_low"),
-            pl.col("spend_90d").quantile(QUANTILE_VALUE_HIGH).alias("value_high"),
+            pl.col("spend_90d").quantile(value_quantile_low).alias("value_low"),
+            pl.col("spend_90d").quantile(value_quantile_high).alias("value_high"),
         )
         .collect()
         .to_dicts()[0]
     )
-    thresholds.update(
+
+    # Compute style thresholds with population counts
+    style_thresholds = (
         ref.filter(
             (pl.col("days_365d") >= MIN_DAYS_STYLE)
             & (pl.col("tenure") >= MIN_TENURE_STYLE)
             & (pl.col("gap_count") >= MIN_GAP_COUNT_STYLE)
         )
         .select(
-            pl.col("median_basket").quantile(QUANTILE_STYLE_LOW).alias("basket_low"),
-            pl.col("median_basket").quantile(QUANTILE_STYLE_HIGH).alias("basket_high"),
-            pl.col("median_gap").quantile(QUANTILE_STYLE_LOW).alias("gap_low"),
-            pl.col("median_gap").quantile(QUANTILE_STYLE_HIGH).alias("gap_high"),
+            pl.col("median_basket").quantile(style_quantile_low).alias("basket_low"),
+            pl.col("median_basket").quantile(style_quantile_high).alias("basket_high"),
+            pl.col("median_gap").quantile(style_quantile_low).alias("gap_low"),
+            pl.col("median_gap").quantile(style_quantile_high).alias("gap_high"),
         )
         .collect()
         .to_dicts()[0]
     )
-    thresholds["reference_date"] = str(dates[0])
+
+    # Null out thresholds if population is below minimum
+    if value_pop < min_reference_population:
+        value_thresholds["value_low"] = None
+        value_thresholds["value_high"] = None
+    if style_pop < min_reference_population:
+        style_thresholds["basket_low"] = None
+        style_thresholds["basket_high"] = None
+        style_thresholds["gap_low"] = None
+        style_thresholds["gap_high"] = None
+
+    thresholds = value_thresholds
+    thresholds.update(style_thresholds)
+    thresholds["reference_date"] = str(reference_date if reference_date is not None else dates[0])
+    thresholds["reference_population"] = style_pop
+    thresholds["value_population"] = value_pop
+    thresholds["style_population"] = style_pop
     (root / "thresholds.json").write_text(json.dumps(thresholds, indent=2))
     for path in numeric:
         sink(
@@ -1239,6 +1293,41 @@ def main(argv=None):
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(
         "--timezone", help="Timezone for timezone-aware Datetime input (e.g., 'UTC', 'US/Eastern')"
+    )
+    # Threshold parameters
+    parser.add_argument(
+        "--value-quantile-low",
+        type=float,
+        default=QUANTILE_VALUE_LOW,
+        help="Value tier low quantile (default 0.33)",
+    )
+    parser.add_argument(
+        "--value-quantile-high",
+        type=float,
+        default=QUANTILE_VALUE_HIGH,
+        help="Value tier high quantile (default 0.80)",
+    )
+    parser.add_argument(
+        "--style-quantile-low",
+        type=float,
+        default=QUANTILE_STYLE_LOW,
+        help="Style tier low quantile (default 0.33)",
+    )
+    parser.add_argument(
+        "--style-quantile-high",
+        type=float,
+        default=QUANTILE_STYLE_HIGH,
+        help="Style tier high quantile (default 0.80)",
+    )
+    parser.add_argument(
+        "--min-reference-population",
+        type=int,
+        default=MIN_REFERENCE_POPULATION,
+        help="Minimum reference population for thresholds (default 100)",
+    )
+    parser.add_argument(
+        "--reference-date",
+        help="Override reference date for threshold computation (default: first snapshot)",
     )
     run(**vars(parser.parse_args(argv)))
 
