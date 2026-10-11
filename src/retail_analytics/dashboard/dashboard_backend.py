@@ -3,6 +3,7 @@
 import argparse
 import json
 import shutil
+from dataclasses import asdict
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -22,8 +23,14 @@ from retail_analytics.core.constants import (
 )
 from retail_analytics.core.retail_polars_workflow import COLS, label, prepare, sink, snapshot
 from retail_analytics.core.stats import wilson
-
-__all__ = ["wilson", "cutoffs", "inspect", "preview", "analyze", "write_json"]
+from retail_analytics.core.thresholds import (
+    ThresholdPolicy,
+    calibrate_thresholds,
+    compute_data_profile,
+    default_policy,
+    select_reference_cutoff,
+    write_thresholds,
+)
 
 MAX_ROWS = 2_000_000
 
@@ -308,7 +315,6 @@ def analyze(job):
                 numeric.append(snapshot(path, d, end, root, coverage, observation_start))
     if not numeric:
         raise ValueError("No customers at the selected cutoffs")
-    ref = pl.scan_parquet([str(p) for p in numeric if p.parent.name == str(dates[0])])
 
     # Get threshold parameters from job or use defaults
     value_quantile_low = job.get("value_quantile_low", QUANTILE_VALUE_LOW)
@@ -318,69 +324,77 @@ def analyze(job):
     min_reference_population = job.get("min_reference_population", MIN_REFERENCE_POPULATION)
     reference_date = job.get("reference_date")
 
-    # Compute reference populations
-    value_pop = (
-        ref.filter((pl.col("tenure") >= MIN_TENURE_VALUE_TIER) & (pl.col("spend_90d") > 0))
-        .select(pl.len())
-        .collect()
-        .item()
-    )
-    style_pop = (
-        ref.filter(
-            (pl.col("days_365d") >= MIN_DAYS_STYLE)
-            & (pl.col("tenure") >= MIN_TENURE_STYLE)
-            & (pl.col("gap_count") >= MIN_GAP_COUNT_STYLE)
-        )
-        .select(pl.len())
-        .collect()
-        .item()
+    # Build policy from job parameters
+    policy = ThresholdPolicy(
+        low_p=min(value_quantile_low, style_quantile_low),
+        high_p=max(value_quantile_high, style_quantile_high),
+        min_n=min_reference_population,
     )
 
-    # Compute value thresholds with population counts
-    value_thresholds = (
-        ref.filter((pl.col("tenure") >= MIN_TENURE_VALUE_TIER) & (pl.col("spend_90d") > 0))
-        .select(
-            pl.col("spend_90d").quantile(value_quantile_low).alias("value_low"),
-            pl.col("spend_90d").quantile(value_quantile_high).alias("value_high"),
-        )
-        .collect()
-        .to_dicts()[0]
-    )
+    # Select reference cutoff: earliest with sufficient & stable population
+    if reference_date is not None:
+        ref_date = date.fromisoformat(reference_date)
+        ref = pl.scan_parquet([str(p) for p in numeric if p.parent.name == str(ref_date)])
+        ref_info = {"selected": True, "reference_date": reference_date}
+    else:
+        ref_date, ref, ref_info = select_reference_cutoff(numeric, dates, root, policy)
 
-    # Compute style thresholds with population counts
-    style_thresholds = (
-        ref.filter(
-            (pl.col("days_365d") >= MIN_DAYS_STYLE)
-            & (pl.col("tenure") >= MIN_TENURE_STYLE)
-            & (pl.col("gap_count") >= MIN_GAP_COUNT_STYLE)
+    if ref_date is None or ref is None:
+        # No cutoff met criteria - write thresholds with reference_unavailable status
+        thresholds = {
+            "value_low": None,
+            "value_high": None,
+            "basket_low": None,
+            "basket_high": None,
+            "gap_low": None,
+            "gap_high": None,
+            "reference_date": None,
+            "reference_population": 0,
+            "value_population": 0,
+            "style_population": 0,
+            "calibration_policy": asdict(policy),
+            "reference_selection": ref_info,
+        }
+        write_thresholds(root, thresholds)
+        # Label all snapshots with reference_unavailable
+        for path in numeric:
+            frame = label(pl.scan_parquet(path), thresholds).with_columns(
+                pl.when(pl.col("spend_365d") > 0)
+                .then(pl.col("category_hhi"))
+                .otherwise(None)
+                .alias("category_hhi"),
+                pl.when(pl.col("spend_365d") > 0)
+                .then(pl.col("category_entropy"))
+                .otherwise(None)
+                .alias("category_entropy"),
+            )
+            sink(frame, root / "snapshots" / path.parent.name / path.name)
+        write_json(
+            root / "run.json",
+            {
+                "snapshots": [str(x) for x in dates],
+                "coverage_confirmed": coverage,
+                "observed_through": str(end),
+                "price_mode": job["price_mode"],
+                "polars_version": pl.__version__,
+                "source_sha256": job["sha256"],
+                "invalid_rows_excluded": bool(job["exclude_invalid"]),
+                "reference_date": None,
+            },
         )
-        .select(
-            pl.col("median_basket").quantile(style_quantile_low).alias("basket_low"),
-            pl.col("median_basket").quantile(style_quantile_high).alias("basket_high"),
-            pl.col("median_gap").quantile(style_quantile_low).alias("gap_low"),
-            pl.col("median_gap").quantile(style_quantile_high).alias("gap_high"),
-        )
-        .collect()
-        .to_dicts()[0]
-    )
+        return
 
-    # Null out thresholds if population is below minimum
-    if value_pop < min_reference_population:
-        value_thresholds["value_low"] = None
-        value_thresholds["value_high"] = None
-    if style_pop < min_reference_population:
-        style_thresholds["basket_low"] = None
-        style_thresholds["basket_high"] = None
-        style_thresholds["gap_low"] = None
-        style_thresholds["gap_high"] = None
+    # Calibrate thresholds from reference frame
+    thresholds = calibrate_thresholds(ref, policy, ref_date)
 
-    thresholds = value_thresholds
-    thresholds.update(style_thresholds)
-    thresholds["reference_date"] = str(reference_date if reference_date is not None else dates[0])
-    thresholds["reference_population"] = style_pop
-    thresholds["value_population"] = value_pop
-    thresholds["style_population"] = style_pop
-    write_json(root / "thresholds.json", thresholds)
+    # Compute data profile for manifest
+    data_profile = compute_data_profile(ref, observation_start, end)
+    thresholds["data_profile"] = data_profile
+
+    # Add reference selection info
+    thresholds["reference_selection"] = ref_info
+
+    write_thresholds(root, thresholds)
     for path in numeric:
         frame = label(pl.scan_parquet(path), thresholds).with_columns(
             pl.when(pl.col("spend_365d") > 0)
