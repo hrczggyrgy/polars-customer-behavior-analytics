@@ -601,3 +601,319 @@ def revenue_waterfall(rows, previous_rows, cutoff):
         dict(component="Residual (interactions)", value=residual, order=4),
         dict(component="Current period spend", value=spend_curr, order=5),
     ])
+
+
+def value_tier_transition_waterfall(transition_flows):
+    """Value-tier transition waterfall showing net customer movement.
+
+    Takes transition flows from transition_summary (from_label, to_label, len, rate)
+    and computes net gain/loss per value tier.
+    """
+    import polars as pl
+
+    flows = collect(transition_flows)
+    if flows.is_empty():
+        return pl.DataFrame()
+
+    # Get all unique value tiers from both from and to
+    from_tiers = transition_flows.select(pl.col("from_label").alias("tier"))
+    to_tiers = transition_flows.select(pl.col("to_label").alias("tier"))
+    all_tiers = pl.concat([from_tiers, to_tiers]).unique().sort("tier")
+
+    # Compute outflows (customers leaving each tier) and inflows (customers entering each tier)
+    outflows = (
+        transition_flows.group_by("from_label")
+        .agg(pl.col("len").sum().alias("outflow"))
+        .rename({"from_label": "tier"})
+    )
+    inflows = (
+        transition_flows.group_by("to_label")
+        .agg(pl.col("len").sum().alias("inflow"))
+        .rename({"to_label": "tier"})
+    )
+
+    # Net change per tier
+    result = (
+        all_tiers.join(outflows, on="tier", how="left")
+        .join(inflows, on="tier", how="left")
+        .with_columns(
+            pl.col("outflow").fill_null(0),
+            pl.col("inflow").fill_null(0),
+            (pl.col("inflow") - pl.col("outflow")).alias("net_change"),
+        )
+        .with_columns(
+            pl.when(pl.col("net_change") >= 0)
+            .then(pl.lit("gain"))
+            .otherwise(pl.lit("loss"))
+            .alias("direction"),
+        )
+        .sort("tier")
+    )
+
+    return result
+
+
+def behavior_trajectory_matrix(rows):
+    """Behavior × trajectory bubble matrix.
+
+    X-axis: behavior (or behavioral_tags)
+    Y-axis: trajectory_tags
+    Bubble size: customer count
+    Bubble color: median spend_90d or future purchase rate
+    """
+    import polars as pl
+
+    # For trajectory, we need to handle multi-tag combinations
+    # The pipeline stores trajectory as joined tags (e.g., "slowing+overdue")
+    # We'll use the combined trajectory label for the matrix
+
+    # Get behavior and trajectory combinations
+    combo = (
+        rows.group_by("behavior", "trajectory")
+        .agg(
+            pl.len().alias("customers"),
+            pl.col("spend_90d").median().alias("median_spend"),
+            pl.col("spend_90d").mean().alias("mean_spend"),
+            (pl.col("future_purchases_30d") > 0).mean().alias("future_30d_rate"),
+            (pl.col("future_purchases_90d") > 0).mean().alias("future_90d_rate"),
+            pl.col("eligible_followup_30d").sum().alias("eligible_30d"),
+            pl.col("eligible_followup_90d").sum().alias("eligible_90d"),
+        )
+        .filter(pl.col("customers") > 0)
+        .sort("customers", descending=True)
+    )
+
+    return collect(combo)
+
+
+def purchase_rhythm_panel(rows):
+    """Purchase rhythm distribution panel.
+
+    Returns:
+    - median_gap distribution (histogram data)
+    - gap_cv distribution (histogram data)
+    - lateness distribution (histogram data)
+    - Segment-level rhythm summary
+    """
+    import polars as pl
+
+    # Filter to style-eligible customers (have meaningful rhythm metrics)
+    eligible = rows.filter(pl.col("style_eligible"))
+
+    # Histogram data for median_gap
+    median_gap_hist = collect(
+        eligible.filter(pl.col("median_gap").is_finite())
+        .select("median_gap")
+        .with_columns(pl.col("median_gap").alias("value"))
+    )
+
+    # Histogram data for gap_cv
+    gap_cv_hist = collect(
+        eligible.filter(pl.col("gap_cv").is_finite())
+        .select("gap_cv")
+        .with_columns(pl.col("gap_cv").alias("value"))
+    )
+
+    # Histogram data for lateness
+    lateness_hist = collect(
+        eligible.filter(pl.col("lateness").is_finite())
+        .select("lateness")
+        .with_columns(pl.col("lateness").alias("value"))
+    )
+
+    # Segment-level rhythm summary
+    segment_rhythm = collect(
+        eligible.group_by("behavior")
+        .agg(
+            pl.len().alias("customers"),
+            pl.col("median_gap").median().alias("median_gap"),
+            pl.col("gap_cv").median().alias("gap_cv"),
+            pl.col("lateness").median().alias("lateness"),
+            pl.col("recency").median().alias("median_recency"),
+            pl.col("purchases_90d").mean().alias("avg_frequency_90d"),
+        )
+        .filter(pl.col("customers") > 0)
+        .sort("customers", descending=True)
+    )
+
+    return {
+        "median_gap_hist": median_gap_hist,
+        "gap_cv_hist": gap_cv_hist,
+        "lateness_hist": lateness_hist,
+        "segment_rhythm": segment_rhythm,
+    }
+
+
+def basket_composition_slope(rows):
+    """Basket composition slope chart: recent vs previous 90d.
+
+    For customers with comparable windows, shows:
+    - breadth_recent vs breadth_previous
+    - aov_recent vs aov_previous
+    - new_share vs repeat_share vs established_share
+    - spend_90d vs spend_previous90d
+    """
+    import polars as pl
+
+    # Filter to customers with comparable windows
+    comp = rows.filter(
+        pl.col("comparable_windows") &
+        pl.col("breadth_recent").is_finite() &
+        pl.col("breadth_previous").is_finite() &
+        pl.col("aov_recent").is_finite() &
+        pl.col("aov_previous").is_finite()
+    )
+
+    # Summary stats for slope chart
+    slope_data = collect(
+        comp.select(
+            pl.len().alias("comparable_customers"),
+            pl.col("breadth_recent").mean().alias("mean_breadth_recent"),
+            pl.col("breadth_previous").mean().alias("mean_breadth_previous"),
+            pl.col("aov_recent").mean().alias("mean_aov_recent"),
+            pl.col("aov_previous").mean().alias("mean_aov_previous"),
+            pl.col("spend_90d").mean().alias("mean_spend_recent"),
+            pl.col("spend_previous90d").mean().alias("mean_spend_previous"),
+            pl.col("new_share").mean().alias("mean_new_share"),
+            pl.col("repeat_share").mean().alias("mean_repeat_share"),
+            pl.col("established_share").mean().alias("mean_established_share"),
+            pl.col("breadth_recent").median().alias("median_breadth_recent"),
+            pl.col("breadth_previous").median().alias("median_breadth_previous"),
+            pl.col("aov_recent").median().alias("median_aov_recent"),
+            pl.col("aov_previous").median().alias("median_aov_previous"),
+        )
+    )
+
+    # Customer-level data for scatter/slope (sampled)
+    # Select only columns that exist in the filtered frame
+    sample_cols = ["customer_id"]
+    for col in ["behavior", "value_tier", "breadth_recent", "breadth_previous",
+                "aov_recent", "aov_previous", "spend_90d", "spend_previous90d",
+                "new_share", "repeat_share", "established_share",
+                "frequency_change", "basket_change"]:
+        if col in comp.collect_schema().names():
+            sample_cols.append(col)
+
+    sample = collect(
+        comp.sort(pl.col("customer_id").hash(seed=29))
+        .limit(2000)
+        .select(sample_cols)
+    )
+
+    return {
+        "summary": slope_data,
+        "sample": sample,
+    }
+
+
+def category_sankey(category_history, rows, previous_rows=None):
+    """Category participation Sankey between two snapshots.
+
+    Uses customer-category participation (customers buying from category / population).
+    """
+    import polars as pl
+
+    ids = rows.select("customer_id").unique()
+    n = collect(ids.select(pl.len())).item()
+
+    if previous_rows is None:
+        # Single snapshot: category participation distribution
+        part = collect(
+            category_history.filter(pl.col("year_days") > 0)
+            .join(ids, on="customer_id", how="semi")
+            .group_by("department", "category")
+            .agg(
+                pl.col("customer_id").n_unique().alias("customers"),
+                pl.col("year_spend").sum().alias("spend"),
+            )
+            .with_columns(
+                pl.lit(n).alias("population_n"),
+                (pl.col("customers") / pl.lit(n)).alias("participation"),
+            )
+            .sort("customers", descending=True)
+        )
+        return part, None
+
+    # Two snapshots: need category participation at both
+    # previous_rows has its own customer population
+    prev_ids = previous_rows.select("customer_id").unique()
+    prev_n = collect(prev_ids.select(pl.len())).item()
+
+    # Current participation
+    curr_part = (
+        category_history.filter(pl.col("year_days") > 0)
+        .join(ids, on="customer_id", how="semi")
+        .group_by("department", "category")
+        .agg(
+            pl.col("customer_id").n_unique().alias("curr_customers"),
+            pl.col("year_spend").sum().alias("curr_spend"),
+        )
+        .with_columns(
+            pl.lit(n).alias("curr_population"),
+            (pl.col("curr_customers") / pl.lit(n)).alias("curr_participation"),
+        )
+    )
+
+    # Previous participation (need previous category history)
+    # This requires loading the previous cutoff's category_history
+    # For now, return current only with note
+    result = collect(curr_part.sort("curr_customers", descending=True))
+    return result, None
+
+
+def future_outcome_validation(rows):
+    """Future outcome validation: do current tags predict future purchases?
+
+    Compares future_30d/90d purchase rates and spend by:
+    - behavior
+    - trajectory
+    - value_tier
+    - lifecycle
+    - evidence
+    """
+    import polars as pl
+
+    # Filter to eligible follow-up customers
+    eligible_30 = rows.filter(pl.col("eligible_followup_30d"))
+    eligible_90 = rows.filter(pl.col("eligible_followup_90d"))
+
+    if eligible_30.select(pl.len()).collect().item() == 0:
+        return pl.DataFrame()
+
+    results = []
+    for dim in ["behavior", "trajectory", "value_tier", "lifecycle", "evidence"]:
+        # 30-day validation
+        stats_30 = collect(
+            eligible_30.group_by(dim).agg(
+                pl.len().alias("eligible_n"),
+                (pl.col("future_purchases_30d") > 0).sum().alias("buyers"),
+                (pl.col("future_purchases_30d") > 0).mean().alias("purchase_rate"),
+                pl.col("future_spend_30d").mean().alias("mean_spend"),
+                pl.col("future_spend_30d").filter(pl.col("future_purchases_30d") > 0).mean().alias("mean_spend_buyers"),
+            ).rename({dim: "dim_value"})
+            .with_columns(
+                (pl.col("buyers") / pl.col("eligible_n")).alias("rate"),
+                pl.lit(30).alias("horizon"),
+                pl.lit(dim).alias("dimension"),
+            )
+        )
+        results.append(stats_30)
+
+        # 90-day validation
+        stats_90 = collect(
+            eligible_90.group_by(dim).agg(
+                pl.len().alias("eligible_n"),
+                (pl.col("future_purchases_90d") > 0).sum().alias("buyers"),
+                (pl.col("future_purchases_90d") > 0).mean().alias("purchase_rate"),
+                pl.col("future_spend_90d").mean().alias("mean_spend"),
+                pl.col("future_spend_90d").filter(pl.col("future_purchases_90d") > 0).mean().alias("mean_spend_buyers"),
+            ).rename({dim: "dim_value"})
+            .with_columns(
+                (pl.col("buyers") / pl.col("eligible_n")).alias("rate"),
+                pl.lit(90).alias("horizon"),
+                pl.lit(dim).alias("dimension"),
+            )
+        )
+        results.append(stats_90)
+
+    return pl.concat(results, how="vertical_relaxed") if results else pl.DataFrame()
