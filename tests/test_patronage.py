@@ -180,10 +180,9 @@ class RuleTests(unittest.TestCase):
 
         for row, confirmed, expected in test_cases:
             scalar_result = classify(row, capture_confirmed=confirmed)
-            vector_result = (
-                label_frame(pl.DataFrame([row]).lazy(), capture_confirmed=confirmed)
-                .collect()["observed_patronage"][0]
-            )
+            vector_result = label_frame(
+                pl.DataFrame([row]).lazy(), capture_confirmed=confirmed
+            ).collect()["observed_patronage"][0]
             self.assertEqual(
                 scalar_result, expected, f"classify failed for {row} with confirmed={confirmed}"
             )

@@ -15,7 +15,15 @@ import polars as pl
 import streamlit as st
 
 from retail_analytics.core.retail_polars_workflow import COLS
-from retail_analytics.dashboard.dashboard_backend import cutoffs, wilson
+from retail_analytics.core.stats import wilson
+from retail_analytics.dashboard.dashboard_backend import cutoffs
+from retail_analytics.visualization.visual_insights_core import (
+    METRICS,
+    cohort_summary,
+    collect,
+    concentration,
+    transition_summary,
+)
 
 MAX_BYTES = 100 * 1024 * 1024
 PAGE_ROWS = 2000
@@ -39,11 +47,37 @@ FEATURES = [
     "basket_change",
 ]
 DIMS = ["behavior", "trajectory", "lifecycle", "value_tier", "evidence"]
-PALETTE = ["#2563eb", "#059669", "#d97706", "#7c3aed", "#dc2626", "#0891b2", "#be185d", "#64748b"]
+
+# Colorblind-safe Okabe-Ito palette (8 colors)
+OKABE_ITO = [
+    "#000000",  # black
+    "#E69F00",  # orange
+    "#56B4E9",  # sky blue
+    "#009E73",  # bluish green
+    "#F0E442",  # yellow
+    "#0072B2",  # blue
+    "#D55E00",  # vermillion
+    "#CC79A7",  # reddish purple
+]
 
 
-def color(label):
-    return PALETTE[int(hashlib.sha256(str(label).encode()).hexdigest()[:8], 16) % len(PALETTE)]
+def build_color_map(labels):
+    """Build deterministic color map from sorted labels using Okabe-Ito palette."""
+    sorted_labels = sorted(set(str(label) for label in labels))
+    return {label: OKABE_ITO[i % len(OKABE_ITO)] for i, label in enumerate(sorted_labels)}
+
+
+def get_color(label, color_map):
+    """Get color for label from color map, fallback to hash."""
+    return color_map.get(str(label), "#64748b")
+
+
+def format_axis_title(metric_name):
+    """Convert metric column name to human-readable title with units."""
+    if metric_name in METRICS:
+        return f"{METRICS[metric_name][0]} ({METRICS[metric_name][1]})"
+    # Fallback: title case with underscores replaced
+    return metric_name.replace("_", " ").title()
 
 
 def bounded_grid(records, row, column, value, limit=24):
@@ -117,10 +151,6 @@ def worker(job):
         raise ValueError(message)
 
 
-def collect(frame):
-    return frame.collect(engine="streaming")
-
-
 def table(frame):
     data = (
         collect(frame.limit(PAGE_ROWS))
@@ -163,23 +193,25 @@ def chart(figure, title, key, x=None, y=None):
     )
 
 
-def bars(data, group, metric, title, key):
+def bars(data, group, metric, title, key, color_map=None):
     if data.is_empty():
         st.info("No observations match this view.")
         return
     shown = data.sort(metric, descending=True).head(25).reverse()
+    if color_map is None:
+        color_map = build_color_map(shown[group].to_list())
     chart(
         go.Figure(
             go.Bar(
                 x=shown[metric].to_list(),
                 y=shown[group].to_list(),
                 orientation="h",
-                marker_color=[color(v) for v in shown[group].to_list()],
+                marker_color=[get_color(v, color_map) for v in shown[group].to_list()],
             )
         ),
         title,
         key,
-        metric,
+        format_axis_title(metric),
         group,
     )
     st.caption(f"Showing up to 25 groups out of {data.height}; omitted groups are not merged.")
@@ -209,6 +241,14 @@ def display_results(root, coverage):
             "Empty selections mean all customers. Historical filters are evaluated separately at each cutoff; transitions filter the destination population."
         )
     rows = apply_filters(raw, filters)
+
+    # Build deterministic color map from all dimension labels
+    all_labels = set()
+    for dim in DIMS:
+        labels = collect(rows.select(dim).unique().sort(dim))[dim].to_list()
+        all_labels.update(str(label) for label in labels)
+    color_map = build_color_map(all_labels)
+
     metrics = collect(
         rows.select(
             pl.len().alias("customers"),
@@ -277,7 +317,7 @@ def display_results(root, coverage):
                     f"Rolling 90-day {metric}",
                     f"trend_{metric}",
                     "Cutoff",
-                    metric,
+                    format_axis_title(metric) if metric in METRICS else metric,
                 )
         st.caption(
             "Overlapping windows are not independent; filtered membership and observation exposure may change."
@@ -290,7 +330,7 @@ def display_results(root, coverage):
         )
         for box, metric in zip(st.columns(2), ["customers", "spend_90d"]):
             with box:
-                bars(data, dim, metric, f"{metric} by {dim}", f"composition_{metric}")
+                bars(data, dim, metric, f"{metric} by {dim}", f"composition_{metric}", color_map)
     elif view == "Segments":
         dim = st.selectbox("Segmentation layer", DIMS)
         horizon = st.selectbox("Future-purchase horizon (days)", [30, 90])
@@ -323,6 +363,7 @@ def display_results(root, coverage):
             st.selectbox("Segment bar measure", ["customers", "spend_90d"]),
             "Segment comparison",
             "segment_bars",
+            color_map,
         )
         valid = [r for r in records if r["rate"] is not None][:25]
         if valid:
@@ -331,7 +372,7 @@ def display_results(root, coverage):
                     x=[r["rate"] for r in valid],
                     y=[r[dim] for r in valid],
                     mode="markers",
-                    marker=dict(size=10, color=[color(r[dim]) for r in valid]),
+                    marker=dict(size=10, color=[get_color(r[dim], color_map) for r in valid]),
                     error_x=dict(
                         type="data",
                         symmetric=False,
@@ -385,6 +426,7 @@ def display_results(root, coverage):
             "unavailable",
             "Missing or non-finite feature values",
             "missingness",
+            color_map,
         )
         table(diagnostic)
         feature = st.selectbox("Distribution feature", features)
@@ -430,7 +472,7 @@ def display_results(root, coverage):
                         y=part[y].to_list(),
                         mode="markers",
                         name=name,
-                        marker=dict(size=6, opacity=0.55, color=color(name)),
+                        marker=dict(size=6, opacity=0.55, color=get_color(name, color_map)),
                     )
                 )
             chart(fig, "Feature relationships", "scatter", x, y)
@@ -447,6 +489,8 @@ def display_results(root, coverage):
             ),
             filters,
         )
+
+        # Calendar activity heatmap (existing)
         cohort = collect(
             historical.with_columns(pl.col("first_purchase").dt.truncate("1mo").alias("cohort"))
             .group_by("cohort", "snapshot")
@@ -481,58 +525,198 @@ def display_results(root, coverage):
             "Latest 24 cohorts/cutoffs only. Blank cells are absent observations, not zero activity. This is calendar activity, not age-aligned retention or verified acquisition cohorts; exposure and filtered membership differ."
         )
         table(cohort.sort("cohort", "snapshot"))
+
+        # Age-aligned repeat purchase chart using cohort_summary (Wilson intervals)
+        st.subheader("Age-aligned repeat purchase (cohort_summary)")
+        cutoff_date = date.fromisoformat(chosen)
+        first_date = collect(historical.select(pl.col("first_purchase").min())).item()
+        if first_date is not None:
+            # Get baskets for the chosen cutoff
+            baskets_cutoff = pl.scan_parquet(
+                [str(p) for p in (root / "events" / chosen).glob("*/baskets.parquet")]
+            )
+            # Filter to chosen cutoff population
+            ids = rows.select("customer_id", "first_purchase").unique()
+            cohort_data = cohort_summary(
+                baskets_cutoff, ids.lazy(), cutoff_date, coverage, minimum=20
+            )
+            if not cohort_data.is_empty():
+                # Show for 30-day horizon
+                horizon_data = cohort_data.filter(pl.col("horizon") == 30)
+                if not horizon_data.is_empty():
+                    fig = go.Figure()
+                    for status in ["eligible", "capture_unconfirmed", "insufficient_followup_or_n"]:
+                        subset = horizon_data.filter(pl.col("status") == status)
+                        if not subset.is_empty():
+                            label = {
+                                "eligible": "Eligible (Wilson 95%)",
+                                "capture_unconfirmed": "Capture unconfirmed",
+                                "insufficient_followup_or_n": "Insufficient follow-up or N",
+                            }.get(status, status)
+                            color = {
+                                "eligible": "#0072B2",
+                                "capture_unconfirmed": "#CC79A7",
+                                "insufficient_followup_or_n": "#D55E00",
+                            }.get(status, "#64748b")
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=subset["cohort"].dt.strftime("%Y-%m").to_list(),
+                                    y=subset["rate"].to_list()
+                                    if status == "eligible"
+                                    else [None] * subset.height,
+                                    mode="markers+lines" if status == "eligible" else "markers",
+                                    name=label,
+                                    marker=dict(size=10, color=color),
+                                    error_y=dict(
+                                        type="data",
+                                        symmetric=False,
+                                        array=(subset["high"] - subset["rate"]).to_list()
+                                        if status == "eligible"
+                                        else None,
+                                        arrayminus=(subset["rate"] - subset["low"]).to_list()
+                                        if status == "eligible"
+                                        else None,
+                                        visible=True,
+                                    )
+                                    if status == "eligible"
+                                    else None,
+                                    hovertemplate="Cohort: %{x}<br>Repeat rate: %{y:.1%}<br>Eligible: %{customdata[0]}<br>Repeats: %{customdata[1]}<extra></extra>",
+                                    customdata=list(
+                                        zip(
+                                            subset["eligible_n"].to_list()
+                                            if "eligible_n" in subset.columns
+                                            else [None] * subset.height,
+                                            subset["repeat_n"].to_list()
+                                            if "repeat_n" in subset.columns
+                                            else [None] * subset.height,
+                                        )
+                                    )
+                                    if status == "eligible"
+                                    else None,
+                                )
+                            )
+                    # Mark first cohort as left-censored
+                    first_cohort = cohort_data["cohort"].min()
+                    if first_cohort is not None:
+                        fig.add_vline(
+                            x=first_cohort.strftime("%Y-%m"),
+                            line_dash="dash",
+                            line_color="red",
+                            annotation_text="First cohort (left-censored)",
+                            annotation_position="top left",
+                        )
+                    fig.update_xaxes(tickformat="%Y-%m")
+                    fig.update_yaxes(range=[0, 1], tickformat=".0%")
+                    chart(
+                        fig,
+                        "Age-aligned 30-day repeat purchase rate by cohort (Wilson 95% CI)",
+                        "cohort_repeat_rate",
+                        "Cohort month",
+                        "Repeat rate",
+                    )
+                    st.caption(
+                        "Age-aligned: repeat purchase within 30 days of first purchase. Wilson 95% CI for eligible cohorts (min 20 customers). First cohort marked as left-censored (first purchase = observation start)."
+                    )
+                    table(horizon_data.sort("cohort"))
+
+        # Concentration (Lorenz) chart
+        st.subheader("Customer concentration (Lorenz curve)")
+        conc = concentration(rows)
+        if conc["n"] > 0:
+            # Plot Lorenz curve
+            curve = conc["curve"]
+            x_vals, y_vals = zip(*curve) if curve else ([], [])
+            fig = go.Figure()
+            fig.add_trace(
+                go.Scatter(
+                    x=x_vals,
+                    y=y_vals,
+                    mode="lines",
+                    name="Lorenz curve",
+                    line=dict(color="#0072B2", width=2),
+                    hovertemplate="Population share: %{x:.1%}<br>Spend share: %{y:.1%}<extra></extra>",
+                )
+            )
+            # Add equality line
+            fig.add_trace(
+                go.Scatter(
+                    x=[0, 1],
+                    y=[0, 1],
+                    mode="lines",
+                    name="Equality",
+                    line=dict(color="gray", dash="dash"),
+                    hoverinfo="skip",
+                )
+            )
+            # Highlight top fractions
+            for top in conc["top"]:
+                fig.add_trace(
+                    go.Scatter(
+                        x=[top["actual_fraction"]],
+                        y=[top["spend_share"]],
+                        mode="markers",
+                        name=f"Top {top['requested_fraction']:.0%}",
+                        marker=dict(size=10, color="#D55E00"),
+                        hovertemplate=f"Top {top['requested_fraction']:.0%} customers<br>Population share: {top['actual_fraction']:.1%}<br>Spend share: {top['spend_share']:.1%}<extra></extra>",
+                    )
+                )
+            fig.update_xaxes(range=[0, 1], tickformat=".0%")
+            fig.update_yaxes(range=[0, 1], tickformat=".0%")
+            chart(
+                fig,
+                f"Lorenz curve: concentration of 90-day spend (n={conc['n']})",
+                "lorenz_curve",
+                "Population share (customers)",
+                "Spend share",
+            )
+            st.caption(
+                f"Total spend: {conc['total']:,.2f} ({conc['positive_n']} with positive spend). Top fractions round up to whole customers."
+            )
+        table(cohort.sort("cohort", "snapshot"))
     elif view == "Transitions":
         if len(history) < 2:
             st.info("Choose a cutoff with an earlier snapshot to compare transitions.")
             return
         origin = st.selectbox("Origin cutoff", history[:-1], index=len(history) - 2)
         dim = st.selectbox("Transition layer", DIMS[:-1])
-        parts = []
-        for destination in (root / "snapshots" / chosen).glob("*.parquet"):
-            source = root / "snapshots" / origin / destination.name
-            if source.exists():
-                before = pl.scan_parquet(source).select(
-                    "customer_id", pl.col(dim).alias("from_label")
-                )
-                after = apply_filters(pl.scan_parquet(destination), filters).select(
-                    "customer_id", pl.col(dim).alias("to_label")
-                )
-                parts.append(
-                    before.join(after, on="customer_id", how="inner", validate="1:1")
-                    .group_by("from_label", "to_label")
-                    .len()
-                )
-        if not parts:
-            st.info("No shared customer partitions for this comparison.")
-            return
-        flows = collect(
-            pl.concat(parts)
-            .group_by("from_label", "to_label")
-            .agg(pl.col("len").sum())
-            .with_columns((pl.col("len") / pl.col("len").sum().over("from_label")).alias("rate"))
-            .sort("len", descending=True)
+        before = apply_filters(
+            pl.scan_parquet([str(p) for p in (root / "snapshots" / origin).glob("*.parquet")]),
+            filters,
         )
+        after = apply_filters(
+            pl.scan_parquet([str(p) for p in (root / "snapshots" / chosen).glob("*.parquet")]),
+            filters,
+        )
+        flows, counts = transition_summary(before, after, dim)
         if flows.is_empty():
             st.info("No matched customers at both cutoffs.")
             return
-        shown = flows.head(30).to_dicts()
-        sources = sorted({r["from_label"] for r in shown})
-        targets = sorted({r["to_label"] for r in shown})
+        # Show reconciliation counts
+        st.caption(
+            f"Reconciliation: origin={counts['origin_n']}, destination={counts['destination_n']}, "
+            f"matched={counts['matched_n']}, origin_unmatched={counts['origin_unmatched']}, "
+            f"destination_unmatched={counts['destination_unmatched']}. "
+            f"Unmatched origin customers are not churn; unmatched destination customers are new arrivals."
+        )
+        # Sankey diagram
+        sources = sorted(flows["from_label"].unique().to_list())
+        targets = sorted(flows["to_label"].unique().to_list())
         fig = go.Figure(
             go.Sankey(
                 node=dict(
                     label=["From: " + s for s in sources] + ["To: " + t for t in targets],
-                    color=[color(s) for s in sources + targets],
+                    color=[get_color(s, color_map) for s in sources + targets],
                     pad=15,
                 ),
                 link=dict(
-                    source=[sources.index(r["from_label"]) for r in shown],
-                    target=[len(sources) + targets.index(r["to_label"]) for r in shown],
-                    value=[r["len"] for r in shown],
+                    source=[sources.index(r["from_label"]) for r in flows.to_dicts()],
+                    target=[len(sources) + targets.index(r["to_label"]) for r in flows.to_dicts()],
+                    value=flows["len"].to_list(),
                 ),
             )
         )
         chart(fig, f"{dim}: {origin} to {chosen}", "transition_sankey")
+        # Heatmap
         xs, ys, z = bounded_grid(flows.to_dicts(), "from_label", "to_label", "rate", limit=20)
         fig = go.Figure(
             go.Heatmap(
@@ -554,7 +738,9 @@ def display_results(root, coverage):
             "Origin label",
         )
         st.caption(
-            f"Matched customers: {flows['len'].sum():,}. Sankey shows the 30 largest of {flows.height} flows; heatmap axes are capped at 20 labels. Rates use all matched, destination-filtered customers per origin, so displayed cells need not sum to 100%. Missing pairs are blank. New arrivals are excluded, not counted as churn."
+            f"Matched customers: {flows['len'].sum():,}. Sankey shows the 30 largest of {flows.height} flows; heatmap axes are capped at 20 labels. "
+            f"Rates use all matched, destination-filtered customers per origin, so displayed cells need not sum to 100%. "
+            f"Missing pairs are blank. Unmatched origin customers are not churn; unmatched destination customers are new arrivals."
         )
         table(flows)
         st.download_button(
@@ -572,7 +758,7 @@ def display_results(root, coverage):
             "unknown_category_rows",
         ]
         counts = pl.DataFrame({"issue": labels, "rows": [inspection.get(k, 0) for k in labels]})
-        bars(counts, "issue", "rows", "Upload-wide quality flags", "quality_flags")
+        bars(counts, "issue", "rows", "Upload-wide quality flags", "quality_flags", color_map)
         st.caption(
             "Flags can overlap; these counts cover the upload, not the filtered customer population."
         )
