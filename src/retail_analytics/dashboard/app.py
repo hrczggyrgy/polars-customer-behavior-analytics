@@ -760,13 +760,13 @@ def display_results(root, coverage):
             "Same population denominator for both periods. Change in percentage points shown."
         )
 
-        # Load category history for the chosen cutoff
-        cat_history_paths = list((root / "events" / chosen).glob("*/category_history.parquet"))
-        if not cat_history_paths:
-            st.info("No category history available for this cutoff.")
+        # Load validated data for category participation (needs per-transaction dates)
+        validated_path = root / "validated.parquet"
+        if not validated_path.exists():
+            st.info("No validated data available for this analysis.")
         else:
-            cat_history = pl.scan_parquet(cat_history_paths)
-            part = category_participation_comparison(cat_history, rows)
+            validated = pl.scan_parquet(validated_path)
+            part = category_participation_comparison(validated, rows)
 
             if part.is_empty():
                 st.info("No category participation data for this population.")
@@ -984,7 +984,9 @@ def display_results(root, coverage):
             st.info("Need at least two cutoffs. Select an earlier snapshot in the sidebar.")
         else:
             origin = st.selectbox("Previous cutoff", history[:-1], index=len(history) - 2, key="vt_origin")
-            dim = st.selectbox("Transition layer", [d for d in DIMS if d != "evidence"], key="vt_dim")
+            # Waterfall only works for value_tier; other dimensions use Transitions view
+            dim = "value_tier"
+            st.info("Showing value_tier transitions (waterfall). For other dimensions, use the Transitions view.")
 
             before = apply_filters(
                 pl.scan_parquet([str(p) for p in (root / "snapshots" / origin).glob("*.parquet")]),
@@ -999,7 +1001,6 @@ def display_results(root, coverage):
             if flows.is_empty():
                 st.info("No matched customers at both cutoffs.")
             else:
-                if dim == "value_tier":
                     waterfall = value_tier_transition_waterfall(flows)
 
                     if not waterfall.is_empty():
@@ -1045,9 +1046,6 @@ def display_results(root, coverage):
                         )
                     else:
                         st.info("No value tier transitions found.")
-                else:
-                    st.info("Select 'value_tier' as the transition layer to see the waterfall. "
-                            "Other dimensions show Sankey/heatmap in the Transitions view.")
 
     elif view == "Behavior × Trajectory":
         st.subheader("Behavior × Trajectory bubble matrix")
@@ -1308,57 +1306,102 @@ def display_results(root, coverage):
     elif view == "Category Sankey":
         st.subheader("Category participation Sankey")
         st.caption(
-            "Shows category participation flow between two snapshots. "
-            "Participation = customers buying from category / filtered population. "
-            "Requires category_history.parquet from both cutoffs."
+            "Shows category participation change between two snapshots. "
+            "Participation = customers buying from category / filtered population (same denominator). "
+            "Uses validated transaction data for both periods."
         )
 
         if len(history) < 2:
-            st.info("Need at least two cutoffs for Sankey. Select an earlier snapshot in the sidebar.")
+            st.info("Need at least two cutoffs. Select an earlier snapshot in the sidebar.")
         else:
             origin = st.selectbox("Previous cutoff", history[:-1], index=len(history) - 2, key="cat_origin")
 
-            # Load current category history
-            cat_history_paths = list((root / "events" / chosen).glob("*/category_history.parquet"))
-            prev_cat_history_paths = list((root / "events" / origin).glob("*/category_history.parquet"))
-
-            if not cat_history_paths or not prev_cat_history_paths:
-                st.info("Category history not available for one or both cutoffs.")
+            # Load validated data
+            validated_path = root / "validated.parquet"
+            if not validated_path.exists():
+                st.info("No validated data available.")
             else:
-                cat_history = pl.scan_parquet(cat_history_paths)
-                prev_cat_history = pl.scan_parquet(prev_cat_history_paths)
+                validated = pl.scan_parquet(validated_path)
+
+                # Fixed population: current filtered population
+                ids = rows.select("customer_id").unique()
+                n = collect(ids.select(pl.len())).item()
+
+                # Current cutoff date ranges
+                cutoff_curr = date.fromisoformat(chosen)
+                cutoff_prev = date.fromisoformat(origin)
+
+                from retail_analytics.core.constants import WINDOW_RECENT, WINDOW_PREVIOUS_START_OFFSET, WINDOW_YEAR
+
+                # Current period: [C-364, C] (365-day window for category history)
+                curr_start = cutoff_curr - timedelta(days=WINDOW_YEAR - 1)
+                curr_end = cutoff_curr
+
+                # Previous period: [origin-364, origin]
+                prev_start = cutoff_prev - timedelta(days=WINDOW_YEAR - 1)
+                prev_end = cutoff_prev
 
                 # Current participation
-                curr_part, _ = category_sankey(cat_history, rows)
-                prev_part, _ = category_sankey(prev_cat_history, apply_filters(
+                curr_cats = (
+                    validated.filter(pl.col("date").is_between(curr_start, curr_end))
+                    .join(ids, on="customer_id", how="semi")
+                    .group_by("department", "category")
+                    .agg(
+                        pl.col("customer_id").n_unique().alias("curr_customers"),
+                        pl.col("value").sum().alias("curr_spend"),
+                    )
+                    .with_columns(
+                        pl.lit(n).alias("curr_population"),
+                        (pl.col("curr_customers") / pl.lit(n)).alias("curr_participation"),
+                    )
+                )
+
+                # Previous participation
+                prev_ids = apply_filters(
                     pl.scan_parquet([str(p) for p in (root / "snapshots" / origin).glob("*.parquet")]),
                     filters,
-                ))
+                ).select("customer_id").unique()
+                prev_n = collect(prev_ids.select(pl.len())).item()
 
-                if curr_part.is_empty() or prev_part.is_empty():
-                    st.info("No category participation data for one or both periods.")
-                else:
-                    # Join current and previous
-                    merged = curr_part.join(
-                        prev_part, on=["department", "category"], how="full"
-                    ).with_columns(
+                prev_cats = (
+                    validated.filter(pl.col("date").is_between(prev_start, prev_end))
+                    .join(prev_ids, on="customer_id", how="semi")
+                    .group_by("department", "category")
+                    .agg(
+                        pl.col("customer_id").n_unique().alias("prev_customers"),
+                        pl.col("value").sum().alias("prev_spend"),
+                    )
+                    .with_columns(
+                        pl.lit(prev_n).alias("prev_population"),
+                        (pl.col("prev_customers") / pl.lit(prev_n)).alias("prev_participation"),
+                    )
+                )
+
+                merged = collect(
+                    curr_cats.join(prev_cats, on=["department", "category"], how="full")
+                    .with_columns(
                         pl.col("curr_participation").fill_null(0),
                         pl.col("prev_participation").fill_null(0),
                         pl.col("curr_customers").fill_null(0),
                         pl.col("prev_customers").fill_null(0),
                         pl.col("curr_spend").fill_null(0),
                         pl.col("prev_spend").fill_null(0),
-                    ).with_columns(
+                        pl.col("curr_population").fill_null(n),
+                        pl.col("prev_population").fill_null(prev_n),
+                    )
+                    .with_columns(
                         (pl.col("curr_participation") - pl.col("prev_participation")).alias("part_change"),
                         pl.concat_str([pl.col("department"), pl.lit(" / "), pl.col("category")]).alias("label"),
-                    ).sort("curr_participation", descending=True)
+                    )
+                    .sort("curr_participation", descending=True)
+                )
 
-                    # Top N categories
+                if merged.is_empty():
+                    st.info("No category participation data for one or both periods.")
+                else:
                     top_n = st.slider("Top N categories", 5, 50, 20, key="cat_sankey_top")
                     display = merged.head(top_n)
 
-                    # Sankey-like flow: Previous categories → Current categories
-                    # For simplicity, show paired bar chart with change
                     fig = go.Figure()
                     fig.add_trace(go.Bar(
                         y=display["label"].to_list(),
@@ -1411,9 +1454,9 @@ def display_results(root, coverage):
                                          "curr_customers", "prev_customers", "curr_spend", "prev_spend"))
 
                     st.caption(
-                        "Participation = category buyers / period population (different denominators per period). "
-                        "For true Sankey with same population, use Category Participation view. "
-                        "Categories with zero buyers in a period show 0% participation."
+                        "Participation = category buyers / period population (same denominator per period). "
+                        "Current period uses current filtered population; previous uses previous filtered population. "
+                        "For fixed-population comparison, use Category Participation view."
                     )
 
     elif view == "Future Validation":

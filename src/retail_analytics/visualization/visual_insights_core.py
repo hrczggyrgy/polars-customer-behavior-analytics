@@ -397,11 +397,11 @@ def cadence_map(rows, sample_limit=2000, evidence_filter=None, value_tier_filter
     }
 
 
-def category_participation_comparison(history, rows):
+def category_participation_comparison(validated, rows):
     """Category participation comparison: recent 90d vs previous 90d.
 
     Participation = customers purchasing in category during period / fixed comparison population.
-    Returns DataFrame with category-level participation in both periods, changes, and spend.
+    Uses validated transaction data (has per-transaction date, department, category).
     """
     import polars as pl
 
@@ -422,34 +422,28 @@ def category_participation_comparison(history, rows):
     prev_start = cutoff - timedelta(days=WINDOW_PREVIOUS_START_OFFSET)
     prev_end = cutoff - timedelta(days=WINDOW_RECENT)
 
-    # Need category-history at day level to compute participation per period
-    # history has per-category per-day spend; we need to count distinct customers per category per period
-    # We'll use the original line data (but we only have category_history which is aggregated)
-
-    # category_history has: customer_id, department, category, date (per day), spend
-    # We can filter by date range and count distinct customers
-
+    # Use validated data which has per-transaction date, department, category
     recent_cats = (
-        history.filter(
+        validated.filter(
             pl.col("date").is_between(recent_start, recent_end)
         )
         .join(ids, on="customer_id", how="semi")
         .group_by("department", "category")
         .agg(
             pl.col("customer_id").n_unique().alias("recent_buyers"),
-            pl.col("spend").sum().alias("recent_spend"),
+            pl.col("value").sum().alias("recent_spend"),
         )
     )
 
     prev_cats = (
-        history.filter(
+        validated.filter(
             pl.col("date").is_between(prev_start, prev_end)
         )
         .join(ids, on="customer_id", how="semi")
         .group_by("department", "category")
         .agg(
             pl.col("customer_id").n_unique().alias("previous_buyers"),
-            pl.col("spend").sum().alias("previous_spend"),
+            pl.col("value").sum().alias("previous_spend"),
         )
     )
 
