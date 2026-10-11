@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,11 @@ from retail_analytics.visualization.visual_insights_core import (
     collect,
     concentration,
     transition_summary,
+    momentum_map,
+    cadence_map,
+    category_participation_comparison,
+    trial_to_repeat_map,
+    revenue_waterfall,
 )
 from retail_analytics.core.constants import (
     QUANTILE_VALUE_LOW,
@@ -327,6 +333,11 @@ def display_results(root, coverage):
             "Overview",
             "Segments",
             "Features",
+            "Customer Momentum",
+            "Purchase Cadence",
+            "Category Participation",
+            "Trial to Repeat",
+            "Revenue Waterfall",
             "Cohorts",
             "Transitions",
             "Quality",
@@ -534,6 +545,421 @@ def display_results(root, coverage):
         st.caption(
             "repeat_share begins on the second distinct product-purchase day; established_share begins on the third. Existing repeat-style rules use established_share."
         )
+    elif view == "Customer Momentum":
+        st.subheader("Customer momentum map: frequency vs. basket change")
+        st.caption(
+            "X-axis: frequency_change (recent 90d vs previous 90d purchase frequency). "
+            "Y-axis: basket_change (recent 90d vs previous 90d AOV). "
+            "Colour: value_tier. Only customers with comparable windows (tenure ≥ 179 days) and non-zero previous purchases are shown."
+        )
+
+        mom = momentum_map(rows)
+        sample = mom["sample"]
+        quad = mom["quadrant_summary"]
+        not_comp = mom["not_comparable_n"]
+        finite_n = mom["finite_n"]
+
+        if sample.is_empty():
+            st.info("No customers with comparable frequency and basket changes in this population.")
+        else:
+            # Quadrant summary
+            st.write("**Quadrant summary (all comparable customers)**")
+            if not quad.is_empty():
+                quad_display = quad.with_columns(
+                    pl.col("quadrant").str.replace_all("_", " ").str.to_title_case().alias("Quadrant"),
+                    pl.col("customer_share").alias("Customer share"),
+                    pl.col("spend_share").alias("Spend share"),
+                ).select("Quadrant", "customers", "Customer share", "spend_90d", "Spend share")
+                st.dataframe(quad_display, hide_index=True, use_container_width=True)
+            st.caption(f"Customers with comparable changes: {finite_n:,}. Not comparable (missing changes): {not_comp:,}. Not comparable customers are excluded from the scatter and quadrant counts; they are not placed at zero.")
+
+            # Scatter plot
+            fig = go.Figure()
+            quadrant_colors = {
+                "growing_both": "#009E73",           # bluish green
+                "more_frequent_smaller_baskets": "#56B4E9",  # sky blue
+                "less_frequent_larger_baskets": "#E69F00",   # orange
+                "declining_both": "#D55E00",         # vermillion
+            }
+            quadrant_labels = {
+                "growing_both": "Growing on both dimensions",
+                "more_frequent_smaller_baskets": "More frequent, lighter shopping",
+                "less_frequent_larger_baskets": "Less frequent, heavier shopping",
+                "declining_both": "Declining on both dimensions",
+            }
+
+            for name in sorted(sample["value_tier"].unique().to_list()):
+                part = sample.filter(pl.col("value_tier") == name)
+                fig.add_trace(
+                    go.Scattergl(
+                        x=part["frequency_change"].to_list(),
+                        y=part["basket_change"].to_list(),
+                        mode="markers",
+                        name=str(name),
+                        marker=dict(size=6, opacity=0.55, color=get_color(name, color_map)),
+                        customdata=list(zip(
+                            part["spend_90d"].to_list(),
+                            part["purchases_90d"].to_list(),
+                            part["purchases_previous90d"].to_list(),
+                            part["aov_recent"].to_list(),
+                            part["aov_previous"].to_list(),
+                            part["lifecycle"].to_list(),
+                            part["evidence"].to_list(),
+                        )),
+                        hovertemplate=(
+                            "Value tier: %{fullData.name}<br>"
+                            "Frequency change: %{x:.1%}<br>"
+                            "Basket change: %{y:.1%}<br>"
+                            "Recent spend: %{customdata[0]:,.2f}<br>"
+                            "Recent purchases: %{customdata[1]}<br>"
+                            "Previous purchases: %{customdata[2]}<br>"
+                            "Recent AOV: %{customdata[3]:,.2f}<br>"
+                            "Previous AOV: %{customdata[4]:,.2f}<br>"
+                            "Lifecycle: %{customdata[5]}<br>"
+                            "Evidence: %{customdata[6]}<extra></extra>"
+                        ),
+                    )
+                )
+
+            # Add zero reference lines
+            fig.add_vline(x=0, line_dash="dash", line_color="gray", line_width=1)
+            fig.add_hline(y=0, line_dash="dash", line_color="gray", line_width=1)
+
+            # Add quadrant annotations
+            fig.add_annotation(x=0.5, y=0.5, xref="paper", yref="paper",
+                             text="Growing on both", showarrow=False, font=dict(size=10, color="#009E73"), opacity=0.5)
+            fig.add_annotation(x=0.5, y=0.05, xref="paper", yref="paper",
+                             text="More frequent, lighter", showarrow=False, font=dict(size=10, color="#56B4E9"), opacity=0.5)
+            fig.add_annotation(x=0.05, y=0.5, xref="paper", yref="paper",
+                             text="Less frequent, heavier", showarrow=False, font=dict(size=10, color="#E69F00"), opacity=0.5)
+            fig.add_annotation(x=0.05, y=0.05, xref="paper", yref="paper",
+                             text="Declining on both", showarrow=False, font=dict(size=10, color="#D55E00"), opacity=0.5)
+
+            chart(fig, "Customer momentum map", "momentum_scatter",
+                  format_axis_title("frequency_change"), format_axis_title("basket_change"))
+
+            st.caption(
+                f"Scatter shows up to {PAGE_ROWS:,} hash-sampled customers with finite changes. "
+                f"Zero reference lines and quadrant labels are visual guides only. "
+                f"Missing changes (not comparable) are not shown at zero; count: {not_comp:,}."
+            )
+            table(sample.select("customer_id", "frequency_change", "basket_change", "value_tier", "lifecycle", "evidence",
+                              "spend_90d", "purchases_90d", "purchases_previous90d", "aov_recent", "aov_previous"))
+
+    elif view == "Purchase Cadence":
+        st.subheader("Purchase cadence map: recency vs. median gap")
+        st.caption(
+            "X-axis: median_gap (typical inter-purchase interval in days). "
+            "Y-axis: recency (days since last purchase). "
+            "Reference lines: recency = median_gap (on cadence) and recency = 2 × median_gap (overdue). "
+            "This visualises the lateness = recency / median_gap metric."
+        )
+
+        # Filters
+        col1, col2 = st.columns(2)
+        with col1:
+            evidence_options = collect(rows.select("evidence").unique().sort("evidence"))["evidence"].to_list()
+            evidence_filter = st.multiselect("Evidence level", evidence_options, key="cadence_evidence")
+        with col2:
+            vt_options = collect(rows.select("value_tier").unique().sort("value_tier"))["value_tier"].to_list()
+            vt_filter = st.multiselect("Value tier", vt_options, key="cadence_vt")
+
+        cad = cadence_map(rows, evidence_filter=evidence_filter or None, value_tier_filter=vt_filter or None)
+        sample = cad["sample"]
+        eligible_n = cad["eligible_n"]
+        total_n = cad["total_n"]
+
+        if sample.is_empty():
+            st.info("No customers with finite median_gap and recency in this population.")
+        else:
+            st.write(f"**Eligible customers (style_eligible): {eligible_n:,} of {total_n:,}**")
+
+            fig = go.Figure()
+            for name in sorted(sample["value_tier"].unique().to_list()):
+                part = sample.filter(pl.col("value_tier") == name)
+                fig.add_trace(
+                    go.Scattergl(
+                        x=part["median_gap"].to_list(),
+                        y=part["recency"].to_list(),
+                        mode="markers",
+                        name=str(name),
+                        marker=dict(size=6, opacity=0.55, color=get_color(name, color_map)),
+                        customdata=list(zip(
+                            part["lateness"].to_list(),
+                            part["evidence"].to_list(),
+                            part["lifecycle"].to_list(),
+                            part["gap_cv"].to_list(),
+                            part["days_365d"].to_list(),
+                        )),
+                        hovertemplate=(
+                            "Value tier: %{fullData.name}<br>"
+                            "Median gap: %{x:.1f} days<br>"
+                            "Recency: %{y:.1f} days<br>"
+                            "Lateness: %{customdata[0]:.2f}<br>"
+                            "Evidence: %{customdata[1]}<br>"
+                            "Lifecycle: %{customdata[2]}<br>"
+                            "Gap CV: %{customdata[3]:.2f}<br>"
+                            "Shopping days (365d): %{customdata[4]}<extra></extra>"
+                        ),
+                    )
+                )
+
+            # Reference lines: recency = median_gap and recency = 2 * median_gap
+            # We need to add these as traces since they're diagonal lines
+            max_gap = max(sample["median_gap"].max(), sample["recency"].max()) if sample.height > 0 else 100
+            x_line = [0, max_gap * 1.1]
+            fig.add_trace(go.Scatter(
+                x=x_line, y=x_line, mode="lines", name="Recency = Median gap (on cadence)",
+                line=dict(color="gray", dash="dash", width=1), hoverinfo="skip", showlegend=True
+            ))
+            fig.add_trace(go.Scatter(
+                x=x_line, y=[2 * v for v in x_line], mode="lines", name="Recency = 2× Median gap (overdue)",
+                line=dict(color="red", dash="dash", width=1), hoverinfo="skip", showlegend=True
+            ))
+
+            # Highlight overdue region
+            fig.add_vrect(x0=0, x1=max_gap * 1.1, y0=0, y1=max_gap * 1.1,
+                          fillcolor="rgba(0,158,115,0.05)", line_width=0, annotation_text="On cadence",
+                          annotation_position="top left", annotation_font_size=10, annotation_font_color="#009E73")
+            fig.add_vrect(x0=0, x1=max_gap * 1.1, y0=max_gap * 1.1, y1=max_gap * 2.2,
+                          fillcolor="rgba(213,94,0,0.05)", line_width=0, annotation_text="Overdue (1-2×)",
+                          annotation_position="top left", annotation_font_size=10, annotation_font_color="#D55E00")
+            fig.add_vrect(x0=0, x1=max_gap * 1.1, y0=max_gap * 2.2, y1=max_gap * 3.3,
+                          fillcolor="rgba(213,94,0,0.1)", line_width=0, annotation_text="Overdue (≥2×)",
+                          annotation_position="top left", annotation_font_size=10, annotation_font_color="#D55E00")
+
+            chart(fig, "Purchase cadence map", "cadence_scatter",
+                  "Median gap (days)", "Recency (days)")
+
+            st.caption(
+                f"Shows up to {PAGE_ROWS:,} hash-sampled customers with finite median_gap > 0 and recency. "
+                f"Grey line: recency = median gap (on cadence). Red line: recency = 2× median gap (overdue threshold). "
+                f"Coloured regions: green = on cadence, light orange = 1-2× overdue, darker orange = ≥2× overdue. "
+                f"Lateness = recency / median_gap. Only style_eligible customers have meaningful median_gap."
+            )
+            table(sample.select("customer_id", "median_gap", "recency", "lateness", "value_tier", "evidence", "lifecycle",
+                              "gap_cv", "days_365d"))
+
+    elif view == "Category Participation":
+        st.subheader("Category participation: recent 90d vs previous 90d")
+        st.caption(
+            "Participation = customers purchasing from category during period ÷ fixed comparison population. "
+            "Recent 90d: [C-89, C]. Previous 90d: [C-179, C-90]. "
+            "Same population denominator for both periods. Change in percentage points shown."
+        )
+
+        # Load category history for the chosen cutoff
+        cat_history_paths = list((root / "events" / chosen).glob("*/category_history.parquet"))
+        if not cat_history_paths:
+            st.info("No category history available for this cutoff.")
+        else:
+            cat_history = pl.scan_parquet(cat_history_paths)
+            part = category_participation_comparison(cat_history, rows)
+
+            if part.is_empty():
+                st.info("No category participation data for this population.")
+            else:
+                # Top categories by recent participation
+                top_n = st.slider("Top N categories to show", 5, 50, 20)
+                display = part.head(top_n)
+
+                # Paired horizontal bar chart
+                fig = go.Figure()
+                fig.add_trace(go.Bar(
+                    y=display["label"].to_list(),
+                    x=display["recent_participation"].to_list(),
+                    name="Recent 90d",
+                    orientation="h",
+                    marker_color="#0072B2",
+                    customdata=list(zip(
+                        display["recent_buyers"].to_list(),
+                        display["recent_spend"].to_list(),
+                        display["previous_buyers"].to_list(),
+                        display["previous_spend"].to_list(),
+                        display["participation_change_pp"].to_list(),
+                    )),
+                    hovertemplate=(
+                        "%{y}<br>"
+                        "Recent participation: %{x:.1%}<br>"
+                        "Recent buyers: %{customdata[0]:,}<br>"
+                        "Recent spend: %{customdata[1]:,.2f}<br>"
+                        "Previous buyers: %{customdata[2]:,}<br>"
+                        "Previous spend: %{customdata[3]:,.2f}<br>"
+                        "Change (pp): %{customdata[4]:.2f}<extra></extra>"
+                    ),
+                ))
+                fig.add_trace(go.Bar(
+                    y=display["label"].to_list(),
+                    x=display["previous_participation"].to_list(),
+                    name="Previous 90d",
+                    orientation="h",
+                    marker_color="#E69F00",
+                    opacity=0.6,
+                    customdata=list(zip(
+                        display["recent_buyers"].to_list(),
+                        display["recent_spend"].to_list(),
+                        display["previous_buyers"].to_list(),
+                        display["previous_spend"].to_list(),
+                        display["participation_change_pp"].to_list(),
+                    )),
+                    hovertemplate=(
+                        "%{y}<br>"
+                        "Previous participation: %{x:.1%}<br>"
+                        "Recent buyers: %{customdata[0]:,}<br>"
+                        "Recent spend: %{customdata[1]:,.2f}<br>"
+                        "Previous buyers: %{customdata[2]:,}<br>"
+                        "Previous spend: %{customdata[3]:,.2f}<br>"
+                        "Change (pp): %{customdata[4]:.2f}<extra></extra>"
+                    ),
+                ))
+                fig.update_layout(barmode="group")
+                chart(fig, f"Category participation (top {top_n})", "cat_participation_bars",
+                      "Participation (share of filtered population)", "Category")
+
+                # Table with changes
+                table(display.select("label", "population_n", "recent_participation", "previous_participation",
+                                     "participation_change_pp", "buyer_change", "recent_buyers", "previous_buyers",
+                                     "recent_spend", "previous_spend"))
+
+                st.caption(
+                    f"Population (denominator): {part['population_n'][0] if part.height > 0 else 0:,} customers (fixed for both periods). "
+                    f"Participation is share of this population. Change in percentage points = recent - previous. "
+                    f"Categories with zero buyers in a period show 0% participation, not missing."
+                )
+
+    elif view == "Trial to Repeat":
+        st.subheader("Product discovery to repeat: trial conversion by product")
+        st.caption(
+            "X-axis: number of eligible trials (first purchase in [C-364, C-90]). "
+            "Y-axis: pooled trial conversion (repeats within 90d / eligible trials). "
+            "Bubble size: distinct trialling customers. "
+            "Pooled conversion = Σ repeats / Σ eligible trials across all customers."
+        )
+
+        # Load product history for the chosen cutoff
+        prod_history_paths = list((root / "events" / chosen).glob("*/product_history.parquet"))
+        if not prod_history_paths:
+            st.info("No product history available for this cutoff.")
+        else:
+            prod_history = pl.scan_parquet(prod_history_paths)
+            trial_data = trial_to_repeat_map(prod_history, rows)
+
+            if trial_data.is_empty():
+                st.info("No eligible trials in this population.")
+            else:
+                # Filter to products with minimum trials
+                min_trials = st.number_input("Minimum eligible trials per product", 1, 1000, 5)
+                plot_data = trial_data.filter(pl.col("eligible_trials") >= min_trials)
+
+                if plot_data.is_empty():
+                    st.info(f"No products with ≥ {min_trials} eligible trials.")
+                else:
+                    # Bubble chart
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=plot_data["eligible_trials"].to_list(),
+                        y=plot_data["trial_conversion"].to_list(),
+                        mode="markers",
+                        marker=dict(
+                            size=[max(8, min(60, math.sqrt(c) * 3)) for c in plot_data["trialling_customers"].to_list()],
+                            opacity=0.6,
+                            color="#0072B2",
+                        ),
+                        customdata=list(zip(
+                            plot_data["eligible_trials"].to_list(),
+                            plot_data["repeated_trials"].to_list(),
+                            plot_data["trialling_customers"].to_list(),
+                            plot_data["product_id"].to_list(),
+                        )),
+                        hovertemplate=(
+                            "Product: %{customdata[3]}<br>"
+                            "Eligible trials: %{customdata[0]}<br>"
+                            "Repeated trials: %{customdata[1]}<br>"
+                            "Trialling customers: %{customdata[2]}<br>"
+                            "Trial conversion: %{y:.1%}<extra></extra>"
+                        ),
+                    ))
+                    fig.update_yaxes(range=[0, 1], tickformat=".0%")
+                    chart(fig, f"Trial to repeat (min {min_trials} trials)", "trial_repeat_bubble",
+                          "Eligible trials", "Trial conversion (pooled)")
+
+                    st.caption(
+                        f"Pooled conversion = total repeated trials / total eligible trials across customers. "
+                        f"Not the mean of customer-level conversion rates. "
+                        f"Eligible trials: first purchase in [C-364, C-90] with 90-day follow-up window fully observed. "
+                        f"Categories not shown; requires product→category lookup."
+                    )
+                    table(plot_data.select("product_id", "eligible_trials", "repeated_trials",
+                                           "trialling_customers", "trial_conversion"))
+
+    elif view == "Revenue Waterfall":
+        st.subheader("Revenue driver waterfall: recent 90d vs previous 90d")
+        st.caption(
+            "Decomposes spend change into: purchasing customers × baskets per purchaser × spend per basket (AOV). "
+            "Uses a fixed-order bridge (customer count → frequency → AOV). "
+            "Residual captures interaction effects. Method documented; contributions sum to observed change."
+        )
+
+        # Need previous cutoff data
+        if len(history) < 2:
+            st.info("Need at least two cutoffs for waterfall. Select an earlier snapshot in the sidebar.")
+        else:
+            origin = st.selectbox("Previous cutoff", history[:-1], index=len(history) - 2)
+            before_rows = apply_filters(
+                pl.scan_parquet([str(p) for p in (root / "snapshots" / origin).glob("*.parquet")]),
+                filters,
+            )
+            cutoff_date = date.fromisoformat(chosen)
+            waterfall = revenue_waterfall(rows, before_rows, cutoff_date)
+
+            if waterfall.is_empty():
+                st.info("Could not compute waterfall for this comparison.")
+            else:
+                # Waterfall chart
+                fig = go.Figure()
+                components = waterfall["component"].to_list()
+                values = waterfall["value"].to_list()
+
+                # Calculate cumulative for waterfall
+                cumulative = [values[0]]
+                for i in range(1, len(values) - 1):
+                    cumulative.append(cumulative[-1] + values[i])
+                cumulative.append(values[-1])  # final value
+
+                colors = []
+                for i, v in enumerate(values):
+                    if i == 0 or i == len(values) - 1:
+                        colors.append("#0072B2")  # start/end
+                    elif v >= 0:
+                        colors.append("#009E73")  # positive
+                    else:
+                        colors.append("#D55E00")  # negative
+
+                fig.add_trace(go.Waterfall(
+                    name="Spend decomposition",
+                    orientation="v",
+                    measure=["absolute"] + ["relative"] * (len(values) - 2) + ["total"],
+                    x=components,
+                    y=values,
+                    text=[f"{v:,.2f}" for v in values],
+                    textposition="outside",
+                    connector=dict(line=dict(color="rgb(63, 63, 63)")),
+                    increasing=dict(marker=dict(color="#009E73")),
+                    decreasing=dict(marker=dict(color="#D55E00")),
+                    totals=dict(marker=dict(color="#0072B2")),
+                ))
+
+                chart(fig, f"Revenue waterfall: {origin} to {chosen}", "revenue_waterfall",
+                      "Component", "Spend change (currency units)")
+
+                table(waterfall)
+                st.caption(
+                    "Fixed-order bridge: (1) purchasing customers change × prev frequency × prev AOV, "
+                    "(2) current customers × frequency change × prev AOV, "
+                    "(3) current customers × current frequency × AOV change. "
+                    "Residual = interaction effects. Attribution depends on decomposition order."
+                )
+
     elif view == "Cohorts":
         historical = apply_filters(
             pl.scan_parquet(
