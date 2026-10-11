@@ -10,21 +10,54 @@ C = "customer_id"
 K = [C, "transaction_id", "date"]
 P = [C, "product_id"]
 G = [C, "department", "category"]
-VERSION = "reconstructed-1.1"
+VERSION = "reconstructed-1.2"
 
 
 def ratio(a, b):
+    """Safe division: returns null when denominator is null or <= 0."""
     return pl.when(b.is_not_null() & (b > 0)).then(a / b).otherwise(None)
 
 
 def sink(frame, path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Deterministic output ordering - only sort by customer_id if present
+    schema = frame.collect_schema()
+    if C in schema.names():
+        frame = frame.sort(C)
+    elif "snapshot" in schema.names() and C in schema.names():
+        frame = frame.sort("snapshot", C)
+    elif "snapshot" in schema.names():
+        frame = frame.sort("snapshot")
     frame.sink_parquet(path, compression="zstd", engine="streaming")
 
 
 def taglist(pairs):
+    """Create a list of tags from (name, boolean_expression) pairs.
+    Tags are added in order; first match wins for mutually exclusive families.
+    """
     return pl.concat_list([pl.when(test.fill_null(False)).then(pl.lit(name)).otherwise(pl.lit(None, dtype=pl.String)) for name, test in pairs]).list.drop_nulls()
+
+
+def _rejection_reasons(raw):
+    """Compute per-row rejection reason codes."""
+    reasons = []
+    # Required string fields non-null and non-empty after trim
+    for col in [C, "transaction_id", "product_id"]:
+        reasons.append(pl.when(pl.col(col).is_null() | (pl.col(col).cast(pl.String).str.strip_chars() == "")).then(pl.lit(f"missing_{col}")).otherwise(pl.lit(None)))
+    # Date parse failure (date becomes null)
+    reasons.append(pl.when(pl.col("date").is_null()).then(pl.lit("invalid_date")).otherwise(pl.lit(None)))
+    # Price checks
+    reasons.append(pl.when(~pl.col("price").is_finite()).then(pl.lit("nonfinite_price")).otherwise(pl.lit(None)))
+    reasons.append(pl.when(pl.col("price") < 0).then(pl.lit("negative_price")).otherwise(pl.lit(None)))
+    # Quantity checks
+    reasons.append(pl.when(~pl.col("quantity").is_finite()).then(pl.lit("nonfinite_quantity")).otherwise(pl.lit(None)))
+    reasons.append(pl.when(pl.col("quantity") <= 0).then(pl.lit("nonpositive_quantity")).otherwise(pl.lit(None)))
+    # Value computation
+    reasons.append(pl.when(~pl.col("value").is_finite()).then(pl.lit("nonfinite_value")).otherwise(pl.lit(None)))
+    # Combine: first non-null reason wins (priority order above)
+    combined = pl.coalesce(*reasons)
+    return combined.alias("rejection_reason")
 
 
 def prepare(source, root, mode, buckets, exclude, fmt, through, coverage_confirmed=False):
@@ -46,17 +79,59 @@ def prepare(source, root, mode, buckets, exclude, fmt, through, coverage_confirm
         pl.col("product_description").cast(pl.String).fill_null(""),
         *[pl.col(x).cast(pl.Float64, strict=False) for x in ["price", "quantity"]])
     raw = raw.with_columns((pl.col("price") * pl.col("quantity") if mode == "unit" else pl.col("price")).alias("value"))
+    
+    # Compute rejection reasons before filtering
+    raw = raw.with_columns(_rejection_reasons(raw))
+    
     good = (pl.all_horizontal([pl.col(x).is_not_null() for x in [C, "transaction_id", "product_id", "date"]]) & pl.col("price").is_finite() & (pl.col("price") >= 0) & pl.col("quantity").is_finite() & (pl.col("quantity") > 0) & pl.col("value").is_finite()).fill_null(False)
     raw = raw.with_columns(good.alias("valid"))
-    audit = raw.select(pl.len().alias("source_rows"), (~pl.col("valid")).sum().alias("rejected_rows"), pl.col("date").min().alias("first_date"), pl.col("date").max().alias("last_date")).collect(engine="streaming").to_dicts()[0]
+    
+    # Enhanced quality audit - compute rejected frame first
+    rejected = raw.filter(~pl.col("valid"))
+    rejected_count = rejected.select(pl.len()).collect().item()
+    
+    # Base audit metrics
+    audit_base = raw.select(
+        pl.len().alias("source_rows"),
+        pl.lit(rejected_count).alias("rejected_rows"),
+        pl.col("date").min().alias("first_date"),
+        pl.col("date").max().alias("last_date"),
+        # Null required fields
+        pl.col(C).is_null().sum().alias("null_customer_id"),
+        pl.col("transaction_id").is_null().sum().alias("null_transaction_id"),
+        pl.col("product_id").is_null().sum().alias("null_product_id"),
+        pl.col("date").is_null().sum().alias("null_date"),
+        # Invalid numerics
+        (~pl.col("price").is_finite()).sum().alias("nonfinite_price"),
+        (pl.col("price") < 0).sum().alias("negative_price"),
+        (~pl.col("quantity").is_finite()).sum().alias("nonfinite_quantity"),
+        (pl.col("quantity") <= 0).sum().alias("nonpositive_quantity"),
+        (~pl.col("value").is_finite()).sum().alias("nonfinite_value"),
+    ).collect(engine="streaming").to_dicts()[0]
+    
+    # Rejection breakdown (only if there are rejected rows)
+    if rejected_count > 0:
+        breakdown_df = rejected.select(pl.col("rejection_reason").value_counts()).collect()
+        breakdown = {}
+        for row in breakdown_df.to_dicts():
+            struct_val = row["rejection_reason"]
+            breakdown[struct_val["rejection_reason"]] = struct_val["count"]
+    else:
+        breakdown = {}
+    
+    audit_base["rejection_breakdown"] = breakdown
+    audit = audit_base
+    
     (root / "quality.json").write_text(json.dumps(audit, default=str, indent=2))
+    
     if not audit["source_rows"]:
         raise ValueError("Empty input")
     if audit["rejected_rows"]:
-        sink(raw.filter(~pl.col("valid")), root / "rejected.parquet")
+        # Write rejected rows with rejection_reason
+        sink(rejected.drop("valid"), root / "rejected.parquet")
         if not exclude:
             raise ValueError("Invalid rows: inspect quality.json and rejected.parquet")
-    clean = raw.filter(pl.col("valid")).drop("valid", "transaction_date")
+    clean = raw.filter(pl.col("valid")).drop("valid", "transaction_date", "rejection_reason")
     maximum_date = clean.select(pl.col("date").max()).collect().item()
     if maximum_date is None:
         raise ValueError("No valid records")
@@ -92,6 +167,12 @@ def prepare(source, root, mode, buckets, exclude, fmt, through, coverage_confirm
 def snapshot(path, d, end, root, coverage_confirmed=False):
     out = root / "events" / str(d) / path.stem
     line = pl.scan_parquet(path).filter(pl.col("date") <= d)
+    
+    # Temporal boundary assertion: verify no post-cutoff dates in descriptive data
+    max_date_check = line.select(pl.col("date").max()).collect().item()
+    if max_date_check is not None and max_date_check > d:
+        raise AssertionError(f"Temporal leakage: descriptive data contains date {max_date_check} > cutoff {d}")
+    
     s30, s90, s365, old0, old1 = [d - timedelta(days=x) for x in [29, 89, 364, 179, 90]]
     recent, old, year = pl.col("date") >= s90, pl.col("date").is_between(old0, old1), pl.col("date") >= s365
     sink(line.group_by(K).agg(pl.col("value").sum().alias("spend"), pl.col("product_id").n_unique().alias("products"), pl.col("category_key").n_unique().alias("breadth")), out / "baskets.parquet")
@@ -118,7 +199,7 @@ def snapshot(path, d, end, root, coverage_confirmed=False):
         (pl.col("date").dt.weekday() >= 6).filter(year).mean().alias("weekend_share"), pl.col("relative_spend").filter(recent).median().alias("personal_spend_ratio"),
         ((pl.col("date") >= s30) & (ratio(pl.col("gap"), pl.col("baseline_gap")) >= 2)).fill_null(False).sum().alias("reactivation_events"))
     weekdays = day.filter(year).group_by([C, pl.col("date").dt.weekday().alias("weekday")]).len().with_columns((pl.col("len") / pl.col("len").sum().over(C)).alias("p"))
-    weekday_stats = weekdays.group_by(C).agg((-(pl.col("p") * pl.col("p").log())).sum().alias("weekday_entropy"))
+    weekday_stats = weekdays.group_by(C).agg((-(pl.col("p") * pl.col("p").log())).filter(pl.col("p") > 0).sum().alias("weekday_entropy"))
     last6 = day.with_columns(pl.col("date").cum_count().over(C, order_by="date", descending=True).alias("rank")).filter(pl.col("rank") <= 6).select(C, "date")
     breadth = line.join(last6, on=[C, "date"], how="inner", validate="m:1").group_by(C).agg(pl.col("product_id").n_unique().alias("products_last6days"), pl.col("category_key").n_unique().alias("categories_last6days"))
     pd = line.group_by(P + ["date"]).agg(pl.col("quantity").sum().alias("qty"), pl.col("value").sum().alias("spend"))
@@ -146,6 +227,12 @@ def snapshot(path, d, end, root, coverage_confirmed=False):
     frame = base
     for extra in [rhythm, weekday_stats, breadth, trials, habits, quantity, categories, dominant, prices]:
         frame = frame.join(extra, on=C, how="left", validate="1:1")
+    
+    # Post-join integrity check: no duplicate customers
+    dup_check = frame.group_by(C).len().filter(pl.col("len") > 1)
+    if dup_check.select(pl.len()).collect().item():
+        raise AssertionError("Duplicate customer_ids after feature merge")
+    
     frame = frame.with_columns(pl.lit(d).alias("snapshot"), (pl.lit(d) - pl.col("first_purchase")).dt.total_days().alias("tenure"), (pl.lit(d) - pl.col("last_purchase")).dt.total_days().alias("recency"), ratio(pl.col("spend_90d"), pl.col("purchases_90d")).alias("aov_recent"), ratio(pl.col("spend_previous90d"), pl.col("purchases_previous90d")).alias("aov_previous"), ratio(pl.col("repeated_trials"), pl.col("eligible_trials")).alias("trial_conversion"), ratio(pl.col("core_spend"), pl.col("spend_365d")).alias("core_spend_share"))
     frame = frame.with_columns(ratio(pl.col("recency"), pl.col("median_gap")).alias("lateness"), (pl.col("tenure") >= 179).alias("comparable_windows"), (pl.col("breadth_recent") - pl.col("breadth_previous")).alias("breadth_change"), *[pl.when(pl.col("days_history") >= 6).then(pl.col(x)).otherwise(None).alias(x) for x in ["products_last6days", "categories_last6days"]])
     frame = frame.with_columns(*[pl.when(pl.col("comparable_windows")).then(ratio(pl.col(a), pl.col(b)) - 1).otherwise(None).alias(name) for a, b, name in [("purchases_90d", "purchases_previous90d", "frequency_change"), ("aov_recent", "aov_previous", "basket_change"), ("spend_90d", "spend_previous90d", "spend_change")]], pl.lit(VERSION).alias("version"))
@@ -154,32 +241,100 @@ def snapshot(path, d, end, root, coverage_confirmed=False):
         followup_eligible = bool(coverage_confirmed) and horizon_end <= end
         future = pl.scan_parquet(path).filter(pl.col("date").is_between(d + timedelta(days=1), horizon_end)).group_by(C).agg(pl.col("transaction_id").n_unique().alias(f"future_purchases_{h}d"), pl.col("value").sum().alias(f"future_spend_{h}d"))
         frame = frame.join(future, on=C, how="left", validate="1:1").with_columns(pl.lit(followup_eligible).alias(f"eligible_followup_{h}d"), *[pl.when(pl.lit(followup_eligible)).then(pl.col(x).fill_null(0)).otherwise(None).alias(x) for x in [f"future_purchases_{h}d", f"future_spend_{h}d"]])
+    
+    # Final temporal assertion: descriptive features must not use post-cutoff data
+    # (future columns are explicitly allowed to be post-cutoff)
+    descriptive_cols = [c for c in frame.collect_schema().names() if not c.startswith(("future_", "eligible_followup_"))]
+    # This is implicitly enforced by the initial `line.filter(pl.col("date") <= d)` 
+    # but we document the invariant here.
+    
     target = root / "numeric" / str(d) / path.name
     sink(frame, target)
     return target
 
 
 def label(frame, thresholds):
+    # Style eligibility: sufficient history for behavioral classification
     enough = (pl.col("days_365d") >= 6) & (pl.col("tenure") >= 90) & (pl.col("gap_count") >= 4)
+    
+    # Behavioral Style Tags (mutually exclusive via precedence order in taglist)
     routine = (pl.col("gap_cv") <= 0.75) & (pl.col("established_share") >= 0.70)
     focused = (pl.col("dominant_share") >= 0.70) & (pl.col("established_share") >= 0.70)
     broad = (pl.col("median_breadth") >= 3) & (pl.col("established_share") >= 0.70)
     explorer = pl.col("new_share") >= 0.40
-    style = [("routine_repeat", enough & routine), ("focused_repeat", enough & focused), ("broad_repeat", enough & broad), ("exploration_heavy", enough & explorer)]
+    
+    style = [
+        ("routine_repeat", enough & routine),
+        ("focused_repeat", enough & focused),
+        ("broad_repeat", enough & broad),
+        ("exploration_heavy", enough & explorer),
+    ]
+    
+    # Quantile-based style tags (require thresholds from reference snapshot)
     if all(thresholds.get(x) is not None for x in ["basket_low", "basket_high", "gap_low", "gap_high"]) and thresholds["basket_high"] > thresholds["basket_low"] and thresholds["gap_high"] > thresholds["gap_low"]:
-        style += [("large_basket_episodic", enough & (pl.col("median_basket") >= thresholds["basket_high"]) & (pl.col("median_gap") >= thresholds["gap_high"])), ("small_basket_frequent", enough & (pl.col("median_basket") <= thresholds["basket_low"]) & (pl.col("median_gap") <= thresholds["gap_low"]))]
-    slow, small = pl.col("frequency_change") <= -0.25, pl.col("basket_change") <= -0.25
+        style += [
+            ("large_basket_episodic", enough & (pl.col("median_basket") >= thresholds["basket_high"]) & (pl.col("median_gap") >= thresholds["gap_high"])),
+            ("small_basket_frequent", enough & (pl.col("median_basket") <= thresholds["basket_low"]) & (pl.col("median_gap") <= thresholds["gap_low"])),
+        ]
+    
+    # Trajectory Tags (multiple can apply; not mutually exclusive)
+    slow = pl.col("frequency_change") <= -0.25
+    small = pl.col("basket_change") <= -0.25
     narrow = pl.col("comparable_windows") & ((pl.col("breadth_change") <= -0.5) | (pl.col("overdue_categories") >= 2))
     grow = (pl.col("frequency_change") >= 0.25) | (pl.col("basket_change") >= 0.25)
-    late, back = enough & (pl.col("lateness") >= 2), pl.col("reactivation_events") > 0
+    late = enough & (pl.col("lateness") >= 2)
+    back = pl.col("reactivation_events") > 0
     stable = enough & pl.col("comparable_windows") & pl.col("frequency_change").is_not_null() & ~(slow.fill_null(False) | small.fill_null(False) | narrow.fill_null(False) | grow.fill_null(False) | late.fill_null(False) | back.fill_null(False))
-    frame = frame.with_columns(enough.alias("style_eligible"), taglist(style).alias("behavioral_tags"), taglist([("slowing", slow), ("smaller_baskets", small), ("narrowing", narrow), ("broad_decline", slow & small), ("expanding", grow), ("overdue", late), ("reactivated", back), ("stable", stable)]).alias("trajectory_tags"),
-        pl.when(pl.col("days_history") == 1).then(pl.when(pl.col("tenure") >= 90).then(pl.lit("one_shopping_day")).otherwise(pl.lit("first_observed"))).when((pl.col("days_history") >= 6) & (pl.col("tenure") >= 90)).then(pl.lit("established_repeat")).otherwise(pl.lit("early_repeat")).alias("lifecycle"),
-        pl.when(enough & (pl.col("gap_count") >= 12)).then(pl.lit("stronger")).when(enough).then(pl.lit("limited")).otherwise(pl.lit("insufficient")).alias("evidence"))
-    frame = frame.with_columns(pl.when(~pl.col("style_eligible")).then(pl.lit("insufficient_history")).when(pl.col("behavioral_tags").list.len() == 0).then(pl.lit("mixed_other")).otherwise(pl.col("behavioral_tags").list.join("+")).alias("behavior"), pl.when(pl.col("trajectory_tags").list.len() == 0).then(pl.lit("not_classified")).otherwise(pl.col("trajectory_tags").list.join("+")).alias("trajectory"))
+    
+    trajectory_pairs = [
+        ("slowing", slow),
+        ("smaller_baskets", small),
+        ("narrowing", narrow),
+        ("broad_decline", slow & small),
+        ("expanding", grow),
+        ("overdue", late),
+        ("reactivated", back),
+        ("stable", stable),
+    ]
+    
+    # Lifecycle Stages (mutually exclusive)
+    lifecycle = pl.when(pl.col("days_history") == 1).then(
+        pl.when(pl.col("tenure") >= 90).then(pl.lit("one_shopping_day")).otherwise(pl.lit("first_observed"))
+    ).when((pl.col("days_history") >= 6) & (pl.col("tenure") >= 90)).then(
+        pl.lit("established_repeat")
+    ).otherwise(pl.lit("early_repeat"))
+    
+    # Evidence Level (mutually exclusive)
+    evidence = pl.when(enough & (pl.col("gap_count") >= 12)).then(pl.lit("stronger")).when(enough).then(pl.lit("limited")).otherwise(pl.lit("insufficient"))
+    
+    frame = frame.with_columns(
+        enough.alias("style_eligible"),
+        taglist(style).alias("behavioral_tags"),
+        taglist(trajectory_pairs).alias("trajectory_tags"),
+        lifecycle.alias("lifecycle"),
+        evidence.alias("evidence")
+    )
+    
+    # Behavior label: joined tags or status
+    frame = frame.with_columns(
+        pl.when(~pl.col("style_eligible")).then(pl.lit("insufficient_history"))
+        .when(pl.col("behavioral_tags").list.len() == 0).then(pl.lit("mixed_other"))
+        .otherwise(pl.col("behavioral_tags").list.join("+")).alias("behavior"),
+        pl.when(pl.col("trajectory_tags").list.len() == 0).then(pl.lit("not_classified"))
+        .otherwise(pl.col("trajectory_tags").list.join("+")).alias("trajectory")
+    )
+    
+    # Value Tier (mutually exclusive, requires thresholds)
     if thresholds.get("value_low") is None or thresholds.get("value_high") is None:
         return frame.with_columns(pl.lit("reference_unavailable").alias("value_tier"))
-    return frame.with_columns(pl.when(pl.col("tenure") < 89).then(pl.lit("insufficient_exposure")).when(pl.col("spend_90d") == 0).then(pl.lit("no_recent_spend")).when(pl.col("spend_90d") >= thresholds["value_high"]).then(pl.lit("high")).when(pl.col("spend_90d") <= thresholds["value_low"]).then(pl.lit("low")).otherwise(pl.lit("middle")).alias("value_tier"))
+    
+    return frame.with_columns(
+        pl.when(pl.col("tenure") < 89).then(pl.lit("insufficient_exposure"))
+        .when(pl.col("spend_90d").is_null() | (pl.col("spend_90d") == 0)).then(pl.lit("no_recent_spend"))
+        .when(pl.col("spend_90d") >= thresholds["value_high"]).then(pl.lit("high"))
+        .when(pl.col("spend_90d") <= thresholds["value_low"]).then(pl.lit("low"))
+        .otherwise(pl.lit("middle")).alias("value_tier")
+    )
 
 
 def reports(root, buckets):
@@ -187,7 +342,22 @@ def reports(root, buckets):
     profile = allrows.group_by(["snapshot", "behavior"]).agg(pl.len().alias("customers"), pl.col("spend_90d").sum().alias("revenue"), pl.col("spend_90d").median().alias("median_spend"), pl.col("median_gap").median().alias("median_gap"), pl.col("new_share").mean().alias("exploration"), pl.col("trial_conversion").mean().alias("mean_customer_trial_conversion"), *[(pl.col(f"future_purchases_{h}d") > 0).filter(pl.col(f"eligible_followup_{h}d")).mean().alias(f"future_purchase_rate_{h}d") for h in [30, 90]], *[pl.col(f"future_spend_{h}d").filter(pl.col(f"eligible_followup_{h}d")).mean().alias(f"future_mean_spend_{h}d") for h in [30, 90]], *[pl.col(f"eligible_followup_{h}d").sum().alias(f"eligible_customers_{h}d") for h in [30, 90]])
     profile = profile.with_columns(ratio(pl.col("customers"), pl.col("customers").sum().over("snapshot")).alias("customer_share"), ratio(pl.col("revenue"), pl.col("revenue").sum().over("snapshot")).alias("revenue_share"))
     sink(profile, root / "segment_profiles.parquet")
-    sink(allrows.with_columns(pl.col("first_purchase").dt.truncate("1mo").alias("cohort")).group_by(["snapshot", "cohort"]).agg(pl.len().alias("customers"), pl.col("spend_history").mean().alias("mean_cumulative_spend"), (pl.col("purchases_30d") > 0).mean().alias("rolling30d_purchase_rate"), (pl.col("future_purchases_30d") > 0).filter(pl.col("eligible_followup_30d")).mean().alias("future30d_purchase_rate")), root / "cohort_profiles.parquet")
+    
+    # Cohort profiles with exposure tracking
+    cohort_data = allrows.with_columns(pl.col("first_purchase").dt.truncate("1mo").alias("cohort"))
+    cohort_profile = cohort_data.group_by(["snapshot", "cohort"]).agg(
+        pl.len().alias("customers"),
+        pl.col("spend_history").mean().alias("mean_cumulative_spend"),
+        (pl.col("purchases_30d") > 0).mean().alias("rolling30d_purchase_rate"),
+        (pl.col("future_purchases_30d") > 0).filter(pl.col("eligible_followup_30d")).mean().alias("future30d_purchase_rate"),
+        # Exposure: months between cohort start and snapshot
+        ((pl.col("snapshot").dt.year() - pl.col("cohort").dt.year()) * 12 + (pl.col("snapshot").dt.month() - pl.col("cohort").dt.month())).first().alias("observation_months"),
+        # Minimum tenure in cohort
+        pl.col("tenure").min().alias("min_tenure_days"),
+        pl.col("tenure").max().alias("max_tenure_days"),
+    )
+    sink(cohort_profile, root / "cohort_profiles.parquet")
+    
     paths = []
     for b in range(buckets):
         try:

@@ -2,6 +2,15 @@
 
 A customer behavior analytics pipeline built with [Polars](https://pola.rs) for retail transaction data.
 
+## Documentation
+
+| Document | Description |
+|--------|-------------|
+| [METRICS.md](METRICS.md) | Complete metric specifications with formulas, denominators, windows, and null semantics |
+| [DATA_CONTRACT.md](DATA_CONTRACT.md) | Input/output schemas, validation rules, and CLI reference |
+| [workflow.md](workflow.md) | Pipeline architecture diagram and data flow |
+| [DASHBOARD.md](DASHBOARD.md) | Streamlit dashboard usage and limitations |
+
 ## Data Workflow
 
 ```mermaid
@@ -21,7 +30,7 @@ flowchart TD
         VALUE["Compute Value\n(unit: price x qty or line_total: price)"]
         VALIDATE["Row Validation\n(Required fields, price>=0, qty>0, finite)"]
         AUDIT["Quality Audit\nto quality.json"]
-        REJECT["Rejected Rows\nto rejected.parquet"]
+        REJECT["Rejected Rows\nto rejected.parquet (with rejection_reason)"]
         ENRICH["Enrich\n(unit_price, category_key, bucket)"]
         PARTITION["Partition by Bucket\nto partitions/bN.parquet"]
         CHECKS["Integrity Checks\n- Basket conflicts\n- Product variation"]
@@ -33,32 +42,32 @@ flowchart TD
         BASE["Customer Base Features\n- History: first/last purchase\n- Counts: purchases_30d, 90d, 365d\n- Spend: spend_30d, 90d, 365d\n- AOV, median_basket, breadth"]
         DAILY["Daily Features\n- day_spend, products list, categories list\n- gap, relative_spend\n- Jaccard overlap (products/categories)"]
         RHYTHM["Rhythm Features\n- median_gap, gap_cv\n- product/category overlap\n- weekend_share, reactivation_events"]
-        WEEKDAY["Weekday Entropy"]
-        BREADTH["Last 6 Days Breadth"]
+        WEEKDAY["Weekday Entropy (Shannon, natural log)"]
+        BREADTH["Last 6 Days Breadth\n(requires ≥6 shopping days)"]
         PROD["Product-Level Features\n- trial/repeat dates\n- prior_days, next_gap\n- relative_qty"]
         TRIALS["Trial Conversion\n- eligible_trials, repeated_trials\n- core_size, core_spend"]
         CAT["Category History\n- share, HHI, entropy\n- dominant category\n- overdue_categories"]
         PRICE_FEAT["Price Features\n- relative_paid_price\n- comparable_price_lines"]
-        MERGE["Merge All Features\nto 78 columns"]
+        MERGE["Merge All Features\nto 79 columns"]
         DERIVED["Derived Metrics\n- tenure, recency\n- aov_recent/previous\n- frequency/basket/spend_change\n- lateness, breadth_change"]
-        FOLLOWUP["Future Followup (no lookahead)\n- future_purchases_30d, 90d\n- future_spend_30d, 90d"]
+        FOLLOWUP["Future Followup (no lookahead)\n- future_purchases_30d, 90d\n- future_spend_30d, 90d\n- Requires coverage_confirmed"]
     end
 
     subgraph LABEL["LABELING & CLASSIFICATION"]
-        THRESH["Quantile Thresholds\n(value/basket/gap low/high)"]
-        STYLE["Behavioral Style Tags\n- routine_repeat (gap_cv<=.75, repeat>=.7)\n- focused_repeat (dominant>=.7, repeat>=.7)\n- broad_repeat (breadth>=3, repeat>=.7)\n- exploration_heavy (new_share>=.4)"]
-        TRAJ["Trajectory Tags\n- slowing / smaller_baskets\n- narrowing / broad_decline\n- expanding / overdue / reactivated / stable"]
-        LIFECYCLE["Lifecycle\n- first_observed / long_observed_single\n- early_repeat / established_repeat"]
-        EVIDENCE["Evidence Level\n- stronger / limited / insufficient"]
-        BEHAVIOR["Behavior Label"]
-        TRAJ_L["Trajectory Label"]
-        VALUE_TIER["Value Tier\n- high / middle / low\n- insufficient_exposure / no_recent_spend"]
+        THRESH["Quantile Thresholds\n(value/basket/gap low/high)\nComputed at first snapshot"]
+        STYLE["Behavioral Style Tags (precedence order)\n- routine_repeat (gap_cv≤.75, established≥.7)\n- focused_repeat (dominant≥.7, established≥.7)\n- broad_repeat (breadth≥3, established≥.7)\n- exploration_heavy (new_share≥.4)\n- large_basket_episodic (quantile-based)\n- small_basket_frequent (quantile-based)"]
+        TRAJ["Trajectory Tags (multi-label)\n- slowing / smaller_baskets\n- narrowing / broad_decline\n- expanding / overdue / reactivated / stable"]
+        LIFECYCLE["Lifecycle (mutually exclusive)\n- first_observed / one_shopping_day\n- early_repeat / established_repeat"]
+        EVIDENCE["Evidence Level (mutually exclusive)\n- stronger / limited / insufficient"]
+        BEHAVIOR["Behavior Label\n(joined style tags or status)"]
+        TRAJ_L["Trajectory Label\n(joined trajectory tags)"]
+        VALUE_TIER["Value Tier (mutually exclusive)\n- high / middle / low\n- insufficient_exposure / no_recent_spend\n- reference_unavailable"]
     end
 
     subgraph REPORTS["REPORTING"]
-        SEG["Segment Profiles\n(customers, revenue, rates by behavior)"]
-        COHORT["Cohort Profiles\n(mean spend, purchase rates by cohort)"]
-        TRANS["Segment Transitions\n(transition rates by dimension)"]
+        SEG["Segment Profiles\n(customers, revenue, rates by behavior)\nIncludes customer_share, revenue_share"]
+        COHORT["Cohort Profiles\n(mean spend, purchase rates by cohort)\nIncludes observation_months, tenure range"]
+        TRANS["Segment Transitions\n(transition rates by dimension)\nSum to 1 per origin label"]
     end
 
     %% Connections
@@ -111,7 +120,7 @@ flowchart TD
 
 ```bash
 # Install dependencies
-pip install polars
+pip install -r requirements.txt
 
 # Run pipeline
 python retail_polars_workflow.py \
@@ -127,15 +136,46 @@ python retail_polars_workflow.py \
 
 | File | Description |
 |------|-------------|
-| `results/quality.json` | Data quality audit |
+| `results/quality.json` | Data quality audit with rejection breakdown |
+| `results/rejected.parquet` | Rejected rows with `rejection_reason` column |
 | `results/validated.parquet` | Cleaned transactions |
-| `results/snapshots/{date}/b{N}.parquet` | Customer features (78 cols) with labels |
+| `results/snapshots/{date}/b{N}.parquet` | Customer features (79 cols) with labels |
 | `results/segment_profiles.parquet` | Segment metrics per cutoff |
 | `results/segment_transitions.parquet` | Transition rates between segments |
-| `results/cohort_profiles.parquet` | Cohort analysis by first purchase month |
+| `results/cohort_profiles.parquet` | Cohort analysis by first purchase month (includes observation_months) |
+| `results/thresholds.json` | Quantile thresholds from first snapshot |
+| `results/configuration.json` | Pipeline run configuration |
+| `results/price_references/{date}.parquet` | Per-snapshot median prices per product |
+| `results/product_variation.parquet` | Product classification audit |
 
 ## Tests
 
 ```bash
+# Run all tests
+python -m unittest test_retail_polars_workflow test_dashboard test_metrics_contract -v
+
+# Run individual test modules
 python -m unittest test_retail_polars_workflow -v
+python -m unittest test_dashboard -v
+python -m unittest test_metrics_contract -v
 ```
+
+## Key Methodological Notes
+
+- **No lookahead**: All descriptive features use only transactions ≤ cutoff date. Future follow-up metrics require explicit `--coverage-confirmed`.
+- **Purchase-only**: Pipeline treats all valid rows as purchases. Returns/refunds not supported (negative quantities rejected).
+- **Relative segmentation**: Quantile thresholds are population-relative at first snapshot; not portable across populations.
+- **Cohort exposure**: Cohort metrics include `observation_months`; raw rates not comparable across unequal tenures.
+- **Null semantics**: Metrics return `null` (not zero) for zero denominators or insufficient data.
+- **Currency**: Amounts in input data's currency; no conversion or symbol assumed.
+- **No causal claims**: All associations descriptive. Segment differences ≠ intervention effects.
+
+## Requirements
+
+```
+polars
+streamlit
+plotly
+```
+
+Install with `pip install -r requirements.txt`.
