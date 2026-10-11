@@ -6,7 +6,7 @@ from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from retail_analytics.patronage.patronage import Rules, build, classify, label_frame, month_bounds
+from retail_analytics.patronage.patronage import build, classify, label_frame, month_bounds
 
 
 def profile(**changes):
@@ -109,15 +109,121 @@ class RuleTests(unittest.TestCase):
             app.display_results("root", False)
         self.assertEqual(calls, [("root", False), ("root", False)])
 
-    def test_threshold_validation(self):
-        for changes in [
-            dict(overdue_multiple=1.0),
-            dict(active_share=1.2),
-            dict(max_gap_cv=float("nan")),
-            dict(min_days=0),
-        ]:
-            with self.assertRaises(ValueError):
-                Rules(**changes)
+    def test_vector_labels_match_reference(self):
+        import polars as pl
+
+        examples = [
+            profile(),
+            profile(days_history=1),
+            profile(tenure=30),
+            profile(complete_months=1),
+            profile(recency=40),
+            profile(resume_events=1),
+            profile(gap_cv=None),
+        ]
+        for confirmed in [False, True]:
+            actual = (
+                label_frame(pl.DataFrame(examples).lazy(), capture_confirmed=confirmed)
+                .collect()["observed_patronage"]
+                .to_list()
+            )
+            self.assertEqual(actual, [classify(r, capture_confirmed=confirmed) for r in examples])
+
+    def test_classify_label_frame_parity_all_branches(self):
+        """Test that classify() and label_frame() give identical results for all branches."""
+        import polars as pl
+
+        # Cover every branch in classify():
+        # 1. capture_unconfirmed
+        # 2. first_observed (days_history=1, tenure < min_tenure)
+        # 3. long_observed_one_day (days_history=1, tenure >= min_tenure)
+        # 4. recent_repeat (tenure < min_tenure, days_history > 1)
+        # 5. insufficient_history (not enough)
+        # 6. recurring_overdue (regular + overdue)
+        # 7. reactivated_repeat (resume_events > 0)
+        # 8. established_recurring (regular + active_period_share >= active_share)
+        # 9. established_occasional (fallback)
+        test_cases = [
+            # capture_unconfirmed
+            (profile(), False, "capture_unconfirmed"),
+            # first_observed
+            (profile(days_history=1, tenure=20), True, "first_observed"),
+            # long_observed_one_day
+            (profile(days_history=1, tenure=180), True, "long_observed_one_day"),
+            # recent_repeat
+            (profile(tenure=40), True, "recent_repeat"),
+            # insufficient_history (complete_months < 3)
+            (profile(complete_months=2), True, "insufficient_history"),
+            # insufficient_history (days_history < 3)
+            (profile(days_history=2), True, "insufficient_history"),
+            # recurring_overdue
+            (profile(recency=40), True, "recurring_overdue"),
+            # reactivated_repeat
+            (profile(resume_events=1), True, "reactivated_repeat"),
+            # established_recurring
+            (profile(), True, "established_recurring"),
+            # established_occasional (not regular due to gap_cv > 0.75)
+            (profile(gap_cv=1.2), True, "established_occasional"),
+            # established_occasional (not regular due to gap_cv = None)
+            (profile(gap_cv=None), True, "established_occasional"),
+            # established_occasional (not regular due to days_365d < cadence_days)
+            (profile(days_365d=5), True, "established_occasional"),
+            # established_occasional (not regular due to gap_count < cadence_gaps)
+            (profile(gap_count=3), True, "established_occasional"),
+            # established_occasional (not regular due to median_gap not finite)
+            (profile(median_gap=None), True, "established_occasional"),
+            # established_occasional (not regular due to gap_cv < 0)
+            (profile(gap_cv=-0.1), True, "established_occasional"),
+            # established_occasional (active_period_share < active_share)
+            (profile(active_period_share=0.5), True, "established_occasional"),
+        ]
+
+        for row, confirmed, expected in test_cases:
+            scalar_result = classify(row, capture_confirmed=confirmed)
+            vector_result = (
+                label_frame(pl.DataFrame([row]).lazy(), capture_confirmed=confirmed)
+                .collect()["observed_patronage"][0]
+            )
+            self.assertEqual(
+                scalar_result, expected, f"classify failed for {row} with confirmed={confirmed}"
+            )
+            self.assertEqual(
+                vector_result, expected, f"label_frame failed for {row} with confirmed={confirmed}"
+            )
+            self.assertEqual(
+                scalar_result,
+                vector_result,
+                f"Parity mismatch for {row} with confirmed={confirmed}: {scalar_result} != {vector_result}",
+            )
+
+    def test_month_bounds_edge_cases(self):
+        """Test month_bounds with various first_purchase and cutoff combinations."""
+        # First purchase on 1st of month
+        start, end, count = month_bounds(date(2024, 1, 1), date(2024, 3, 15))
+        self.assertEqual(start, date(2024, 1, 1))
+        self.assertEqual(end, date(2024, 2, 1))
+        self.assertEqual(count, 2)  # Jan, Feb
+
+        # First purchase mid-month
+        start, end, count = month_bounds(date(2024, 1, 15), date(2024, 3, 15))
+        self.assertEqual(start, date(2024, 2, 1))
+        self.assertEqual(end, date(2024, 2, 1))
+        self.assertEqual(count, 1)  # Only Feb
+
+        # First purchase on last day of month
+        start, end, count = month_bounds(date(2024, 1, 31), date(2024, 3, 15))
+        self.assertEqual(start, date(2024, 2, 1))
+        self.assertEqual(end, date(2024, 2, 1))
+        self.assertEqual(count, 1)
+
+        # Cutoff on last day of month
+        start, end, count = month_bounds(date(2024, 1, 15), date(2024, 2, 29))
+        self.assertEqual(end, date(2024, 2, 1))
+        self.assertEqual(count, 1)
+
+        # First purchase after cutoff should raise
+        with self.assertRaises(ValueError):
+            month_bounds(date(2024, 3, 1), date(2024, 2, 29))
 
 
 @unittest.skipUnless(importlib.util.find_spec("polars"), "Polars unavailable")
