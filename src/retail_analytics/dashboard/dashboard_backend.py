@@ -11,20 +11,14 @@ import polars as pl
 
 from retail_analytics.core.constants import (
     MAX_CUTOFFS,
-    MIN_DAYS_STYLE,
-    MIN_GAP_COUNT_STYLE,
     MIN_REFERENCE_POPULATION,
-    MIN_TENURE_STYLE,
-    MIN_TENURE_VALUE_TIER,
     QUANTILE_STYLE_HIGH,
     QUANTILE_STYLE_LOW,
     QUANTILE_VALUE_HIGH,
     QUANTILE_VALUE_LOW,
 )
 from retail_analytics.core.retail_polars_workflow import COLS, label, prepare, sink, snapshot
-from retail_analytics.core.stats import wilson
 from retail_analytics.core.thresholds import (
-    ThresholdPolicy,
     calibrate_thresholds,
     compute_data_profile,
     default_policy,
@@ -139,10 +133,10 @@ def inspect(job):
     elif dtype == pl.Date:
         parsed = pl.col("transaction_date").cast(pl.Date)
     elif isinstance(dtype, pl.Datetime):
+        # Preserve timezone through precision conversion
+        dt_col = pl.col("transaction_date")
         if dtype.time_unit != "us":
-            dt_col = pl.col("transaction_date").cast(pl.Datetime("us"))
-        else:
-            dt_col = pl.col("transaction_date")
+            dt_col = dt_col.cast(pl.Datetime("us", time_zone=dtype.time_zone))
         if dtype.time_zone is not None:
             if timezone is None:
                 raise ValueError("Timezone-aware Datetime input requires timezone parameter")
@@ -155,7 +149,11 @@ def inspect(job):
         value = pl.col(x).cast(pl.String).str.strip_chars()
         if job.get("decimal_comma"):
             value = value.str.replace_all(",", ".", literal=True)
-        numeric.append(value.cast(pl.Float64, strict=False).alias(x))
+        # Preserve raw string before casting to distinguish missing vs malformed
+        raw_col = value.alias(f"{x}_raw")
+        casted = value.cast(pl.Float64, strict=False).alias(x)
+        numeric.append(raw_col)
+        numeric.append(casted)
     raw = raw.select(COLS).with_columns(
         parsed.alias("transaction_date"),
         *numeric,
@@ -190,6 +188,18 @@ def inspect(job):
             pl.col("transaction_date").null_count().alias("invalid_dates"),
             (pl.col("department") == "__UNKNOWN__").sum().alias("unknown_department_rows"),
             (pl.col("category") == "__UNKNOWN__").sum().alias("unknown_category_rows"),
+            # Distinguish missing source from malformed token
+            pl.col("price").is_null().sum().alias("null_price"),
+            (pl.col("price").is_null() & pl.col("price_raw").is_not_null()).sum().alias("malformed_price"),
+            (~pl.col("price").is_finite()).sum().alias("nonfinite_price"),
+            (pl.col("price") < 0).sum().alias("negative_price"),
+            pl.col("quantity").is_null().sum().alias("null_quantity"),
+            (pl.col("quantity").is_null() & pl.col("quantity_raw").is_not_null()).sum().alias("malformed_quantity"),
+            (~pl.col("quantity").is_finite()).sum().alias("nonfinite_quantity"),
+            (pl.col("quantity") <= 0).sum().alias("nonpositive_quantity"),
+            (~value.is_finite()).sum().alias("nonfinite_value"),
+            pl.col("price_raw").is_null().sum().alias("missing_price_raw"),
+            pl.col("quantity_raw").is_null().sum().alias("missing_quantity_raw"),
         )
         .collect(engine="streaming")
         .to_dicts()[0]
@@ -221,6 +231,7 @@ def inspect(job):
     )
     summary["basket_key_conflicts"] = conflicts
     write_json(root / "inspection.json", summary)
+    # Keep raw columns for rejection provenance
     sink(raw, root / "canonical.parquet")
     if conflicts:
         raise ValueError("Customer/transaction keys span dates; resolve the transaction grain")
@@ -325,10 +336,12 @@ def analyze(job):
     reference_date = job.get("reference_date")
 
     # Build policy from job parameters
-    policy = ThresholdPolicy(
-        low_p=min(value_quantile_low, style_quantile_low),
-        high_p=max(value_quantile_high, style_quantile_high),
-        min_n=min_reference_population,
+    policy = default_policy(
+        value_quantile_low=value_quantile_low,
+        value_quantile_high=value_quantile_high,
+        style_quantile_low=style_quantile_low,
+        style_quantile_high=style_quantile_high,
+        min_reference_population=min_reference_population,
     )
 
     # Select reference cutoff: earliest with sufficient & stable population
@@ -358,7 +371,8 @@ def analyze(job):
         write_thresholds(root, thresholds)
         # Label all snapshots with reference_unavailable
         for path in numeric:
-            frame = label(pl.scan_parquet(path), thresholds).with_columns(
+            snap_date = date.fromisoformat(path.parent.name)
+            frame = label(pl.scan_parquet(path), thresholds, snapshot_date=snap_date, reference_date=None).with_columns(
                 pl.when(pl.col("spend_365d") > 0)
                 .then(pl.col("category_hhi"))
                 .otherwise(None)
@@ -396,7 +410,8 @@ def analyze(job):
 
     write_thresholds(root, thresholds)
     for path in numeric:
-        frame = label(pl.scan_parquet(path), thresholds).with_columns(
+        snap_date = date.fromisoformat(path.parent.name)
+        frame = label(pl.scan_parquet(path), thresholds, snapshot_date=snap_date, reference_date=ref_date).with_columns(
             pl.when(pl.col("spend_365d") > 0)
             .then(pl.col("category_hhi"))
             .otherwise(None)
@@ -417,7 +432,7 @@ def analyze(job):
             "polars_version": pl.__version__,
             "source_sha256": job["sha256"],
             "invalid_rows_excluded": bool(job["exclude_invalid"]),
-            "reference_date": str(dates[0]),
+            "reference_date": str(ref_date),
         },
     )
 

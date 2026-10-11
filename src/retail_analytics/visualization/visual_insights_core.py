@@ -416,7 +416,7 @@ def category_participation_comparison(validated, rows):
         return pl.DataFrame()
 
     # Recent 90d: [C-89, C], Previous 90d: [C-179, C-90]
-    from retail_analytics.core.constants import WINDOW_RECENT, WINDOW_PREVIOUS_START_OFFSET
+    from retail_analytics.core.constants import WINDOW_PREVIOUS_START_OFFSET, WINDOW_RECENT
     recent_start = cutoff - timedelta(days=WINDOW_RECENT - 1)
     recent_end = cutoff
     prev_start = cutoff - timedelta(days=WINDOW_PREVIOUS_START_OFFSET)
@@ -447,8 +447,9 @@ def category_participation_comparison(validated, rows):
         )
     )
 
+    # Full join with coalesced category keys to preserve previous-only and recent-only categories
     result = collect(
-        recent_cats.join(prev_cats, on=["department", "category"], how="full")
+        recent_cats.join(prev_cats, on=["department", "category"], how="full", coalesce=True)
         .with_columns(
             pl.lit(n).alias("population_n"),
             pl.when(pl.lit(n) > 0)
@@ -460,6 +461,7 @@ def category_participation_comparison(validated, rows):
             .otherwise(None)
             .alias("previous_participation"),
             (pl.col("recent_buyers").fill_null(0) - pl.col("previous_buyers").fill_null(0)).alias("buyer_change"),
+            (pl.col("recent_spend").fill_null(0) - pl.col("previous_spend").fill_null(0)).alias("spend_change"),
             pl.concat_str([pl.col("department"), pl.lit(" / "), pl.col("category")]).alias("label"),
         )
         .with_columns(
@@ -528,72 +530,99 @@ def trial_to_repeat_map(product_history, rows):
 
 
 def revenue_waterfall(rows, previous_rows, cutoff):
-    """Month-to-month revenue waterfall decomposition.
+    """Revenue waterfall decomposition between two snapshots.
 
     Decomposes spend change into:
-    - Purchasing customers
-    - Baskets per purchasing customer
-    - Spend per basket (AOV)
+    - Purchasing customers (N)
+    - Baskets per purchasing customer (F)
+    - Spend per basket / AOV (A)
+
+    The bridge is order-dependent (N -> F -> A) and descriptive, not causal.
+    For a valid factor bridge:
+        R_t = total recorded spend
+        B_t = total baskets
+        N_t = distinct purchasing customers
+        F_t = B_t / N_t
+        A_t = R_t / B_t
+    Then R_t = N_t * F_t * A_t.
+
+    Sequential bridge (order N, F, A):
+        delta_N = (N_1 - N_0) * F_0 * A_0
+        delta_F = N_1 * (F_1 - F_0) * A_0
+        delta_A = N_1 * F_1 * (A_1 - A_0)
+
+    These sum to R_1 - R_0 (within floating-point tolerance).
     """
     import polars as pl
 
-    # This requires historical month data; for now, implement using recent vs previous 90d
-    # as a two-period decomposition
-    current = rows
-    previous = previous_rows
-
-    if current is None or previous is None:
+    if rows is None or previous_rows is None:
         return pl.DataFrame()
 
-    n_current = collect(current.select(pl.len())).item()
-    n_previous = collect(previous.select(pl.len())).item()
-
-    # Compute components for current period
+    # Compute components for current period from customer-level data
     current_stats = collect(
-        current.select(
+        rows.select(
             (pl.col("purchases_90d") > 0).sum().alias("purchasing_customers"),
-            pl.col("purchases_90d").filter(pl.col("purchases_90d") > 0).mean().alias("baskets_per_buyer"),
-            pl.col("spend_90d").filter(pl.col("purchases_90d") > 0).mean().alias("spend_per_basket"),
-            pl.col("spend_90d").sum().alias("total_spend"),
+            pl.col("purchases_90d").filter(pl.col("purchases_90d") > 0).sum().alias("total_baskets"),
+            pl.col("spend_90d").filter(pl.col("purchases_90d") > 0).sum().alias("total_spend"),
         )
     ).row(0, named=True)
 
     previous_stats = collect(
-        previous.select(
+        previous_rows.select(
             (pl.col("purchases_90d") > 0).sum().alias("purchasing_customers"),
-            pl.col("purchases_90d").filter(pl.col("purchases_90d") > 0).mean().alias("baskets_per_buyer"),
-            pl.col("spend_90d").filter(pl.col("purchases_90d") > 0).mean().alias("spend_per_basket"),
-            pl.col("spend_90d").sum().alias("total_spend"),
+            pl.col("purchases_90d").filter(pl.col("purchases_90d") > 0).sum().alias("total_baskets"),
+            pl.col("spend_90d").filter(pl.col("purchases_90d") > 0).sum().alias("total_spend"),
         )
     ).row(0, named=True)
 
-    # Fixed-order bridge decomposition (customer count -> frequency -> AOV)
     pc_curr = current_stats["purchasing_customers"] or 0
-    bpb_curr = current_stats["baskets_per_buyer"] or 0
-    spb_curr = current_stats["spend_per_basket"] or 0
+    tb_curr = current_stats["total_baskets"] or 0
+    ts_curr = current_stats["total_spend"] or 0
+
     pc_prev = previous_stats["purchasing_customers"] or 0
-    bpb_prev = previous_stats["baskets_per_buyer"] or 0
-    spb_prev = previous_stats["spend_per_basket"] or 0
+    tb_prev = previous_stats["total_baskets"] or 0
+    ts_prev = previous_stats["total_spend"] or 0
 
-    # Decomposition: spend = purchasing_customers * baskets_per_buyer * spend_per_basket
-    # Contribution of each factor (holding others at previous level)
-    spend_prev = previous_stats["total_spend"] or 0
-    spend_curr = current_stats["total_spend"] or 0
+    # Handle edge cases
+    if pc_prev == 0 or tb_prev == 0:
+        # Cannot compute previous-period rates; return total change only
+        return pl.DataFrame([
+            dict(component="Previous period spend", value=ts_prev, order=0),
+            dict(component="Current period spend", value=ts_curr, order=1),
+            dict(component="Total change", value=ts_curr - ts_prev, order=2),
+            dict(component="Decomposition", value="unavailable: zero purchasing customers or baskets in previous period", order=3),
+        ])
 
-    delta_pc = (pc_curr - pc_prev) * bpb_prev * spb_prev
-    delta_bpb = pc_curr * (bpb_curr - bpb_prev) * spb_prev
-    delta_spb = pc_curr * bpb_curr * (spb_curr - spb_prev)
+    if pc_curr == 0 or tb_curr == 0:
+        # Current period has no purchasing activity
+        return pl.DataFrame([
+            dict(component="Previous period spend", value=ts_prev, order=0),
+            dict(component="Current period spend", value=ts_curr, order=1),
+            dict(component="Total change", value=ts_curr - ts_prev, order=2),
+            dict(component="Decomposition", value="unavailable: zero purchasing customers or baskets in current period", order=3),
+        ])
 
-    # Residual (interaction effects)
-    residual = spend_curr - spend_prev - delta_pc - delta_bpb - delta_spb
+    # Compute rates
+    F_prev = tb_prev / pc_prev  # baskets per buyer
+    A_prev = ts_prev / tb_prev  # AOV
+    F_curr = tb_curr / pc_curr
+    A_curr = ts_curr / tb_curr
+
+    # Sequential bridge decomposition (order: N -> F -> A)
+    delta_N = (pc_curr - pc_prev) * F_prev * A_prev
+    delta_F = pc_curr * (F_curr - F_prev) * A_prev
+    delta_A = pc_curr * F_curr * (A_curr - A_prev)
+
+    # Verify reconciliation (within floating-point tolerance)
+    residual = ts_curr - ts_prev - delta_N - delta_F - delta_A
 
     return pl.DataFrame([
-        dict(component="Previous period spend", value=spend_prev, order=0),
-        dict(component="Purchasing customers", value=delta_pc, order=1),
-        dict(component="Baskets per customer", value=delta_bpb, order=2),
-        dict(component="Spend per basket", value=delta_spb, order=3),
-        dict(component="Residual (interactions)", value=residual, order=4),
-        dict(component="Current period spend", value=spend_curr, order=5),
+        dict(component="Previous period spend", value=ts_prev, order=0),
+        dict(component="Purchasing customers", value=delta_N, order=1),
+        dict(component="Baskets per customer", value=delta_F, order=2),
+        dict(component="Spend per basket (AOV)", value=delta_A, order=3),
+        dict(component="Residual (rounding)", value=residual, order=4),
+        dict(component="Current period spend", value=ts_curr, order=5),
     ])
 
 
@@ -602,6 +631,10 @@ def value_tier_transition_waterfall(transition_flows):
 
     Takes transition flows from transition_summary (from_label, to_label, len, rate)
     and computes net gain/loss per value tier.
+
+    Note: Inflows/outflows include diagonal transitions (customers staying in same tier).
+    Net change for a tier = inflow - outflow. For a closed matched population,
+    sum of net_change across all tiers should be zero.
     """
     import polars as pl
 
@@ -610,32 +643,32 @@ def value_tier_transition_waterfall(transition_flows):
         return pl.DataFrame()
 
     # Get all unique value tiers from both from and to
-    from_tiers = transition_flows.select(pl.col("from_label").alias("tier"))
-    to_tiers = transition_flows.select(pl.col("to_label").alias("tier"))
+    from_tiers = flows.select(pl.col("from_label").alias("tier"))
+    to_tiers = flows.select(pl.col("to_label").alias("tier"))
     all_tiers = pl.concat([from_tiers, to_tiers]).unique().sort("tier")
 
     # Compute outflows (customers leaving each tier) and inflows (customers entering each tier)
     outflows = (
-        transition_flows.group_by("from_label")
+        flows.group_by("from_label")
         .agg(pl.col("len").sum().alias("outflow"))
         .rename({"from_label": "tier"})
     )
     inflows = (
-        transition_flows.group_by("to_label")
+        flows.group_by("to_label")
         .agg(pl.col("len").sum().alias("inflow"))
         .rename({"to_label": "tier"})
     )
 
-    # Net change per tier
+    # Net change per tier - compute in separate stage to ensure fill_null takes effect
     result = (
         all_tiers.join(outflows, on="tier", how="left")
         .join(inflows, on="tier", how="left")
         .with_columns(
             pl.col("outflow").fill_null(0),
             pl.col("inflow").fill_null(0),
-            (pl.col("inflow") - pl.col("outflow")).alias("net_change"),
         )
         .with_columns(
+            (pl.col("inflow") - pl.col("outflow")).alias("net_change"),
             pl.when(pl.col("net_change") >= 0)
             .then(pl.lit("gain"))
             .otherwise(pl.lit("loss"))

@@ -15,32 +15,31 @@ import plotly.graph_objects as go
 import polars as pl
 import streamlit as st
 
+from retail_analytics.core.constants import (
+    QUANTILE_STYLE_HIGH,
+    QUANTILE_STYLE_LOW,
+    QUANTILE_VALUE_HIGH,
+    QUANTILE_VALUE_LOW,
+)
 from retail_analytics.core.retail_polars_workflow import COLS
 from retail_analytics.core.stats import wilson
 from retail_analytics.dashboard.dashboard_backend import cutoffs
 from retail_analytics.visualization.visual_insights_core import (
     METRICS,
+    basket_composition_slope,
+    behavior_trajectory_matrix,
+    cadence_map,
+    category_participation_comparison,
     cohort_summary,
     collect,
     concentration,
-    transition_summary,
-    momentum_map,
-    cadence_map,
-    category_participation_comparison,
-    trial_to_repeat_map,
-    revenue_waterfall,
-    value_tier_transition_waterfall,
-    behavior_trajectory_matrix,
-    purchase_rhythm_panel,
-    basket_composition_slope,
-    category_sankey,
     future_outcome_validation,
-)
-from retail_analytics.core.constants import (
-    QUANTILE_VALUE_LOW,
-    QUANTILE_VALUE_HIGH,
-    QUANTILE_STYLE_LOW,
-    QUANTILE_STYLE_HIGH,
+    momentum_map,
+    purchase_rhythm_panel,
+    revenue_waterfall,
+    transition_summary,
+    trial_to_repeat_map,
+    value_tier_transition_waterfall,
 )
 
 MAX_BYTES = 100 * 1024 * 1024
@@ -246,7 +245,7 @@ def display_results(root, coverage):
     manifest = read_json(root / "run.json")
     thresholds = read_json(root / "thresholds.json")
     coverage = bool(coverage and manifest.get("coverage_confirmed"))
-    
+
     # Show threshold calibration info
     if thresholds.get("reference_selection", {}).get("selected"):
         ref_sel = thresholds["reference_selection"]
@@ -270,14 +269,14 @@ def display_results(root, coverage):
                 freq_thresh = thresholds.get('frequency_change_threshold')
                 if freq_thresh:
                     st.metric("Frequency change threshold", f"±{freq_thresh:.2f}")
-            
+
             # Show warnings from data profile
             data_profile = thresholds.get("data_profile", {})
             warnings = data_profile.get("warnings", [])
             if warnings:
                 for w in warnings:
                     st.warning(w)
-            
+
             # Show label share warnings
             label_shares = thresholds.get("label_shares", {})
             ls_warnings = label_shares.get("warnings", [])
@@ -290,7 +289,7 @@ def display_results(root, coverage):
             "Labels using quantile thresholds (large_basket_episodic, small_basket_frequent, value tiers) "
             "will show as 'reference_unavailable'."
         )
-    
+
     chosen = st.selectbox(
         "Result cutoff", manifest["snapshots"], index=len(manifest["snapshots"]) - 1
     )
@@ -896,10 +895,10 @@ def display_results(root, coverage):
                           "Eligible trials", "Trial conversion (pooled)")
 
                     st.caption(
-                        f"Pooled conversion = total repeated trials / total eligible trials across customers. "
-                        f"Not the mean of customer-level conversion rates. "
-                        f"Eligible trials: first purchase in [C-364, C-90] with 90-day follow-up window fully observed. "
-                        f"Categories not shown; requires product→category lookup."
+                        "Pooled conversion = total repeated trials / total eligible trials across customers. "
+                        "Not the mean of customer-level conversion rates. "
+                        "Eligible trials: first purchase in [C-364, C-90] with 90-day follow-up window fully observed. "
+                        "Categories not shown; requires product→category lookup."
                     )
                     table(plot_data.select("product_id", "eligible_trials", "repeated_trials",
                                            "trialling_customers", "trial_conversion"))
@@ -1331,7 +1330,9 @@ def display_results(root, coverage):
                 cutoff_curr = date.fromisoformat(chosen)
                 cutoff_prev = date.fromisoformat(origin)
 
-                from retail_analytics.core.constants import WINDOW_RECENT, WINDOW_PREVIOUS_START_OFFSET, WINDOW_YEAR
+                from retail_analytics.core.constants import (
+                    WINDOW_YEAR,
+                )
 
                 # Current period: [C-364, C] (365-day window for category history)
                 curr_start = cutoff_curr - timedelta(days=WINDOW_YEAR - 1)
@@ -2011,16 +2012,16 @@ def main():
         date.fromisoformat(metadata["maximum_date"]),
     )
     data_span_days = (last - first).days
-    
+
     # Auto-calculate smart defaults
     # Default cutoff: leave 90 days for follow-up (so 30-day follow-up works)
     default_chosen = last - timedelta(days=90)
     if default_chosen < first:
         default_chosen = first + timedelta(days=max(1, data_span_days // 4))
-    
+
     # Auto-calculate number of historical cutoffs (monthly, max 12)
     default_count = min(12, max(2, data_span_days // 30))
-    
+
     # Auto-calculate partitions based on customer count (target ~500 customers/partition)
     valid_customers = metadata["valid_customers"]
     default_partitions = max(1, min(32, valid_customers // 500))
@@ -2055,7 +2056,7 @@ def main():
         st.warning("Review invalid rows and explicitly select exclusion to continue.")
         st.json(metadata)
         return
-    
+
     # Coverage confirmation - highlighted
     st.sidebar.markdown("---")
     st.sidebar.markdown("**📋 Coverage confirmation required for future-purchase analysis**")
@@ -2064,7 +2065,7 @@ def main():
         "Without it, future-purchase rates and outcome estimates are suppressed."
     )
     coverage = st.sidebar.checkbox("I confirm complete purchase capture through the date below")
-    
+
     end = (
         st.sidebar.date_input(
             "Confirmed coverage end",
@@ -2077,7 +2078,7 @@ def main():
         if coverage
         else last
     )
-    
+
     # Latest analysis cutoff - auto-default to leave room for follow-up
     st.sidebar.markdown("**📅 Analysis cutoffs**")
     st.sidebar.caption(
@@ -2091,11 +2092,11 @@ def main():
         max_value=end - timedelta(days=1) if coverage else end,
         help="Cutoff date for feature computation. Future windows start after this date."
     )
-    
+
     # Auto-calculated cutoffs
     dates = cutoffs(chosen, first, default_count)
     st.sidebar.caption(f"Cutoffs (monthly, {len(dates)}): " + ", ".join(map(str, dates)))
-    
+
     # Override option for advanced users
     with st.sidebar.expander("Advanced: override auto settings", expanded=False):
         count = st.slider("Historical cutoffs", 1, 12, default_count)

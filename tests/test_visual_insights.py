@@ -1,6 +1,6 @@
 import importlib.util
 import unittest
-from datetime import date, timedelta
+from datetime import date
 
 from retail_analytics.visualization.visual_insights_core import (
     month_windows,
@@ -15,7 +15,6 @@ if HAS_POLARS:
 
     from retail_analytics.visualization.visual_insights_core import (
         cadence_map,
-        category_participation_comparison,
         cohort_summary,
         concentration,
         momentum_map,

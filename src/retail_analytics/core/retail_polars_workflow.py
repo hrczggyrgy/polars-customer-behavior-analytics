@@ -9,16 +9,12 @@ from pathlib import Path
 import polars as pl
 
 from retail_analytics.core.constants import (
-    BASKET_CHANGE_EXPANDING_MIN,
-    BASKET_CHANGE_SMALLER_MAX,
     BREADTH_CHANGE_NARROWING_MAX,
     CENSOR_DAYS,
     DOMINANT_SHARE_FOCUSED_MIN,
     ESTABLISHED_SHARE_BROAD_MIN,
     ESTABLISHED_SHARE_FOCUSED_MIN,
     ESTABLISHED_SHARE_ROUTINE_MIN,
-    FREQUENCY_CHANGE_EXPANDING_MIN,
-    FREQUENCY_CHANGE_SLOWING_MAX,
     GAP_CV_ROUTINE_MAX,
     HASH_SEED_BUCKETING,
     LATENESS_OVERDUE_MIN,
@@ -31,7 +27,6 @@ from retail_analytics.core.constants import (
     MIN_TENURE_ONE_SHOPPING_DAY,
     MIN_TENURE_STYLE,
     MIN_TENURE_VALUE_EXPOSURE,
-    MIN_TENURE_VALUE_TIER,
     NEW_SHARE_EXPLORATION_MIN,
     OVERDUE_CATEGORIES_NARROWING_MIN,
     QUANTILE_STYLE_HIGH,
@@ -41,10 +36,10 @@ from retail_analytics.core.constants import (
     REACTIVATION_EVENTS_MIN,
     WINDOW_PREVIOUS_START_OFFSET,
     WINDOW_RECENT,
+    WINDOW_RECENT_30,
     WINDOW_YEAR,
 )
 from retail_analytics.core.thresholds import (
-    ThresholdPolicy,
     calibrate_thresholds,
     compute_data_profile,
     compute_label_shares,
@@ -187,10 +182,10 @@ def prepare(
     elif dtype == pl.Date:
         dates = pl.col("transaction_date").cast(pl.Date)
     elif isinstance(dtype, pl.Datetime):
+        # Preserve timezone through precision conversion
+        dt_col = pl.col("transaction_date")
         if dtype.time_unit != "us":
-            dt_col = pl.col("transaction_date").cast(pl.Datetime("us"))
-        else:
-            dt_col = pl.col("transaction_date")
+            dt_col = dt_col.cast(pl.Datetime("us", time_zone=dtype.time_zone))
         if dtype.time_zone is not None:
             if timezone is None:
                 raise ValueError("Timezone-aware Datetime input requires --timezone parameter")
@@ -198,7 +193,9 @@ def prepare(
         dates = dt_col.cast(pl.Date)
     else:
         raise ValueError("Dates must be Date, Datetime, or strings; epoch units are not guessed")
-    raw = src.select(COLS).with_columns(
+    # Include price_raw/quantity_raw in select if they exist (from dashboard canonical)
+    select_cols = COLS + [c for c in ["price_raw", "quantity_raw"] if c in schema.names()]
+    raw = src.select(select_cols).with_columns(
         dates.alias("date"),
         *[
             pl.col(x).cast(pl.String).str.strip_chars().replace("", None)
@@ -209,15 +206,24 @@ def prepare(
             for x in ["department", "category"]
         ],
         pl.col("product_description").cast(pl.String).fill_null(""),
-        # Preserve raw string values before casting to distinguish missing vs malformed
-        pl.col("price").cast(pl.String).str.strip_chars().replace("", None).alias("price_raw"),
-        pl.col("quantity")
-        .cast(pl.String)
-        .str.strip_chars()
-        .replace("", None)
-        .alias("quantity_raw"),
-        *[pl.col(x).cast(pl.Float64, strict=False) for x in ["price", "quantity"]],
     )
+    # Handle price/quantity: if raw columns already exist (from dashboard canonical), use them
+    if "price_raw" in schema.names() and "quantity_raw" in schema.names():
+        raw = raw.with_columns(
+            pl.col("price").cast(pl.Float64, strict=False),
+            pl.col("quantity").cast(pl.Float64, strict=False),
+        )
+    else:
+        raw = raw.with_columns(
+            # Preserve raw string values before casting to distinguish missing vs malformed
+            pl.col("price").cast(pl.String).str.strip_chars().replace("", None).alias("price_raw"),
+            pl.col("quantity")
+            .cast(pl.String)
+            .str.strip_chars()
+            .replace("", None)
+            .alias("quantity_raw"),
+            *[pl.col(x).cast(pl.Float64, strict=False) for x in ["price", "quantity"]],
+        )
     raw = raw.with_columns(
         (pl.col("price") * pl.col("quantity") if mode == "unit" else pl.col("price")).alias("value")
     )
@@ -283,6 +289,8 @@ def prepare(
     )
 
     # Exact duplicate detection (on all 9 source columns after cleaning)
+    # Key uses parsed 'date' (business date), not original 'transaction_date' timestamp.
+    # This means distinct timestamped rows sharing a business date CAN be classified as duplicates.
     raw_source_cols = [
         C,
         "transaction_id",
@@ -303,11 +311,13 @@ def prepare(
         .item()
         or 0
     )
+    # Excess value = value beyond one representative line per duplicate group
+    # For n identical lines worth v each: excess = (n-1) * v, not n*v*(n-1)
     exact_dup_value = (
         raw.group_by(raw_source_cols)
-        .agg(pl.col("value").sum().alias("dup_value"), pl.len().alias("dup_count"))
+        .agg(pl.col("value").first().alias("line_value"), pl.len().alias("dup_count"))
         .filter(pl.col("dup_count") > 1)
-        .select((pl.col("dup_value") * (pl.col("dup_count") - 1)).sum())
+        .select((pl.col("line_value") * (pl.col("dup_count") - 1)).sum())
         .collect()
         .item()
         or 0.0
@@ -389,8 +399,8 @@ def prepare(
     if not audit["source_rows"]:
         raise ValueError("Empty input")
     if audit["rejected_rows"]:
-        # Write rejected rows with rejection_reason
-        sink(rejected.drop("valid", "price_raw", "quantity_raw"), root / "rejected.parquet")
+        # Write rejected rows with rejection_reason and raw values for diagnostics
+        sink(rejected.drop("valid"), root / "rejected.parquet")
         if not exclude:
             raise ValueError("Invalid rows: inspect quality.json and rejected.parquet")
     clean = raw.filter(pl.col("valid")).drop(
@@ -419,19 +429,20 @@ def prepare(
         (pl.col(C).hash(seed=HASH_SEED_BUCKETING) % buckets).alias("bucket"),
     )
     # Drop exact duplicates if requested
+    # Exact duplicates = identical on all original 9 columns including transaction_date timestamp
     if drop_exact_duplicates:
-        raw_source_cols = [
+        exact_source_cols = [
             C,
+            "transaction_date",
             "transaction_id",
             "product_id",
-            "date",
             "product_description",
             "department",
             "category",
             "price",
             "quantity",
         ]
-        clean = clean.unique(subset=raw_source_cols, maintain_order=True)
+        clean = clean.unique(subset=exact_source_cols, maintain_order=True)
     sink(clean, root / "validated.parquet")
     clean = pl.scan_parquet(root / "validated.parquet")
     audit["observed_through"] = str(end)
@@ -488,8 +499,8 @@ def snapshot(path, d, end, root, coverage_confirmed=False, observation_start=Non
             f"Temporal leakage: descriptive data contains date {max_date_check} > cutoff {d}"
         )
 
-    s30 = d - timedelta(days=WINDOW_RECENT - 1)
-    s90 = d - timedelta(days=WINDOW_RECENT - 1)
+    s30 = d - timedelta(days=WINDOW_RECENT_30 - 1)  # Recent 30 days: [C-29, C]
+    s90 = d - timedelta(days=WINDOW_RECENT - 1)  # Recent 90 days: [C-89, C]
     s365 = d - timedelta(days=WINDOW_YEAR - 1)
     old0 = d - timedelta(days=WINDOW_PREVIOUS_START_OFFSET)
     old1 = d - timedelta(days=WINDOW_RECENT)
@@ -852,7 +863,24 @@ def snapshot(path, d, end, root, coverage_confirmed=False, observation_start=Non
     return target
 
 
-def label(frame, thresholds):
+def label(frame, thresholds, snapshot_date: date = None, reference_date: date = None):
+    """
+    Apply labels to a snapshot frame.
+
+    Args:
+        frame: LazyFrame with customer features
+        thresholds: Dict of calibrated thresholds
+        snapshot_date: Date of the snapshot being labeled
+        reference_date: Date of the reference snapshot used for calibration
+
+    If snapshot_date < reference_date, threshold-dependent classifications
+    are marked as "reference_unavailable" since the reference didn't exist yet.
+    """
+    # Determine if reference thresholds are available for this snapshot
+    ref_available = True
+    if snapshot_date is not None and reference_date is not None:
+        ref_available = snapshot_date >= reference_date
+
     # Style eligibility: sufficient history for behavioral classification
     enough = (
         (pl.col("days_365d") >= MIN_DAYS_STYLE)
@@ -880,7 +908,7 @@ def label(frame, thresholds):
     ]
 
     # Quantile-based style tags (require thresholds from reference snapshot)
-    if (
+    if ref_available and (
         all(
             thresholds.get(x) is not None
             for x in ["basket_low", "basket_high", "gap_low", "gap_high"]
@@ -904,9 +932,16 @@ def label(frame, thresholds):
         ]
 
     # Calibrated thresholds (with fallback to constants)
-    lateness_threshold = thresholds.get("lateness_overdue_min") or LATENESS_OVERDUE_MIN
-    freq_change_threshold = thresholds.get("frequency_change_threshold") or 0.25
-    basket_change_threshold = thresholds.get("basket_change_threshold") or 0.25
+    # Only use calibrated thresholds if reference is available for this snapshot
+    if ref_available:
+        lateness_threshold = thresholds.get("lateness_overdue_min") or LATENESS_OVERDUE_MIN
+        freq_change_threshold = thresholds.get("frequency_change_threshold") or 0.25
+        basket_change_threshold = thresholds.get("basket_change_threshold") or 0.25
+    else:
+        # Use fixed fallbacks when reference not available
+        lateness_threshold = LATENESS_OVERDUE_MIN
+        freq_change_threshold = 0.25
+        basket_change_threshold = 0.25
 
     # Trajectory Tags (multiple can apply; not mutually exclusive)
     slow = pl.col("frequency_change") <= -freq_change_threshold
@@ -945,7 +980,7 @@ def label(frame, thresholds):
         ("stable", stable),
     ]
 
-    # Lifecycle Stages (mutually exclusive)
+    # Lifecycle Stages (mutually exclusive) - threshold-independent
     lifecycle = (
         pl.when(pl.col("days_history") == 1)
         .then(
@@ -958,7 +993,7 @@ def label(frame, thresholds):
         .otherwise(pl.lit("early_repeat"))
     )
 
-    # Evidence Level (mutually exclusive)
+    # Evidence Level (mutually exclusive) - threshold-independent
     evidence = (
         pl.when(enough & (pl.col("gap_count") >= MIN_GAP_COUNT_STRONGER))
         .then(pl.lit("stronger"))
@@ -990,7 +1025,7 @@ def label(frame, thresholds):
     )
 
     # Value Tier (mutually exclusive, requires thresholds)
-    if thresholds.get("value_low") is None or thresholds.get("value_high") is None:
+    if not ref_available or thresholds.get("value_low") is None or thresholds.get("value_high") is None:
         return frame.with_columns(pl.lit("reference_unavailable").alias("value_tier"))
 
     return frame.with_columns(
@@ -1220,10 +1255,12 @@ def run(
         return
 
     # Build policy from CLI parameters
-    policy = ThresholdPolicy(
-        low_p=min(value_quantile_low, style_quantile_low),
-        high_p=max(value_quantile_high, style_quantile_high),
-        min_n=min_reference_population,
+    policy = default_policy(
+        value_quantile_low=value_quantile_low,
+        value_quantile_high=value_quantile_high,
+        style_quantile_low=style_quantile_low,
+        style_quantile_high=style_quantile_high,
+        min_reference_population=min_reference_population,
     )
 
     # Select reference cutoff: earliest with sufficient & stable population
@@ -1254,8 +1291,9 @@ def run(
         write_thresholds(root, thresholds)
         # Label all snapshots with reference_unavailable
         for path in numeric:
+            snap_date = date.fromisoformat(path.parent.name)
             sink(
-                label(pl.scan_parquet(path), thresholds),
+                label(pl.scan_parquet(path), thresholds, snapshot_date=snap_date, reference_date=None),
                 root / "snapshots" / path.parent.name / path.name,
                 sort_by=C,
             )
@@ -1275,10 +1313,11 @@ def run(
 
     write_thresholds(root, thresholds)
 
-    # Label all snapshots
+    # Label all snapshots - pass snapshot_date and reference_date for temporal correctness
     for path in numeric:
+        snap_date = date.fromisoformat(path.parent.name)
         sink(
-            label(pl.scan_parquet(path), thresholds),
+            label(pl.scan_parquet(path), thresholds, snapshot_date=snap_date, reference_date=ref_date),
             root / "snapshots" / path.parent.name / path.name,
             sort_by=C,
         )

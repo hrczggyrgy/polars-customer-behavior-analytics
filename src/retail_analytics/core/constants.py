@@ -8,6 +8,7 @@ from __future__ import annotations
 
 # Window sizes (in days)
 WINDOW_RECENT = 90
+WINDOW_RECENT_30 = 30
 WINDOW_PREVIOUS = 90
 WINDOW_YEAR = 365
 WINDOW_TWO_YEARS = 730
