@@ -24,6 +24,12 @@ from retail_analytics.visualization.visual_insights_core import (
     concentration,
     transition_summary,
 )
+from retail_analytics.core.constants import (
+    QUANTILE_VALUE_LOW,
+    QUANTILE_VALUE_HIGH,
+    QUANTILE_STYLE_LOW,
+    QUANTILE_STYLE_HIGH,
+)
 
 MAX_BYTES = 100 * 1024 * 1024
 PAGE_ROWS = 2000
@@ -226,7 +232,53 @@ def apply_filters(rows, filters):
 
 def display_results(root, coverage):
     manifest = read_json(root / "run.json")
+    thresholds = read_json(root / "thresholds.json")
     coverage = bool(coverage and manifest.get("coverage_confirmed"))
+    
+    # Show threshold calibration info
+    if thresholds.get("reference_selection", {}).get("selected"):
+        ref_sel = thresholds["reference_selection"]
+        st.success(
+            f"✓ Thresholds auto-calibrated from snapshot **{ref_sel['reference_date']}** "
+            f"({ref_sel['style_population']:,} style-eligible, {ref_sel['value_population']:,} value-eligible customers)"
+        )
+        with st.expander("Calibrated thresholds", expanded=False):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Value tier low (P33)", f"{thresholds.get('value_low', 0):,.0f}")
+                st.metric("Value tier high (P80)", f"{thresholds.get('value_high', 0):,.0f}")
+                st.metric("Basket low (P33)", f"{thresholds.get('basket_low', 0):,.0f}")
+                st.metric("Basket high (P80)", f"{thresholds.get('basket_high', 0):,.0f}")
+            with col2:
+                st.metric("Gap low (P33)", f"{thresholds.get('gap_low', 0):.1f} days")
+                st.metric("Gap high (P80)", f"{thresholds.get('gap_high', 0):.1f} days")
+                lateness = thresholds.get('lateness_overdue_min')
+                if lateness:
+                    st.metric("Lateness threshold", f"{lateness:.2f}")
+                freq_thresh = thresholds.get('frequency_change_threshold')
+                if freq_thresh:
+                    st.metric("Frequency change threshold", f"±{freq_thresh:.2f}")
+            
+            # Show warnings from data profile
+            data_profile = thresholds.get("data_profile", {})
+            warnings = data_profile.get("warnings", [])
+            if warnings:
+                for w in warnings:
+                    st.warning(w)
+            
+            # Show label share warnings
+            label_shares = thresholds.get("label_shares", {})
+            ls_warnings = label_shares.get("warnings", [])
+            if ls_warnings:
+                for w in ls_warnings:
+                    st.info(w)
+    elif thresholds.get("reference_date") is None and thresholds.get("reference_selection", {}).get("selected") is False:
+        st.warning(
+            "⚠ Thresholds not calibrated: no snapshot met minimum population criteria. "
+            "Labels using quantile thresholds (large_basket_episodic, small_basket_frequent, value tiers) "
+            "will show as 'reference_unavailable'."
+        )
+    
     chosen = st.selectbox(
         "Result cutoff", manifest["snapshots"], index=len(manifest["snapshots"]) - 1
     )
@@ -948,6 +1000,27 @@ def main():
     st.sidebar.caption(
         f"{metadata['rows']:,} rows · {metadata['valid_customers']:,} customers · {first} to {last}"
     )
+
+    # Threshold calibration settings (auto by default)
+    with st.sidebar.expander("Threshold calibration (auto)", expanded=False):
+        st.caption(
+            "Thresholds are auto-calibrated from the earliest snapshot with "
+            "sufficient eligible customers. Uses distribution-free CIs with stability gates."
+        )
+        min_ref_pop = st.number_input(
+            "Min reference population",
+            min_value=10,
+            max_value=10000,
+            value=100,
+            help="Minimum eligible customers for stable quantile estimates. "
+                 "Lower = more snapshots eligible; higher = more stable thresholds."
+        )
+        st.caption(
+            f"Default quantiles: value tier {QUANTILE_VALUE_LOW:.0%}/{QUANTILE_VALUE_HIGH:.0%}, "
+            f"style {QUANTILE_STYLE_LOW:.0%}/{QUANTILE_STYLE_HIGH:.0%}. "
+            f"CI width gate: 50% of estimate."
+        )
+
     exclude = st.sidebar.checkbox("Exclude invalid records after review")
     if metadata["invalid_rows"] and not exclude:
         st.warning("Review invalid rows and explicitly select exclusion to continue.")
@@ -976,6 +1049,7 @@ def main():
         exclude_invalid=exclude,
         coverage_confirmed=coverage,
         observed_through=str(end),
+        min_reference_population=min_ref_pop,
     )
     result_key = json.dumps(job, sort_keys=True)
     if st.session_state.get("result_key") != result_key:
