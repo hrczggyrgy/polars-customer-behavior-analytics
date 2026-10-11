@@ -363,6 +363,64 @@ class MetricContractTests(unittest.TestCase):
         
         # Customer E should not appear (no transactions <= cutoff)
         self.assertEqual(frame.height, 0)
+
+    def test_rejection_reasons_numeric_nulls(self):
+        """Test that rejected rows with null price/quantity get specific reasons."""
+        rows = [
+            # Valid row
+            dict(customer_id="V", transaction_date="2025-01-01", transaction_id="V1", product_id="P1", product_description="P1", department="D", category="C", price=10.0, quantity=1.0),
+            # Null price (malformed string -> null after cast)
+            dict(customer_id="NP", transaction_date="2025-01-01", transaction_id="NP1", product_id="P1", product_description="P1", department="D", category="C", price=None, quantity=1.0),
+            # Null quantity
+            dict(customer_id="NQ", transaction_date="2025-01-01", transaction_id="NQ1", product_id="P1", product_description="P1", department="D", category="C", price=10.0, quantity=None),
+            # Negative price
+            dict(customer_id="NG", transaction_date="2025-01-01", transaction_id="NG1", product_id="P1", product_description="P1", department="D", category="C", price=-5.0, quantity=1.0),
+            # Zero quantity
+            dict(customer_id="ZQ", transaction_date="2025-01-01", transaction_id="ZQ1", product_id="P1", product_description="P1", department="D", category="C", price=10.0, quantity=0.0),
+            # Non-finite price (NaN)
+            dict(customer_id="NF", transaction_date="2025-01-01", transaction_id="NF1", product_id="P1", product_description="P1", department="D", category="C", price=float('nan'), quantity=1.0),
+        ]
+        df = pl.DataFrame(rows)
+        
+        cutoff = "2025-01-31"
+        # Run without exclude-invalid to capture rejected rows
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "input.parquet"
+            df.write_parquet(source)
+            out = root / "results"
+            # This will raise because we don't exclude invalid
+            try:
+                run(str(source), str(out), "unit", [cutoff], buckets=1, coverage_confirmed=True, observed_through="2025-01-31")
+            except ValueError:
+                pass  # Expected
+            
+            # Check rejected.parquet
+            rejected = pl.read_parquet(out / "rejected.parquet")
+            self.assertEqual(rejected.height, 5)  # 5 invalid rows
+            
+            reasons = rejected["rejection_reason"].to_list()
+            self.assertIn("null_price", reasons)
+            self.assertIn("null_quantity", reasons)
+            self.assertIn("negative_price", reasons)
+            self.assertIn("nonpositive_quantity", reasons)
+            self.assertIn("nonfinite_price", reasons)
+            
+            # Check quality.json breakdown
+            import json
+            with open(out / "quality.json") as f:
+                quality = json.load(f)
+            self.assertEqual(quality["rejected_rows"], 5)
+            self.assertEqual(quality["valid_rows"], 1)
+            self.assertAlmostEqual(quality["rejection_rate"], 5/6, places=4)
+            # Verify breakdown sums to rejected_rows
+            self.assertEqual(sum(quality["rejection_breakdown"].values()), quality["rejected_rows"])
+            # Verify new reason codes exist
+            self.assertIn("null_price", quality["rejection_breakdown"])
+            self.assertIn("null_quantity", quality["rejection_breakdown"])
+            self.assertIn("negative_price", quality["rejection_breakdown"])
+            self.assertIn("nonpositive_quantity", quality["rejection_breakdown"])
+            self.assertIn("nonfinite_price", quality["rejection_breakdown"])
     
     def test_insufficient_data_returns_null(self):
         """Test that metrics requiring minimum data return null."""
@@ -608,15 +666,48 @@ class MetricContractTests(unittest.TestCase):
         self.assertTrue(j["gap_count"] >= 4)
     
     def test_behavior_label_precedence(self):
-        """Test behavioral_tags precedence order."""
+        """Test behavioral_tags are multi-label (all matching tags collected)."""
         # Create customer matching multiple style conditions
-        rows = [
-            # Customer K: routine_repeat criteria (gap_cv <= 0.75, established_share >= 0.7)
-            # Also exploration_heavy (new_share >= 0.4)
-            # routine_repeat should win (first in list)
-        ]
-        # This is complex to set up precisely; skip for now
-        pass
+        # routine_repeat: gap_cv <= 0.75, established_share >= 0.7
+        # focused_repeat: dominant_share >= 0.7, established_share >= 0.7
+        # Both can be true simultaneously
+        rows = []
+        base = date(2024, 1, 1)
+        # First, some old transactions for tenure
+        for i in range(3):
+            d = base + timedelta(days=i * 60)
+            rows.append(dict(
+                customer_id="K", transaction_date=str(d),
+                transaction_id=f"K{i}", product_id="P1", product_description="P1",
+                department="D", category="C", price=10.0, quantity=1.0
+            ))
+        # Then frequent transactions in the last year before cutoff
+        # Cutoff is 2025-06-30, so last year is from 2024-07-01
+        recent_base = date(2024, 7, 1)
+        for i in range(12):
+            d = recent_base + timedelta(days=i * 28)  # ~monthly
+            if d > date(2025, 6, 30):
+                break
+            rows.append(dict(
+                customer_id="K", transaction_date=str(d),
+                transaction_id=f"K{i+3}", product_id="P1", product_description="P1",
+                department="D", category="C", price=10.0, quantity=1.0
+            ))
+        df = pl.DataFrame(rows)
+        
+        cutoff = "2025-06-30"
+        frame = self._run_pipeline(df, cutoff, observed_through="2025-06-30")
+        
+        k = frame.filter(pl.col("customer_id") == "K").row(0, named=True)
+        
+        # Customer K should be style_eligible and have behavioral_tags
+        self.assertTrue(k["style_eligible"])
+        # behavioral_tags should be a list (possibly multiple tags)
+        self.assertIsInstance(k["behavioral_tags"], list)
+        # behavior should join tags with "+"
+        if len(k["behavioral_tags"]) > 1:
+            self.assertIn("+", k["behavior"])
+        self.assertNotEqual(k["behavior"], "insufficient_history")
     
     def test_lifecycle_stages(self):
         """Test lifecycle stage assignments."""

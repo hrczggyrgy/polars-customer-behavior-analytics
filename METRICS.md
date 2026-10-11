@@ -152,22 +152,23 @@ This document defines every user-visible metric produced by the pipeline. Each m
 ## Breadth and Variety Metrics
 
 ### breadth (median_breadth)
-- **Definition**: Median number of distinct products per basket in the window.
-- **Formula**: `median(distinct products per basket)`
+- **Definition**: Median number of distinct categories per basket in the window.
+- **Formula**: `median(distinct category_key per basket)` where `category_key = len(dept):dept + len(cat):cat`
 - **Grain**: Customer × window
 - **Window**: 365d
 - **Minimum data**: At least 1 basket
+- **Note**: Breadth measures category diversity, not product diversity. A basket with 3 products from 2 categories has breadth = 2.
 
 ### breadth_recent
-- **Definition**: Mean distinct products per basket in recent 90d window.
-- **Formula**: `mean(distinct products per basket)` for baskets in last 90d
+- **Definition**: Mean distinct categories per basket in recent 90d window.
+- **Formula**: `mean(distinct category_key per basket)` for baskets in last 90d
 - **Grain**: Customer × snapshot
 - **Window**: 90d
 - **Minimum data**: At least 1 basket in window
 
 ### breadth_previous
-- **Definition**: Mean distinct products per basket in previous 90d window (days 91-180 before C).
-- **Formula**: `mean(distinct products per basket)` for baskets in previous 90d
+- **Definition**: Mean distinct categories per basket in previous 90d window (days 91-180 before C).
+- **Formula**: `mean(distinct category_key per basket)` for baskets in previous 90d
 - **Grain**: Customer × snapshot
 - **Window**: Previous 90d (C-180 to C-91)
 - **Minimum data**: At least 1 basket in window
@@ -223,11 +224,12 @@ This document defines every user-visible metric produced by the pipeline. Each m
 - **Minimum data**: `total_spend > 0`; returns `null` if zero spend
 
 ### overdue_categories
-- **Definition**: Count of categories where customer is overdue (lateness ≥ 2) and has ≥ 3 shopping days in 365d.
-- **Formula**: `count(categories where days ≥ 3 and lateness ≥ 2)`
+- **Definition**: Count of categories where customer has ≥ 3 shopping days in all history and is overdue (lateness ≥ 2).
+- **Formula**: `count(categories where days ≥ 3 and lateness ≥ 2)` where `days` = count of shopping days in all history for that category, and `lateness` = (C - last_category_purchase_date) / median_gap_for_category
 - **Grain**: Customer × snapshot
-- **Window**: 365d per category
-- **Minimum data**: Per-category: ≥ 3 shopping days and median_gap > 0
+- **Window**: Category history uses all history up to C; lateness uses all-history median gap
+- **Minimum data**: Per-category: ≥ 3 shopping days in all history and median_gap > 0
+- **Note**: This differs from `category_count` and `category_hhi` which are restricted to trailing 365d. The overdue check uses complete category history.
 
 ---
 
@@ -247,7 +249,7 @@ This document defines every user-visible metric produced by the pipeline. Each m
 
 ### gap_count
 - **Definition**: Number of usable gaps in 365d window.
-- **Formula**: `count(gaps where prior_date ≥ C-365)`
+- **Formula**: `count(gaps where prior_date ≥ C-364)`
 - **Grain**: Customer × snapshot
 - **Window**: 365d with usability filter
 - **Minimum data**: None (zero if insufficient history)
@@ -302,17 +304,17 @@ This document defines every user-visible metric produced by the pipeline. Each m
 ## Trial and Repeat Metrics
 
 ### eligible_trials
-- **Definition**: Products first purchased in the eligible trial window [C-365, C-90].
-- **Formula**: `count(distinct products where trial_date ∈ [C-365, C-90])`
+- **Definition**: Products first purchased in the eligible trial window [C-364, C-90].
+- **Formula**: `count(distinct products where trial_date ∈ [C-364, C-90])`
 - **Grain**: Customer × snapshot
-- **Window**: Trial date must be in [C-365, C-90]
+- **Window**: Trial date must be in [C-364, C-90] (inclusive on both ends)
 - **Minimum data**: None (zero if no eligible trials)
 
 ### repeated_trials
 - **Definition**: Eligible trials with a repeat purchase within 90 days of trial.
 - **Formula**: `count(eligible_trials where repeat_date ≤ trial_date + 90d)`
 - **Grain**: Customer × snapshot
-- **Window**: Trial in [C-365, C-90], repeat within 90d of trial (and ≤ C)
+- **Window**: Trial in [C-364, C-90], repeat within 90d of trial (and ≤ C)
 - **Minimum data**: None (zero if no eligible trials)
 
 ### trial_conversion
@@ -324,17 +326,19 @@ This document defines every user-visible metric produced by the pipeline. Each m
 - **Minimum data**: `eligible_trials > 0`; returns `null` if zero
 
 ### core_size
-- **Definition**: Count of products purchased on ≥ 3 distinct days in 365d window.
-- **Formula**: `count(products where purchase_days ≥ 3)`
+- **Definition**: Count of products purchased on ≥ 3 distinct days in the customer's entire history up to cutoff C.
+- **Formula**: `count(products where purchase_days ≥ 3)` where `purchase_days` = count of distinct purchase dates for that product across all history.
 - **Grain**: Customer × snapshot
-- **Window**: 365d
+- **Window**: All history up to C
 - **Minimum data**: None
+- **Note**: Eligibility is based on complete history, not restricted to trailing 365d. Spend attribution for core products is restricted to trailing 365d (see `core_spend`).
 
 ### core_spend
-- **Definition**: Total spend on core products (≥ 3 purchase days) in 365d.
-- **Formula**: `sum(spend for products where purchase_days ≥ 3)`
+- **Definition**: Total spend on core products (products with ≥ 3 purchase days in all history) in the trailing 365d window.
+- **Formula**: `sum(spend for products where purchase_days ≥ 3)` for transactions in [C-364, C]
 - **Grain**: Customer × snapshot
-- **Window**: 365d
+- **Window**: Core eligibility uses all history; spend attribution uses trailing 365d
+- **Minimum data**: None
 
 ### core_spend_share
 - **Definition**: Proportion of 365d spend attributable to core products.
@@ -345,23 +349,27 @@ This document defines every user-visible metric produced by the pipeline. Each m
 - **Minimum data**: `spend_365d > 0`; returns `null` if zero
 
 ### new_share
-- **Definition**: Proportion of baskets in 365d containing at least one first-time product (prior_days = 0).
-- **Formula**: `mean(1 if any product in basket has prior_days=0 else 0)` over 365d baskets
+- **Definition**: Mean fraction of distinct products per basket that are first-time purchases (prior_days = 0) across all baskets in 365d window.
+- **Formula**: For each basket: `(count of products with prior_days=0) / (total distinct products in basket)`. Then `mean` across all baskets in 365d.
 - **Grain**: Customer × snapshot
 - **Window**: 365d
 - **Minimum data**: At least 1 basket in 365d; returns `null` if zero
+- **Note**: This is a basket-weighted mean of product fractions, NOT the proportion of baskets containing any new product. A basket with 3 products where 1 is new contributes 1/3 to the mean.
 
 ### repeat_share
-- **Definition**: Proportion of baskets in 365d where all products have prior_days ≥ 1.
-- **Formula**: `mean(1 if all products in basket have prior_days ≥ 1 else 0)` over 365d baskets
+- **Definition**: Mean fraction of distinct products per basket that are repeat purchases (prior_days ≥ 1) across all baskets in 365d window.
+- **Formula**: For each basket: `(count of products with prior_days ≥ 1) / (total distinct products in basket)`. Then `mean` across all baskets in 365d.
 - **Grain**: Customer × snapshot
 - **Window**: 365d
+- **Minimum data**: At least 1 basket in 365d; returns `null` if zero
+- **Note**: Established products (prior_days ≥ 2) are a subset of repeated products. A basket with 1 new and 2 established products has repeat_share = 2/3 and established_share = 2/3.
 
 ### established_share
-- **Definition**: Proportion of baskets in 365d where all products have prior_days ≥ 2.
-- **Formula**: `mean(1 if all products in basket have prior_days ≥ 2 else 0)` over 365d baskets
+- **Definition**: Mean fraction of distinct products per basket that are established (prior_days ≥ 2) across all baskets in 365d window.
+- **Formula**: For each basket: `(count of products with prior_days ≥ 2) / (total distinct products in basket)`. Then `mean` across all baskets in 365d.
 - **Grain**: Customer × snapshot
 - **Window**: 365d
+- **Minimum data**: At least 1 basket in 365d; returns `null` if zero
 
 ---
 
@@ -457,12 +465,12 @@ This document defines every user-visible metric produced by the pipeline. Each m
 
 ---
 
-## Behavioral Style Tags (Mutually Exclusive via Precedence)
+## Behavioral Style Tags (Multiple Can Apply; Ordered)
 
 All style tags require `style_eligible = True`:
 - `days_365d ≥ 6` AND `tenure ≥ 90` AND `gap_count ≥ 4`
 
-Precedence order (first match wins):
+Tags are evaluated in the following order and ALL matching tags are collected:
 1. **routine_repeat**: `gap_cv ≤ 0.75` AND `established_share ≥ 0.70`
 2. **focused_repeat**: `dominant_share ≥ 0.70` AND `established_share ≥ 0.70`
 3. **broad_repeat**: `median_breadth ≥ 3` AND `established_share ≥ 0.70`
@@ -470,8 +478,7 @@ Precedence order (first match wins):
 5. **large_basket_episodic**: `median_basket ≥ basket_high` AND `median_gap ≥ gap_high` (requires thresholds)
 6. **small_basket_frequent**: `median_basket ≤ basket_low` AND `median_gap ≤ gap_low` (requires thresholds)
 
-Customers eligible but matching no tag → `mixed_other`
-Customers not eligible → `insufficient_history`
+**Important**: These tags are NOT mutually exclusive. A customer can match multiple tags simultaneously. The `behavioral_tags` field contains a list of all matching tags in the order above. The `behavior` field joins them with "+" (e.g., "routine_repeat+focused_repeat"). Customers eligible but matching no tag → `mixed_other`. Customers not eligible → `insufficient_history`.
 
 ---
 

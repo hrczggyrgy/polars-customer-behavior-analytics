@@ -89,7 +89,9 @@ class IntegrationTests(unittest.TestCase):
                 source = root / (name + ".parquet")
                 data.write_parquet(source)
                 result = root / name
-                run(str(source), str(result), "unit", [cutoff], buckets=1, coverage_confirmed=True)
+                # observed_through must be >= max date in data
+                observed_through = "2025-10-31" if name == "full" else cutoff
+                run(str(source), str(result), "unit", [cutoff], buckets=1, coverage_confirmed=True, observed_through=observed_through)
                 (result / "run.json").write_text(json.dumps(dict(snapshots=[cutoff], coverage_confirmed=True, source_sha256=name)))
                 out = build(result, capture_confirmed=True)
                 frame = pl.read_parquet(str(out / "snapshots" / cutoff / "*.parquet")).sort("customer_id")

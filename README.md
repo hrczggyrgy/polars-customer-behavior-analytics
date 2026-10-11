@@ -151,13 +151,15 @@ python retail_polars_workflow.py \
 ## Tests
 
 ```bash
-# Run all tests
-python -m unittest test_retail_polars_workflow test_dashboard test_metrics_contract -v
+# Run all tests (discovers all test_*.py modules)
+python -m unittest discover -v
 
 # Run individual test modules
 python -m unittest test_retail_polars_workflow -v
 python -m unittest test_dashboard -v
 python -m unittest test_metrics_contract -v
+python -m unittest test_patronage -v
+python -m unittest test_visual_insights -v
 ```
 
 ## Key Methodological Notes

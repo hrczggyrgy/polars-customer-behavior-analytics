@@ -140,9 +140,12 @@ def preview(job):
     names = {x: x.lstrip("\ufeff").strip().lower() for x in schema.names()}
     if len(set(names.values())) != len(names):
         raise ValueError("Column names collide after trimming/case normalization")
+    # Apply the same normalization to get a consistent schema
+    raw = raw.rename(names)
+    schema = raw.collect_schema()
 
     # Return available scalar columns
-    available = sorted([c for c in names.values() if not schema[c].is_nested() and schema[c] != pl.Binary])
+    available = sorted([c for c in schema.names() if not schema[c].is_nested() and schema[c] != pl.Binary])
     write_json(root / "preview.json", {"columns": available, "dtypes": {c: str(schema[c]) for c in available}})
 
 

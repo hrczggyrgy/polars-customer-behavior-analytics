@@ -69,6 +69,28 @@ class DashboardTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 inspect(job)
 
+    def test_preview_normalized_headers(self):
+        """Test preview handles uppercase, whitespace, BOM-prefixed headers correctly."""
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # Create CSV with non-canonical headers
+            rows = " Customer_ID , Transaction_Date , Transaction_ID , Product_ID , Product_Description , Department , Category , Price , Quantity \n"
+            rows += "A,2025-01-01,T1,P1,Desc,D,C,10.0,1\n"
+            source = root / "input.csv"
+            source.write_text(rows)
+            job = dict(workspace=str(root), source=str(source), kind="csv", price_mode="unit", separator=",")
+            from dashboard_backend import preview
+            preview(job)
+            preview_data = json.loads((root / "preview.json").read_text())
+            # Should have normalized column names
+            self.assertIn("customer_id", preview_data["columns"])
+            self.assertIn("transaction_date", preview_data["columns"])
+            self.assertIn("price", preview_data["columns"])
+            self.assertIn("quantity", preview_data["columns"])
+            # dtypes should be accessible
+            self.assertIn("customer_id", preview_data["dtypes"])
+            self.assertIn("price", preview_data["dtypes"])
+
 
 if __name__ == "__main__":
     unittest.main()

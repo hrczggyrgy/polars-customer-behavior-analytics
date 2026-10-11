@@ -71,12 +71,29 @@ Rows failing any rule are **rejected** and written to `rejected.parquet`.
 {
   "source_rows": 2595732,
   "rejected_rows": 15330,
+  "valid_rows": 2580402,
+  "rejection_rate": 0.0059,
   "first_date": "2000-01-01",
   "last_date": "2001-12-11",
   "observed_through": "2001-12-11",
   "coverage_confirmed": false,
   "coverage_interpretation": "Future outcomes are unavailable unless coverage_confirmed is true; a maximum observed date alone does not establish complete capture.",
-  "preserved_duplicate_extras": 0
+  "preserved_duplicate_extras": 0,
+  "rejection_breakdown": {
+    "negative_price": 864,
+    "nonpositive_quantity": 14466
+  },
+  "null_customer_id": 0,
+  "null_transaction_id": 0,
+  "null_product_id": 0,
+  "null_date": 0,
+  "null_price": 0,
+  "nonfinite_price": 0,
+  "negative_price": 864,
+  "null_quantity": 0,
+  "nonfinite_quantity": 0,
+  "nonpositive_quantity": 14466,
+  "nonfinite_value": 0
 }
 ```
 
@@ -84,12 +101,16 @@ Rows failing any rule are **rejected** and written to `rejected.parquet`.
 |-------|------|-------------|
 | `source_rows` | Integer | Total input rows |
 | `rejected_rows` | Integer | Rows failing validation |
+| `valid_rows` | Integer | Rows passing validation (`source_rows - rejected_rows`) |
+| `rejection_rate` | Float | `rejected_rows / source_rows` |
 | `first_date` | Date (string) | Min valid transaction date |
 | `last_date` | Date (string) | Max valid transaction date |
-| `observed_through` | Date (string) | Effective analysis end date |
+| `observed_through` | Date (string) | Asserted capture endpoint (must be ≥ `last_date`; equal or later permitted but does not prove complete capture) |
 | `coverage_confirmed` | Boolean | CLI `--coverage-confirmed` value |
 | `coverage_interpretation` | String | Explanatory note |
 | `preserved_duplicate_extras` | Integer | Duplicate row count beyond first per unique key |
+| `rejection_breakdown` | Object | Primary reason → count; sums to `rejected_rows` |
+| `null_*`, `nonfinite_*`, `negative_price`, `nonpositive_quantity`, `nonfinite_value` | Integer | Detailed rejection counters |
 
 **Invariant**: `source_rows = valid_rows + rejected_rows` (where `valid_rows` = rows in `validated.parquet`)
 
@@ -112,9 +133,18 @@ Schema: All 9 input columns + derived columns
 | `quantity` | Float64 | Original |
 | `date` | Date | Parsed date (null if parse failed) |
 | `value` | Float64 | Computed value (null if computation failed) |
-| `valid` | Boolean | Always `false` |
+| `rejection_reason` | String | Primary rejection reason code |
 
-**Known gap**: No `rejection_reason` column. Each rejected row's specific failure reason is not recorded.
+Rejection reason codes:
+- `missing_customer_id`, `missing_transaction_id`, `missing_product_id`: Required field null/empty
+- `invalid_date`: Date parse failure
+- `null_price`, `null_quantity`: Numeric field null (conversion failure)
+- `nonfinite_price`, `nonfinite_quantity`: NaN or infinity
+- `negative_price`: Price < 0
+- `nonpositive_quantity`: Quantity ≤ 0
+- `nonfinite_value`: Computed value not finite
+
+**Note**: The `valid` column is NOT included (dropped before write). Each row has exactly one primary reason; multiple issues on the same row are not enumerated.
 
 ---
 
@@ -158,7 +188,7 @@ Used for `relative_paid_price` feature (requires `reference_count ≥ 5`).
 
 ### 5. snapshots/{snapshot_date}/b{N}.parquet
 
-Customer feature snapshots (78 columns). One file per bucket per snapshot.
+Customer feature snapshots (79 columns). One file per bucket per snapshot.
 
 #### Identity & Temporal
 | Column | Type | Description |
@@ -328,8 +358,11 @@ Per-snapshot, per-first-purchase-month aggregates.
 | `mean_cumulative_spend` | Float64 | Mean `spend_history` |
 | `rolling30d_purchase_rate` | Float64 | Proportion with `purchases_30d > 0` |
 | `future30d_purchase_rate` | Float64 | Proportion with `future_purchases_30d > 0` (eligible only; null if not) |
+| `observation_months` | Int32 | Calendar-month offset between cohort and snapshot |
+| `min_tenure_days` | Int64 | Minimum tenure in cohort |
+| `max_tenure_days` | Int64 | Maximum tenure in cohort |
 
-**Critical**: Cohorts have unequal observation windows. `cohort` date vs `snapshot` date determines exposure. Do not compare raw rates across cohorts with different tenures.
+**Critical**: Cohorts have unequal observation windows. `cohort` date vs `snapshot` date determines exposure. Do not compare raw rates across cohorts with different tenures. `observation_months` is a calendar-month offset, not a count of completed months. Use `min_tenure_days`/`max_tenure_days` for precise exposure context.
 
 ---
 
@@ -408,7 +441,7 @@ Pipeline run configuration.
 | `--buckets` | No | 8 | Hash partitions (1–32) |
 | `--exclude-invalid` | No | false | Continue despite rejected rows |
 | `--date-format` | No | null | Strptime format for string dates |
-| `--observed-through` | No | max date | Analysis end date (≤ max valid date) |
+| `--observed-through` | No | max date | Asserted capture endpoint (≥ max valid date; does not prove complete capture) |
 | `--coverage-confirmed` | No | false | Enable future follow-up metrics |
 
 ---
@@ -425,6 +458,7 @@ Pipeline run configuration.
 | Rejected rows (without `--exclude-invalid`) | 1 | "Invalid rows: inspect quality.json and rejected.parquet" |
 | Basket key conflicts | 1 | "Customer/transaction key spans dates..." |
 | Cutoff > observed_through | 1 | "Cutoff exceeds observed_through" |
+| observed_through < max valid date | 1 | "observed_through precedes the latest valid transaction date; explicitly truncate the source before analysis" |
 | Invalid buckets/price_mode | 1 | "Invalid buckets or price_mode" |
 | Output directory not empty | 1 | "Output directory must be empty" |
 

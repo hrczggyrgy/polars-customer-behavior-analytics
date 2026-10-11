@@ -10,7 +10,7 @@ C = "customer_id"
 K = [C, "transaction_id", "date"]
 P = [C, "product_id"]
 G = [C, "department", "category"]
-VERSION = "reconstructed-1.2"
+VERSION = "reconstructed-1.3"
 
 
 def ratio(a, b):
@@ -34,7 +34,8 @@ def sink(frame, path):
 
 def taglist(pairs):
     """Create a list of tags from (name, boolean_expression) pairs.
-    Tags are added in order; first match wins for mutually exclusive families.
+    ALL matching tags are collected in order (not first-match exclusive).
+    The resulting list preserves the order of the input pairs.
     """
     return pl.concat_list([pl.when(test.fill_null(False)).then(pl.lit(name)).otherwise(pl.lit(None, dtype=pl.String)) for name, test in pairs]).list.drop_nulls()
 
@@ -47,10 +48,12 @@ def _rejection_reasons(raw):
         reasons.append(pl.when(pl.col(col).is_null() | (pl.col(col).cast(pl.String).str.strip_chars() == "")).then(pl.lit(f"missing_{col}")).otherwise(pl.lit(None)))
     # Date parse failure (date becomes null)
     reasons.append(pl.when(pl.col("date").is_null()).then(pl.lit("invalid_date")).otherwise(pl.lit(None)))
-    # Price checks
+    # Price checks - distinguish null (conversion failure) from non-finite and negative
+    reasons.append(pl.when(pl.col("price").is_null()).then(pl.lit("null_price")).otherwise(pl.lit(None)))
     reasons.append(pl.when(~pl.col("price").is_finite()).then(pl.lit("nonfinite_price")).otherwise(pl.lit(None)))
     reasons.append(pl.when(pl.col("price") < 0).then(pl.lit("negative_price")).otherwise(pl.lit(None)))
-    # Quantity checks
+    # Quantity checks - distinguish null (conversion failure) from non-finite and non-positive
+    reasons.append(pl.when(pl.col("quantity").is_null()).then(pl.lit("null_quantity")).otherwise(pl.lit(None)))
     reasons.append(pl.when(~pl.col("quantity").is_finite()).then(pl.lit("nonfinite_quantity")).otherwise(pl.lit(None)))
     reasons.append(pl.when(pl.col("quantity") <= 0).then(pl.lit("nonpositive_quantity")).otherwise(pl.lit(None)))
     # Value computation
@@ -101,9 +104,11 @@ def prepare(source, root, mode, buckets, exclude, fmt, through, coverage_confirm
         pl.col("transaction_id").is_null().sum().alias("null_transaction_id"),
         pl.col("product_id").is_null().sum().alias("null_product_id"),
         pl.col("date").is_null().sum().alias("null_date"),
-        # Invalid numerics
+        # Invalid numerics - separate null from non-finite and sign checks
+        pl.col("price").is_null().sum().alias("null_price"),
         (~pl.col("price").is_finite()).sum().alias("nonfinite_price"),
         (pl.col("price") < 0).sum().alias("negative_price"),
+        pl.col("quantity").is_null().sum().alias("null_quantity"),
         (~pl.col("quantity").is_finite()).sum().alias("nonfinite_quantity"),
         (pl.col("quantity") <= 0).sum().alias("nonpositive_quantity"),
         (~pl.col("value").is_finite()).sum().alias("nonfinite_value"),
@@ -120,6 +125,8 @@ def prepare(source, root, mode, buckets, exclude, fmt, through, coverage_confirm
         breakdown = {}
     
     audit_base["rejection_breakdown"] = breakdown
+    audit_base["valid_rows"] = audit_base["source_rows"] - audit_base["rejected_rows"]
+    audit_base["rejection_rate"] = round(audit_base["rejected_rows"] / audit_base["source_rows"], 4) if audit_base["source_rows"] > 0 else 0.0
     audit = audit_base
     
     (root / "quality.json").write_text(json.dumps(audit, default=str, indent=2))
@@ -257,7 +264,7 @@ def label(frame, thresholds):
     # Style eligibility: sufficient history for behavioral classification
     enough = (pl.col("days_365d") >= 6) & (pl.col("tenure") >= 90) & (pl.col("gap_count") >= 4)
     
-    # Behavioral Style Tags (mutually exclusive via precedence order in taglist)
+    # Behavioral Style Tags (multiple can apply; all matching tags collected in order)
     routine = (pl.col("gap_cv") <= 0.75) & (pl.col("established_share") >= 0.70)
     focused = (pl.col("dominant_share") >= 0.70) & (pl.col("established_share") >= 0.70)
     broad = (pl.col("median_breadth") >= 3) & (pl.col("established_share") >= 0.70)
