@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import plotly.graph_objects as go
@@ -997,8 +997,24 @@ def main():
         date.fromisoformat(metadata["minimum_date"]),
         date.fromisoformat(metadata["maximum_date"]),
     )
+    data_span_days = (last - first).days
+    
+    # Auto-calculate smart defaults
+    # Default cutoff: leave 90 days for follow-up (so 30-day follow-up works)
+    default_chosen = last - timedelta(days=90)
+    if default_chosen < first:
+        default_chosen = first + timedelta(days=max(1, data_span_days // 4))
+    
+    # Auto-calculate number of historical cutoffs (monthly, max 12)
+    default_count = min(12, max(2, data_span_days // 30))
+    
+    # Auto-calculate partitions based on customer count (target ~500 customers/partition)
+    valid_customers = metadata["valid_customers"]
+    default_partitions = max(1, min(32, valid_customers // 500))
+
     st.sidebar.caption(
-        f"{metadata['rows']:,} rows · {metadata['valid_customers']:,} customers · {first} to {last}"
+        f"{metadata['rows']:,} rows · {valid_customers:,} customers · {first} to {last} "
+        f"({data_span_days} days)"
     )
 
     # Threshold calibration settings (auto by default)
@@ -1026,21 +1042,54 @@ def main():
         st.warning("Review invalid rows and explicitly select exclusion to continue.")
         st.json(metadata)
         return
+    
+    # Coverage confirmation - highlighted
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**📋 Coverage confirmation required for future-purchase analysis**")
+    st.sidebar.caption(
+        "Check this only if you have COMPLETE purchase data through the coverage end date. "
+        "Without it, future-purchase rates and outcome estimates are suppressed."
+    )
     coverage = st.sidebar.checkbox("I confirm complete purchase capture through the date below")
+    
     end = (
         st.sidebar.date_input(
-            "Confirmed coverage end", value=last, min_value=last, max_value=max(last, date.today())
+            "Confirmed coverage end",
+            value=last,
+            min_value=last,
+            max_value=max(last, date.today()),
+            disabled=not coverage,
+            help="Must be ≥ latest data date. Future-purchase windows cannot extend beyond this."
         )
         if coverage
         else last
     )
-    chosen = st.sidebar.date_input(
-        "Latest analysis cutoff", value=last, min_value=first, max_value=end
+    
+    # Latest analysis cutoff - auto-default to leave room for follow-up
+    st.sidebar.markdown("**📅 Analysis cutoffs**")
+    st.sidebar.caption(
+        f"Choose a cutoff that leaves future data for follow-up. "
+        f"Recommended: {last - timedelta(days=90)} (leaves 90 days for 30/90-day follow-up)."
     )
-    count = st.sidebar.slider("Historical cutoffs", 1, 12, 3)
-    partitions = st.sidebar.slider("Customer partitions", 1, 32, 8)
-    dates = cutoffs(chosen, first, count)
-    st.sidebar.caption("Cutoffs: " + ", ".join(map(str, dates)))
+    chosen = st.sidebar.date_input(
+        "Latest analysis cutoff",
+        value=default_chosen,
+        min_value=first + timedelta(days=30),
+        max_value=end - timedelta(days=1) if coverage else end,
+        help="Cutoff date for feature computation. Future windows start after this date."
+    )
+    
+    # Auto-calculated cutoffs
+    dates = cutoffs(chosen, first, default_count)
+    st.sidebar.caption(f"Cutoffs (monthly, {len(dates)}): " + ", ".join(map(str, dates)))
+    
+    # Override option for advanced users
+    with st.sidebar.expander("Advanced: override auto settings", expanded=False):
+        count = st.slider("Historical cutoffs", 1, 12, default_count)
+        dates = cutoffs(chosen, first, count)
+        partitions = st.slider("Customer partitions", 1, 32, default_partitions)
+        st.caption(f"Partitions: {partitions} (≈{valid_customers//max(1,partitions)} customers each)")
+
     job = dict(
         base,
         action="analyze",
