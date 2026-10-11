@@ -32,7 +32,7 @@ from retail_analytics.core.thresholds import (
     write_thresholds,
 )
 
-MAX_ROWS = 2_000_000
+MAX_ROWS = 3_000_000
 
 
 def cutoffs(last, first, count):
