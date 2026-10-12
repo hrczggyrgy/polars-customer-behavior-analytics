@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import polars as pl
 
 WILSON_Z = 1.959963984540054
 
@@ -38,7 +39,7 @@ def wilson(successes: int, total: int) -> tuple[float | None, float | None]:
 
 
 def ratio(numerator: float | None, denominator: float | None) -> float | None:
-    """Safe division: returns None when denominator is None or <= 0.
+    """Safe division for Python scalars: returns None when denominator is None or <= 0.
 
     Args:
         numerator: Numerator value
@@ -52,3 +53,16 @@ def ratio(numerator: float | None, denominator: float | None) -> float | None:
     if numerator is None:
         return None
     return numerator / denominator
+
+
+def safe_ratio(a: pl.Expr, b: pl.Expr) -> pl.Expr:
+    """Safe division for Polars expressions: returns null when denominator is null or <= 0.
+
+    Args:
+        a: Numerator expression
+        b: Denominator expression
+
+    Returns:
+        Polars expression with safe division
+    """
+    return pl.when(b.is_not_null() & (b > 0)).then(a / b).otherwise(None)

@@ -92,6 +92,13 @@ def compute_frequent_items(
     else:
         filtered = baskets
 
+    # Total DISTINCT baskets in window (denominator for support)
+    total_baskets = collect(
+        filtered.select("date", "customer_id", "transaction_id")
+        .unique()
+        .select(pl.len())
+    ).item()
+
     # Get distinct items per basket (deduplicate within basket)
     items_per_basket = (
         filtered.select("date", "customer_id", "transaction_id", item_col)
@@ -104,9 +111,6 @@ def compute_frequent_items(
         .agg(pl.len().alias("basket_count"))
         .sort("basket_count", descending=True)
     )
-
-    # Total baskets in window
-    total_baskets = collect(filtered.select(pl.len())).item()
 
     # Filter by minimum support
     min_baskets = max(1, math.ceil(config.min_support * total_baskets))
@@ -163,6 +167,7 @@ def compute_item_pairs(
         frequent_items[item_col].to_list(),
         frequent_items["support"].to_list()
     ))
+    # Use correct total_baskets from frequent_items (which now has correct denominator)
     total_baskets = frequent_items["total_baskets"][0] if len(frequent_items) > 0 else 0
     min_cooccurrence = max(1, math.ceil(config.min_support * total_baskets))
 
