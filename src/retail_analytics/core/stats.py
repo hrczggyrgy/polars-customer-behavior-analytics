@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+
 import polars as pl
 
 WILSON_Z = 1.959963984540054

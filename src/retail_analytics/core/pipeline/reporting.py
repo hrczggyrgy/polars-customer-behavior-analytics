@@ -6,15 +6,12 @@ This module generates aggregated reports from labeled snapshots:
 - Segment transitions: transition rates between segments over time
 """
 
-from datetime import date
 from pathlib import Path
-from typing import Any
 
 import polars as pl
 
-from retail_analytics.core.constants import CENSOR_DAYS, DEFAULT_MIN_ELIGIBLE
-from retail_analytics.core.pipeline.prepare import _sink, C
-from retail_analytics.core.stats import safe_ratio, wilson
+from retail_analytics.core.pipeline.prepare import C, _sink
+from retail_analytics.core.stats import safe_ratio
 
 
 def generate_reports(root: Path, buckets: int) -> None:
@@ -57,7 +54,9 @@ def generate_reports(root: Path, buckets: int) -> None:
         safe_ratio(pl.col("customers"), pl.col("customers").sum().over("snapshot")).alias(
             "customer_share"
         ),
-        safe_ratio(pl.col("revenue"), pl.col("revenue").sum().over("snapshot")).alias("revenue_share"),
+        safe_ratio(pl.col("revenue"), pl.col("revenue").sum().over("snapshot")).alias(
+            "revenue_share"
+        ),
     )
     _sink(profile, root / "segment_profiles.parquet", sort_by=["snapshot", "behavior"])
 

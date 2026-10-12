@@ -8,16 +8,13 @@ This module applies multi-label classifications to customer snapshots:
 - Value tiers (high, middle, low, insufficient_exposure, no_recent_spend)
 """
 
-from dataclasses import asdict
 from datetime import date
-from pathlib import Path
 from typing import Any
 
 import polars as pl
 
 from retail_analytics.core.constants import (
     BREADTH_CHANGE_NARROWING_MAX,
-    CENSOR_DAYS,
     DOMINANT_SHARE_FOCUSED_MIN,
     ESTABLISHED_SHARE_BROAD_MIN,
     ESTABLISHED_SHARE_FOCUSED_MIN,
@@ -28,24 +25,14 @@ from retail_analytics.core.constants import (
     MIN_DAYS_STYLE,
     MIN_GAP_COUNT_STRONGER,
     MIN_GAP_COUNT_STYLE,
-    MIN_TENURE_COMPARABLE,
     MIN_TENURE_ONE_SHOPPING_DAY,
     MIN_TENURE_STYLE,
     MIN_TENURE_VALUE_EXPOSURE,
     NEW_SHARE_EXPLORATION_MIN,
     OVERDUE_CATEGORIES_NARROWING_MIN,
-    QUANTILE_STYLE_HIGH,
-    QUANTILE_STYLE_LOW,
-    QUANTILE_VALUE_HIGH,
-    QUANTILE_VALUE_LOW,
     REACTIVATION_EVENTS_MIN,
-    WINDOW_PREVIOUS_START_OFFSET,
-    WINDOW_RECENT,
-    WINDOW_RECENT_30,
-    WINDOW_YEAR,
 )
 from retail_analytics.core.pipeline.prepare import _taglist
-from retail_analytics.core.thresholds import default_policy
 
 
 def apply_labels(
@@ -212,7 +199,11 @@ def apply_labels(
     )
 
     # Value Tier (mutually exclusive, requires thresholds)
-    if not ref_available or thresholds.get("value_low") is None or thresholds.get("value_high") is None:
+    if (
+        not ref_available
+        or thresholds.get("value_low") is None
+        or thresholds.get("value_high") is None
+    ):
         return frame.with_columns(pl.lit("reference_unavailable").alias("value_tier"))
 
     return frame.with_columns(

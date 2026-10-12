@@ -11,92 +11,46 @@ This is a backward-compatible facade that re-exports from the decomposed pipelin
 For new code, prefer importing directly from retail_analytics.core.pipeline.*
 """
 
-import argparse
-import json
-import shutil
-from dataclasses import asdict
-from datetime import date, timedelta
-from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
-import polars as pl
+from retail_analytics.core.pipeline.features import (
+    _compute_baskets,
+    add_derived_features,
+    add_future_outcomes,
+    compute_base_features,
+    compute_breadth_last6days,
+    compute_category_aggregations,
+    compute_category_features,
+    compute_day_features,
+    compute_habit_features,
+    compute_price_features,
+    compute_product_features,
+    compute_quantity_features,
+    compute_rhythm_features,
+    compute_weekday_entropy,
+    merge_features,
+)
+from retail_analytics.core.pipeline.labeling import apply_labels as label
 
 # Re-export from pipeline modules for backward compatibility
 from retail_analytics.core.pipeline.prepare import (
-    prepare,
-    validate_input_schema,
-    _sink,
-    sink,
-    _taglist,
-    _rejection_reasons,
-    _parse_dates,
-    _normalize_strings,
-    _handle_price_quantity,
-    _compute_validity_mask,
     _compute_quality_audit,
+    _compute_validity_mask,
+    _handle_price_quantity,
+    _normalize_strings,
+    _parse_dates,
+    _rejection_reasons,
+    _sink,
+    _taglist,
     _write_partitions,
+    prepare,
+    sink,
+    validate_input_schema,
 )
-from retail_analytics.core.pipeline.features import (
-    _compute_baskets,
-    compute_base_features,
-    compute_day_features,
-    compute_rhythm_features,
-    compute_weekday_entropy,
-    compute_breadth_last6days,
-    compute_product_features,
-    compute_habit_features,
-    compute_quantity_features,
-    compute_category_features,
-    compute_category_aggregations,
-    compute_price_features,
-    merge_features,
-    add_derived_features,
-    add_future_outcomes,
-)
-from retail_analytics.core.pipeline.snapshot import generate_snapshot as snapshot
-from retail_analytics.core.pipeline.labeling import apply_labels as label
 from retail_analytics.core.pipeline.reporting import generate_reports as reports
-from retail_analytics.core.pipeline.run import run_pipeline as run, main
-
-from retail_analytics.core.constants import (
-    BREADTH_CHANGE_NARROWING_MAX,
-    CENSOR_DAYS,
-    DOMINANT_SHARE_FOCUSED_MIN,
-    ESTABLISHED_SHARE_BROAD_MIN,
-    ESTABLISHED_SHARE_FOCUSED_MIN,
-    ESTABLISHED_SHARE_ROUTINE_MIN,
-    GAP_CV_ROUTINE_MAX,
-    HASH_SEED_BUCKETING,
-    LATENESS_OVERDUE_MIN,
-    MEDIAN_BREADTH_BROAD_MIN,
-    MIN_DAYS_STYLE,
-    MIN_GAP_COUNT_STRONGER,
-    MIN_GAP_COUNT_STYLE,
-    MIN_REFERENCE_POPULATION,
-    MIN_TENURE_COMPARABLE,
-    MIN_TENURE_ONE_SHOPPING_DAY,
-    MIN_TENURE_STYLE,
-    MIN_TENURE_VALUE_EXPOSURE,
-    NEW_SHARE_EXPLORATION_MIN,
-    OVERDUE_CATEGORIES_NARROWING_MIN,
-    QUANTILE_STYLE_HIGH,
-    QUANTILE_STYLE_LOW,
-    QUANTILE_VALUE_HIGH,
-    QUANTILE_VALUE_LOW,
-    REACTIVATION_EVENTS_MIN,
-    WINDOW_PREVIOUS_START_OFFSET,
-    WINDOW_RECENT,
-    WINDOW_RECENT_30,
-    WINDOW_YEAR,
-)
-from retail_analytics.core.thresholds import (
-    calibrate_thresholds,
-    compute_data_profile,
-    compute_label_shares,
-    default_policy,
-    select_reference_cutoff,
-    write_thresholds,
-)
+from retail_analytics.core.pipeline.run import main
+from retail_analytics.core.pipeline.run import run_pipeline as run
+from retail_analytics.core.pipeline.snapshot import generate_snapshot as snapshot
 from retail_analytics.core.stats import safe_ratio
 
 # Column definitions

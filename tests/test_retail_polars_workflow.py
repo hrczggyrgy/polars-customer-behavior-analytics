@@ -148,8 +148,13 @@ class WorkflowTests(unittest.TestCase):
                 data.write_parquet(source)
                 out = root / name
                 run(
-                    str(source), str(out), mode, [cutoff], buckets=1,
-                    coverage_confirmed=False, min_reference_population=1
+                    str(source),
+                    str(out),
+                    mode,
+                    [cutoff],
+                    buckets=1,
+                    coverage_confirmed=False,
+                    min_reference_population=1,
                 )
                 frames.append(
                     pl.read_parquet(str(out / "snapshots" / cutoff / "*.parquet")).sort(

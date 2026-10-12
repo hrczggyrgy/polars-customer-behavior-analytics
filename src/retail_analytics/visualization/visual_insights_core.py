@@ -4,14 +4,6 @@ import math
 from datetime import date, timedelta
 
 from retail_analytics.core.stats import wilson
-from retail_analytics.visualization.product_affinity import (
-    ProductAffinityConfig,
-    product_affinity_analysis,
-    cross_sell_recommendations,
-    new_to_repeat_pathways,
-    basket_composition_by_segment,
-    run_product_affinity_dashboard,
-)
 
 METRICS = {
     "spend_90d": ("Recorded spend, last 90 days", "currency units"),
@@ -313,15 +305,32 @@ def momentum_map(rows, sample_limit=2000):
 
     # Check required columns exist
     schema = rows.collect_schema()
-    required_cols = ["frequency_change", "basket_change", "value_tier", "lifecycle", "evidence",
-                     "spend_90d", "purchases_90d", "purchases_previous90d", "aov_recent", "aov_previous",
-                     "customer_id"]
+    required_cols = [
+        "frequency_change",
+        "basket_change",
+        "value_tier",
+        "lifecycle",
+        "evidence",
+        "spend_90d",
+        "purchases_90d",
+        "purchases_previous90d",
+        "aov_recent",
+        "aov_previous",
+        "customer_id",
+    ]
     missing = [c for c in required_cols if c not in schema]
     if missing:
         # Return empty structure with expected schema
         empty_sample = pl.DataFrame(schema={c: schema.get(c, pl.Float64) for c in required_cols})
-        empty_quad = pl.DataFrame(schema={"quadrant": pl.String, "customers": pl.Int64, "spend_90d": pl.Float64,
-                                           "customer_share": pl.Float64, "spend_share": pl.Float64})
+        empty_quad = pl.DataFrame(
+            schema={
+                "quadrant": pl.String,
+                "customers": pl.Int64,
+                "spend_90d": pl.Float64,
+                "customer_share": pl.Float64,
+                "spend_share": pl.Float64,
+            }
+        )
         return {
             "sample": empty_sample,
             "quadrant_summary": empty_quad,
@@ -340,8 +349,15 @@ def momentum_map(rows, sample_limit=2000):
     if finite_n == 0:
         # Return empty structure with expected schema
         empty_sample = pl.DataFrame(schema={c: schema.get(c, pl.Float64) for c in required_cols})
-        empty_quad = pl.DataFrame(schema={"quadrant": pl.String, "customers": pl.Int64, "spend_90d": pl.Float64,
-                                           "customer_share": pl.Float64, "spend_share": pl.Float64})
+        empty_quad = pl.DataFrame(
+            schema={
+                "quadrant": pl.String,
+                "customers": pl.Int64,
+                "spend_90d": pl.Float64,
+                "customer_share": pl.Float64,
+                "spend_share": pl.Float64,
+            }
+        )
         return {
             "sample": empty_sample,
             "quadrant_summary": empty_quad,
@@ -353,8 +369,19 @@ def momentum_map(rows, sample_limit=2000):
     sample = collect(
         finite_rows.sort(pl.col("customer_id").hash(seed=29))
         .limit(sample_limit)
-        .select("customer_id", "frequency_change", "basket_change", "value_tier", "lifecycle", "evidence",
-               "spend_90d", "purchases_90d", "purchases_previous90d", "aov_recent", "aov_previous")
+        .select(
+            "customer_id",
+            "frequency_change",
+            "basket_change",
+            "value_tier",
+            "lifecycle",
+            "evidence",
+            "spend_90d",
+            "purchases_90d",
+            "purchases_previous90d",
+            "aov_recent",
+            "aov_previous",
+        )
     )
 
     # Quadrant classification for all finite rows
@@ -404,9 +431,9 @@ def cadence_map(rows, sample_limit=2000, evidence_filter=None, value_tier_filter
     import polars as pl
 
     filtered = rows.filter(
-        pl.col("median_gap").is_finite() &
-        pl.col("recency").is_finite() &
-        (pl.col("median_gap") > 0)
+        pl.col("median_gap").is_finite()
+        & pl.col("recency").is_finite()
+        & (pl.col("median_gap") > 0)
     )
 
     if evidence_filter:
@@ -415,17 +442,28 @@ def cadence_map(rows, sample_limit=2000, evidence_filter=None, value_tier_filter
         filtered = filtered.filter(pl.col("value_tier").is_in(value_tier_filter))
 
     # Eligibility: style_eligible customers (have enough history for median_gap)
-    eligible_row = collect(filtered.select(
-        pl.col("style_eligible").sum().alias("eligible_n"),
-        pl.len().alias("total_n"),
-    )).row(0, named=True)
+    eligible_row = collect(
+        filtered.select(
+            pl.col("style_eligible").sum().alias("eligible_n"),
+            pl.len().alias("total_n"),
+        )
+    ).row(0, named=True)
 
     # Sample for rendering
     sample = collect(
         filtered.sort(pl.col("customer_id").hash(seed=29))
         .limit(sample_limit)
-        .select("customer_id", "median_gap", "recency", "lateness", "value_tier", "evidence", "lifecycle",
-               "gap_cv", "days_365d")
+        .select(
+            "customer_id",
+            "median_gap",
+            "recency",
+            "lateness",
+            "value_tier",
+            "evidence",
+            "lifecycle",
+            "gap_cv",
+            "days_365d",
+        )
     )
 
     return {
@@ -455,6 +493,7 @@ def category_participation_comparison(validated, rows):
 
     # Recent 90d: [C-89, C], Previous 90d: [C-179, C-90]
     from retail_analytics.core.constants import WINDOW_PREVIOUS_START_OFFSET, WINDOW_RECENT
+
     recent_start = cutoff - timedelta(days=WINDOW_RECENT - 1)
     recent_end = cutoff
     prev_start = cutoff - timedelta(days=WINDOW_PREVIOUS_START_OFFSET)
@@ -462,9 +501,7 @@ def category_participation_comparison(validated, rows):
 
     # Use validated data which has per-transaction date, department, category
     recent_cats = (
-        validated.filter(
-            pl.col("date").is_between(recent_start, recent_end)
-        )
+        validated.filter(pl.col("date").is_between(recent_start, recent_end))
         .join(ids, on="customer_id", how="semi")
         .group_by("department", "category")
         .agg(
@@ -474,9 +511,7 @@ def category_participation_comparison(validated, rows):
     )
 
     prev_cats = (
-        validated.filter(
-            pl.col("date").is_between(prev_start, prev_end)
-        )
+        validated.filter(pl.col("date").is_between(prev_start, prev_end))
         .join(ids, on="customer_id", how="semi")
         .group_by("department", "category")
         .agg(
@@ -498,12 +533,18 @@ def category_participation_comparison(validated, rows):
             .then(pl.col("previous_buyers").fill_null(0) / pl.lit(n))
             .otherwise(None)
             .alias("previous_participation"),
-            (pl.col("recent_buyers").fill_null(0) - pl.col("previous_buyers").fill_null(0)).alias("buyer_change"),
-            (pl.col("recent_spend").fill_null(0) - pl.col("previous_spend").fill_null(0)).alias("spend_change"),
+            (pl.col("recent_buyers").fill_null(0) - pl.col("previous_buyers").fill_null(0)).alias(
+                "buyer_change"
+            ),
+            (pl.col("recent_spend").fill_null(0) - pl.col("previous_spend").fill_null(0)).alias(
+                "spend_change"
+            ),
             pl.concat_str([pl.col("department"), pl.lit(" / "), pl.col("category")]).alias("label"),
         )
         .with_columns(
-            (pl.col("recent_participation") - pl.col("previous_participation")).alias("participation_change_pp"),
+            (pl.col("recent_participation") - pl.col("previous_participation")).alias(
+                "participation_change_pp"
+            ),
         )
         .sort("recent_participation", descending=True)
     )
@@ -526,17 +567,15 @@ def trial_to_repeat_map(product_history, rows):
         return pl.DataFrame()
 
     from retail_analytics.core.constants import WINDOW_YEAR
+
     trial_start = cutoff - timedelta(days=WINDOW_YEAR - 1)
     trial_end = cutoff - timedelta(days=90)
 
     ids = rows.select("customer_id").unique()
 
     # Filter to eligible trials with enough observation time
-    trials = (
-        product_history.filter(
-            pl.col("trial").is_between(trial_start, trial_end)
-        )
-        .join(ids, on="customer_id", how="semi")
+    trials = product_history.filter(pl.col("trial").is_between(trial_start, trial_end)).join(
+        ids, on="customer_id", how="semi"
     )
 
     # Join with product metadata to get category
@@ -552,7 +591,10 @@ def trial_to_repeat_map(product_history, rows):
         .agg(
             pl.col("customer_id").n_unique().alias("trialling_customers"),
             pl.len().alias("eligible_trials"),
-            (pl.col("repeat").is_not_null() & (pl.col("repeat") <= pl.col("trial") + pl.duration(days=90)))
+            (
+                pl.col("repeat").is_not_null()
+                & (pl.col("repeat") <= pl.col("trial") + pl.duration(days=90))
+            )
             .fill_null(False)
             .sum()
             .alias("repeated_trials"),
@@ -600,7 +642,10 @@ def revenue_waterfall(rows, previous_rows, cutoff):
     current_stats = collect(
         rows.select(
             (pl.col("purchases_90d") > 0).sum().alias("purchasing_customers"),
-            pl.col("purchases_90d").filter(pl.col("purchases_90d") > 0).sum().alias("total_baskets"),
+            pl.col("purchases_90d")
+            .filter(pl.col("purchases_90d") > 0)
+            .sum()
+            .alias("total_baskets"),
             pl.col("spend_90d").filter(pl.col("purchases_90d") > 0).sum().alias("total_spend"),
         )
     ).row(0, named=True)
@@ -608,7 +653,10 @@ def revenue_waterfall(rows, previous_rows, cutoff):
     previous_stats = collect(
         previous_rows.select(
             (pl.col("purchases_90d") > 0).sum().alias("purchasing_customers"),
-            pl.col("purchases_90d").filter(pl.col("purchases_90d") > 0).sum().alias("total_baskets"),
+            pl.col("purchases_90d")
+            .filter(pl.col("purchases_90d") > 0)
+            .sum()
+            .alias("total_baskets"),
             pl.col("spend_90d").filter(pl.col("purchases_90d") > 0).sum().alias("total_spend"),
         )
     ).row(0, named=True)
@@ -624,21 +672,45 @@ def revenue_waterfall(rows, previous_rows, cutoff):
     # Handle edge cases
     if pc_prev == 0 or tb_prev == 0:
         # Cannot compute previous-period rates; return total change with unavailable decomposition status
-        return pl.DataFrame({
-            "component": ["Previous period spend", "Current period spend", "Total change", "Decomposition"],
-            "value": [float(ts_prev), float(ts_curr), float(ts_curr - ts_prev), None],
-            "status": [None, None, None, "unavailable: zero purchasing customers or baskets in previous period"],
-            "order": [0, 1, 2, 3],
-        })
+        return pl.DataFrame(
+            {
+                "component": [
+                    "Previous period spend",
+                    "Current period spend",
+                    "Total change",
+                    "Decomposition",
+                ],
+                "value": [float(ts_prev), float(ts_curr), float(ts_curr - ts_prev), None],
+                "status": [
+                    None,
+                    None,
+                    None,
+                    "unavailable: zero purchasing customers or baskets in previous period",
+                ],
+                "order": [0, 1, 2, 3],
+            }
+        )
 
     if pc_curr == 0 or tb_curr == 0:
         # Current period has no purchasing activity
-        return pl.DataFrame({
-            "component": ["Previous period spend", "Current period spend", "Total change", "Decomposition"],
-            "value": [float(ts_prev), float(ts_curr), float(ts_curr - ts_prev), None],
-            "status": [None, None, None, "unavailable: zero purchasing customers or baskets in current period"],
-            "order": [0, 1, 2, 3],
-        })
+        return pl.DataFrame(
+            {
+                "component": [
+                    "Previous period spend",
+                    "Current period spend",
+                    "Total change",
+                    "Decomposition",
+                ],
+                "value": [float(ts_prev), float(ts_curr), float(ts_curr - ts_prev), None],
+                "status": [
+                    None,
+                    None,
+                    None,
+                    "unavailable: zero purchasing customers or baskets in current period",
+                ],
+                "order": [0, 1, 2, 3],
+            }
+        )
 
     # Compute rates
     F_prev = tb_prev / pc_prev  # baskets per buyer
@@ -654,12 +726,28 @@ def revenue_waterfall(rows, previous_rows, cutoff):
     # Verify reconciliation (within floating-point tolerance)
     residual = ts_curr - ts_prev - delta_N - delta_F - delta_A
 
-    return pl.DataFrame({
-        "component": ["Previous period spend", "Purchasing customers", "Baskets per customer", "Spend per basket (AOV)", "Residual (rounding)", "Current period spend"],
-        "value": [float(ts_prev), float(delta_N), float(delta_F), float(delta_A), float(residual), float(ts_curr)],
-        "status": [None, None, None, None, None, None],
-        "order": [0, 1, 2, 3, 4, 5],
-    })
+    return pl.DataFrame(
+        {
+            "component": [
+                "Previous period spend",
+                "Purchasing customers",
+                "Baskets per customer",
+                "Spend per basket (AOV)",
+                "Residual (rounding)",
+                "Current period spend",
+            ],
+            "value": [
+                float(ts_prev),
+                float(delta_N),
+                float(delta_F),
+                float(delta_A),
+                float(residual),
+                float(ts_curr),
+            ],
+            "status": [None, None, None, None, None, None],
+            "order": [0, 1, 2, 3, 4, 5],
+        }
+    )
 
 
 def value_tier_transition_waterfall(transition_flows):
@@ -710,7 +798,9 @@ def value_tier_transition_waterfall(transition_flows):
             pl.col("inflow").fill_null(0),
         )
         .with_columns(
-            (pl.col("inflow").cast(pl.Int64) - pl.col("outflow").cast(pl.Int64)).alias("net_change"),
+            (pl.col("inflow").cast(pl.Int64) - pl.col("outflow").cast(pl.Int64)).alias(
+                "net_change"
+            ),
         )
         .with_columns(
             pl.when(pl.col("net_change") >= 0)
@@ -737,15 +827,19 @@ def behavior_trajectory_matrix(rows):
     # Check required columns exist
     schema = rows.collect_schema()
     required_cols = ["behavior", "trajectory", "spend_90d"]
-    optional_cols = ["future_purchases_30d", "future_purchases_90d", "eligible_followup_30d", "eligible_followup_90d"]
     missing = [c for c in required_cols if c not in schema]
     if missing:
         # Return empty DataFrame with expected schema
         empty_schema = {
-            "behavior": pl.String, "trajectory": pl.String, "customers": pl.Int64,
-            "median_spend": pl.Float64, "mean_spend": pl.Float64,
-            "future_30d_rate": pl.Float64, "future_90d_rate": pl.Float64,
-            "eligible_30d": pl.Int64, "eligible_90d": pl.Int64,
+            "behavior": pl.String,
+            "trajectory": pl.String,
+            "customers": pl.Int64,
+            "median_spend": pl.Float64,
+            "mean_spend": pl.Float64,
+            "future_30d_rate": pl.Float64,
+            "future_90d_rate": pl.Float64,
+            "eligible_30d": pl.Int64,
+            "eligible_90d": pl.Int64,
         }
         return pl.DataFrame(schema=empty_schema)
 
@@ -757,26 +851,34 @@ def behavior_trajectory_matrix(rows):
     ]
 
     if "future_purchases_30d" in schema and "eligible_followup_30d" in schema:
-        agg_exprs.extend([
-            (pl.col("future_purchases_30d") > 0).mean().alias("future_30d_rate"),
-            pl.col("eligible_followup_30d").sum().alias("eligible_30d"),
-        ])
+        agg_exprs.extend(
+            [
+                (pl.col("future_purchases_30d") > 0).mean().alias("future_30d_rate"),
+                pl.col("eligible_followup_30d").sum().alias("eligible_30d"),
+            ]
+        )
     else:
-        agg_exprs.extend([
-            pl.lit(None, dtype=pl.Float64).alias("future_30d_rate"),
-            pl.lit(0, dtype=pl.Int64).alias("eligible_30d"),
-        ])
+        agg_exprs.extend(
+            [
+                pl.lit(None, dtype=pl.Float64).alias("future_30d_rate"),
+                pl.lit(0, dtype=pl.Int64).alias("eligible_30d"),
+            ]
+        )
 
     if "future_purchases_90d" in schema and "eligible_followup_90d" in schema:
-        agg_exprs.extend([
-            (pl.col("future_purchases_90d") > 0).mean().alias("future_90d_rate"),
-            pl.col("eligible_followup_90d").sum().alias("eligible_90d"),
-        ])
+        agg_exprs.extend(
+            [
+                (pl.col("future_purchases_90d") > 0).mean().alias("future_90d_rate"),
+                pl.col("eligible_followup_90d").sum().alias("eligible_90d"),
+            ]
+        )
     else:
-        agg_exprs.extend([
-            pl.lit(None, dtype=pl.Float64).alias("future_90d_rate"),
-            pl.lit(0, dtype=pl.Int64).alias("eligible_90d"),
-        ])
+        agg_exprs.extend(
+            [
+                pl.lit(None, dtype=pl.Float64).alias("future_90d_rate"),
+                pl.lit(0, dtype=pl.Int64).alias("eligible_90d"),
+            ]
+        )
 
     # Get behavior and trajectory combinations
     combo = (
@@ -860,11 +962,11 @@ def basket_composition_slope(rows):
 
     # Filter to customers with comparable windows
     comp = rows.filter(
-        pl.col("comparable_windows") &
-        pl.col("breadth_recent").is_finite() &
-        pl.col("breadth_previous").is_finite() &
-        pl.col("aov_recent").is_finite() &
-        pl.col("aov_previous").is_finite()
+        pl.col("comparable_windows")
+        & pl.col("breadth_recent").is_finite()
+        & pl.col("breadth_previous").is_finite()
+        & pl.col("aov_recent").is_finite()
+        & pl.col("aov_previous").is_finite()
     )
 
     # Summary stats for slope chart
@@ -890,18 +992,25 @@ def basket_composition_slope(rows):
     # Customer-level data for scatter/slope (sampled)
     # Select only columns that exist in the filtered frame
     sample_cols = ["customer_id"]
-    for col in ["behavior", "value_tier", "breadth_recent", "breadth_previous",
-                "aov_recent", "aov_previous", "spend_90d", "spend_previous90d",
-                "new_share", "repeat_share", "established_share",
-                "frequency_change", "basket_change"]:
+    for col in [
+        "behavior",
+        "value_tier",
+        "breadth_recent",
+        "breadth_previous",
+        "aov_recent",
+        "aov_previous",
+        "spend_90d",
+        "spend_previous90d",
+        "new_share",
+        "repeat_share",
+        "established_share",
+        "frequency_change",
+        "basket_change",
+    ]:
         if col in comp.collect_schema().names():
             sample_cols.append(col)
 
-    sample = collect(
-        comp.sort(pl.col("customer_id").hash(seed=29))
-        .limit(2000)
-        .select(sample_cols)
-    )
+    sample = collect(comp.sort(pl.col("customer_id").hash(seed=29)).limit(2000).select(sample_cols))
 
     return {
         "summary": slope_data,
@@ -939,8 +1048,7 @@ def category_sankey(category_history, rows, previous_rows=None):
 
     # Two snapshots: need category participation at both
     # previous_rows has its own customer population
-    prev_ids = previous_rows.select("customer_id").unique()
-    prev_n = collect(prev_ids.select(pl.len())).item()
+    collect(previous_rows.select("customer_id").unique().select(pl.len()))
 
     # Current participation
     curr_part = (
@@ -987,13 +1095,18 @@ def future_outcome_validation(rows):
     for dim in ["behavior", "trajectory", "value_tier", "lifecycle", "evidence"]:
         # 30-day validation
         stats_30 = collect(
-            eligible_30.group_by(dim).agg(
+            eligible_30.group_by(dim)
+            .agg(
                 pl.len().alias("eligible_n"),
                 (pl.col("future_purchases_30d") > 0).sum().alias("buyers"),
                 (pl.col("future_purchases_30d") > 0).mean().alias("purchase_rate"),
                 pl.col("future_spend_30d").mean().alias("mean_spend"),
-                pl.col("future_spend_30d").filter(pl.col("future_purchases_30d") > 0).mean().alias("mean_spend_buyers"),
-            ).rename({dim: "dim_value"})
+                pl.col("future_spend_30d")
+                .filter(pl.col("future_purchases_30d") > 0)
+                .mean()
+                .alias("mean_spend_buyers"),
+            )
+            .rename({dim: "dim_value"})
             .with_columns(
                 (pl.col("buyers") / pl.col("eligible_n")).alias("rate"),
                 pl.lit(30).alias("horizon"),
@@ -1004,13 +1117,18 @@ def future_outcome_validation(rows):
 
         # 90-day validation
         stats_90 = collect(
-            eligible_90.group_by(dim).agg(
+            eligible_90.group_by(dim)
+            .agg(
                 pl.len().alias("eligible_n"),
                 (pl.col("future_purchases_90d") > 0).sum().alias("buyers"),
                 (pl.col("future_purchases_90d") > 0).mean().alias("purchase_rate"),
                 pl.col("future_spend_90d").mean().alias("mean_spend"),
-                pl.col("future_spend_90d").filter(pl.col("future_purchases_90d") > 0).mean().alias("mean_spend_buyers"),
-            ).rename({dim: "dim_value"})
+                pl.col("future_spend_90d")
+                .filter(pl.col("future_purchases_90d") > 0)
+                .mean()
+                .alias("mean_spend_buyers"),
+            )
+            .rename({dim: "dim_value"})
             .with_columns(
                 (pl.col("buyers") / pl.col("eligible_n")).alias("rate"),
                 pl.lit(90).alias("horizon"),
@@ -1025,6 +1143,7 @@ def future_outcome_validation(rows):
 # ============================================================================
 # RESEARCH-BACKED PRIORITY VISUALIZATIONS
 # ============================================================================
+
 
 def time_to_second_purchase(baskets, rows, cutoff, max_days=180, confidence=0.95):
     """Kaplan-Meier time-to-second-purchase survival curve.
@@ -1042,9 +1161,9 @@ def time_to_second_purchase(baskets, rows, cutoff, max_days=180, confidence=0.95
     Returns:
         DataFrame with columns: days, survival_prob, lower_ci, upper_ci, at_risk, events, censored
     """
-    import polars as pl
-    from datetime import timedelta
     import math
+
+    import polars as pl
 
     if isinstance(cutoff, str):
         cutoff = date.fromisoformat(cutoff)
@@ -1071,7 +1190,9 @@ def time_to_second_purchase(baskets, rows, cutoff, max_days=180, confidence=0.95
         pl.col("date").n_unique().alias("n_dates")
     )
     second_purchase = (
-        basket_data.join(basket_counts.filter(pl.col("n_dates") >= 2), on="customer_id", how="inner")
+        basket_data.join(
+            basket_counts.filter(pl.col("n_dates") >= 2), on="customer_id", how="inner"
+        )
         .group_by("customer_id")
         .agg(pl.col("date").sort().head(2).last().alias("second_purchase"))
         .filter(pl.col("second_purchase").is_not_null())
@@ -1081,22 +1202,36 @@ def time_to_second_purchase(baskets, rows, cutoff, max_days=180, confidence=0.95
     cust_data = cust_first.join(second_purchase, on="customer_id", how="left")
 
     # Compute time to second purchase (or censoring at cutoff)
-    cust_data = cust_data.with_columns([
-        (pl.col("second_purchase") - pl.col("first_purchase")).dt.total_days().alias("days_to_second"),
-        (pl.lit(cutoff) - pl.col("first_purchase")).dt.total_days().alias("censor_days"),
-    ])
+    cust_data = cust_data.with_columns(
+        [
+            (pl.col("second_purchase") - pl.col("first_purchase"))
+            .dt.total_days()
+            .alias("days_to_second"),
+            (pl.lit(cutoff) - pl.col("first_purchase")).dt.total_days().alias("censor_days"),
+        ]
+    )
 
     # Observed duration: min(event_time, censor_time), capped at max_days
     # Event occurs if second purchase observed within max_days and before cutoff
-    cust_data = cust_data.with_columns([
-        pl.when(pl.col("days_to_second").is_not_null() & (pl.col("days_to_second") <= max_days) & (pl.col("days_to_second") <= pl.col("censor_days")))
-        .then(1).otherwise(0).alias("event"),
-        pl.min_horizontal([
-            pl.col("days_to_second").fill_null(max_days + 1),
-            pl.col("censor_days"),
-            pl.lit(max_days)
-        ]).alias("observed_duration"),
-    ])
+    cust_data = cust_data.with_columns(
+        [
+            pl.when(
+                pl.col("days_to_second").is_not_null()
+                & (pl.col("days_to_second") <= max_days)
+                & (pl.col("days_to_second") <= pl.col("censor_days"))
+            )
+            .then(1)
+            .otherwise(0)
+            .alias("event"),
+            pl.min_horizontal(
+                [
+                    pl.col("days_to_second").fill_null(max_days + 1),
+                    pl.col("censor_days"),
+                    pl.lit(max_days),
+                ]
+            ).alias("observed_duration"),
+        ]
+    )
 
     # Only include customers with first_purchase early enough to have at least 1 day of observation
     cust_data = cust_data.filter(pl.col("censor_days") >= 1)
@@ -1119,11 +1254,19 @@ def time_to_second_purchase(baskets, rows, cutoff, max_days=180, confidence=0.95
             break
 
         events_t = cust_data.filter((pl.col("days_to_second") == t) & (pl.col("event") == 1)).height
-        censored_t = cust_data.filter((pl.col("censor_days") == t) & (pl.col("event") == 0) & (pl.col("days_to_second").is_null() | (pl.col("days_to_second") > max_days) | (pl.col("days_to_second") > pl.col("censor_days")))).height
+        censored_t = cust_data.filter(
+            (pl.col("censor_days") == t)
+            & (pl.col("event") == 0)
+            & (
+                pl.col("days_to_second").is_null()
+                | (pl.col("days_to_second") > max_days)
+                | (pl.col("days_to_second") > pl.col("censor_days"))
+            )
+        ).height
 
         if events_t > 0:
             hazard = events_t / at_risk
-            survival *= (1 - hazard)
+            survival *= 1 - hazard
 
         # Greenwood formula for confidence intervals
         # var(survival) = survival^2 * sum(hazard / (at_risk - events))
@@ -1139,23 +1282,29 @@ def time_to_second_purchase(baskets, rows, cutoff, max_days=180, confidence=0.95
         # Use log-log transformation for better CI bounds
         if survival > 0 and survival < 1 and cum_var > 0:
             log_surv = math.log(-math.log(survival))
-            log_se = math.sqrt(cum_var) / (survival * -math.log(survival)) if survival * -math.log(survival) > 0 else se
+            log_se = (
+                math.sqrt(cum_var) / (survival * -math.log(survival))
+                if survival * -math.log(survival) > 0
+                else se
+            )
             lower = max(0.0, math.exp(-math.exp(log_surv + z * log_se)))
             upper = min(1.0, math.exp(-math.exp(log_surv - z * log_se)))
         else:
             lower = max(0.0, survival - z * se)
             upper = min(1.0, survival + z * se)
 
-        results.append({
-            "days": t,
-            "survival_prob": survival,
-            "lower_ci": lower,
-            "upper_ci": upper,
-            "at_risk": at_risk,
-            "events": events_t,
-            "censored": censored_t,
-            "cum_repeat_prob": 1 - survival,
-        })
+        results.append(
+            {
+                "days": t,
+                "survival_prob": survival,
+                "lower_ci": lower,
+                "upper_ci": upper,
+                "at_risk": at_risk,
+                "events": events_t,
+                "censored": censored_t,
+                "cum_repeat_prob": 1 - survival,
+            }
+        )
 
     return pl.DataFrame(results)
 
@@ -1179,24 +1328,32 @@ def cadence_return_validation(rows, coverage, max_lateness=5.0, bins=10):
         DataFrame with lateness bin statistics
     """
     import polars as pl
+
     from retail_analytics.core.stats import wilson
 
     if not coverage:
         return pl.DataFrame({"warning": ["Coverage unconfirmed - future outcomes unavailable"]})
 
     schema = rows.collect_schema()
-    required = ["recency", "median_gap", "future_purchases_30d", "eligible_followup_30d",
-                "future_purchases_90d", "eligible_followup_90d", "median_gap"]
+    required = [
+        "recency",
+        "median_gap",
+        "future_purchases_30d",
+        "eligible_followup_30d",
+        "future_purchases_90d",
+        "eligible_followup_90d",
+        "median_gap",
+    ]
     missing = [c for c in required if c not in schema]
     if missing:
         return pl.DataFrame({"error": [f"Missing columns: {missing}"]})
 
     # Filter to customers with finite cadence metrics and eligible follow-up
     eligible = rows.filter(
-        pl.col("median_gap").is_finite() &
-        (pl.col("median_gap") > 0) &
-        pl.col("recency").is_finite() &
-        pl.col("eligible_followup_30d")
+        pl.col("median_gap").is_finite()
+        & (pl.col("median_gap") > 0)
+        & pl.col("recency").is_finite()
+        & pl.col("eligible_followup_30d")
     )
 
     if eligible.select(pl.len()).collect().item() == 0:
@@ -1205,16 +1362,14 @@ def cadence_return_validation(rows, coverage, max_lateness=5.0, bins=10):
     # Compute lateness
     eligible = eligible.with_columns(
         (pl.col("recency") / pl.col("median_gap")).alias("lateness")
-    ).filter(
-        (pl.col("lateness") >= 0) & (pl.col("lateness") <= max_lateness)
-    )
+    ).filter((pl.col("lateness") >= 0) & (pl.col("lateness") <= max_lateness))
 
     if eligible.select(pl.len()).collect().item() == 0:
         return pl.DataFrame()
 
     # Create lateness bins
     bin_edges = [i * max_lateness / bins for i in range(bins + 1)]
-    bin_labels = [f"{bin_edges[i]:.1f}–{bin_edges[i+1]:.1f}" for i in range(bins)]
+    bin_labels = [f"{bin_edges[i]:.1f}–{bin_edges[i + 1]:.1f}" for i in range(bins)]
 
     # Polars .cut() requires interior cut points (len(labels) == len(cut_points) + 1)
     interior_edges = bin_edges[1:-1]
@@ -1233,31 +1388,37 @@ def cadence_return_validation(rows, coverage, max_lateness=5.0, bins=10):
             continue
 
         bin_stats = collect(
-            h_data.group_by("lateness_bin").agg(
+            h_data.group_by("lateness_bin")
+            .agg(
                 pl.len().alias("eligible_n"),
                 (pl.col(fut_col) > 0).sum().alias("buyers"),
                 (pl.col(fut_col) > 0).mean().alias("purchase_rate"),
-            ).sort("lateness_bin")
+            )
+            .sort("lateness_bin")
         )
 
         for row in bin_stats.to_dicts():
             n = row["eligible_n"]
             buyers = row["buyers"]
             lo, hi = wilson(buyers, n) if n >= 20 else (None, None)
-            results.append({
-                "horizon": horizon,
-                "lateness_bin": row["lateness_bin"],
-                "eligible_n": n,
-                "buyers": buyers,
-                "purchase_rate": buyers / n if n > 0 else None,
-                "lower_ci": lo,
-                "upper_ci": hi,
-            })
+            results.append(
+                {
+                    "horizon": horizon,
+                    "lateness_bin": row["lateness_bin"],
+                    "eligible_n": n,
+                    "buyers": buyers,
+                    "purchase_rate": buyers / n if n > 0 else None,
+                    "lower_ci": lo,
+                    "upper_ci": hi,
+                }
+            )
 
     return pl.DataFrame(results)
 
 
-def multi_horizon_cohort_repeat(baskets, rows, cutoff, coverage, horizons=[30, 60, 90], min_cohort_size=20):
+def multi_horizon_cohort_repeat(
+    baskets, rows, cutoff, coverage, horizons=[30, 60, 90], min_cohort_size=20
+):
     """Multi-horizon repeat curves by cohort with confidence intervals.
 
     Extends existing cohort_summary to show all horizons together.
@@ -1273,8 +1434,9 @@ def multi_horizon_cohort_repeat(baskets, rows, cutoff, coverage, horizons=[30, 6
     Returns:
         DataFrame with cohort, horizon, rate, lower_ci, upper_ci, eligible_n, repeat_n
     """
+
     import polars as pl
-    from datetime import timedelta
+
     from retail_analytics.core.stats import wilson
 
     if isinstance(cutoff, str):
@@ -1293,7 +1455,7 @@ def multi_horizon_cohort_repeat(baskets, rows, cutoff, coverage, horizons=[30, 6
         cust_cohorts.select("customer_id", "first_purchase"),
         on="customer_id",
         how="inner",
-        validate="m:1"
+        validate="m:1",
     )
     repeat_data = collect(
         baskets_with_first.filter(pl.col("customer_id").is_in(cust_ids))
@@ -1315,11 +1477,15 @@ def multi_horizon_cohort_repeat(baskets, rows, cutoff, coverage, horizons=[30, 6
             & (pl.col("repeat_date") <= pl.col("first_purchase") + pl.duration(days=horizon))
         )
 
-        cohort_stats = cohort_data.group_by("cohort").agg(
-            pl.len().alias("cohort_n"),
-            eligible.sum().alias("eligible_n"),
-            success.fill_null(False).sum().alias("repeat_n"),
-        ).filter(pl.col("cohort_n") >= min_cohort_size)
+        cohort_stats = (
+            cohort_data.group_by("cohort")
+            .agg(
+                pl.len().alias("cohort_n"),
+                eligible.sum().alias("eligible_n"),
+                success.fill_null(False).sum().alias("repeat_n"),
+            )
+            .filter(pl.col("cohort_n") >= min_cohort_size)
+        )
 
         for row in cohort_stats.collect().to_dicts():
             n = row["eligible_n"]
@@ -1331,19 +1497,23 @@ def multi_horizon_cohort_repeat(baskets, rows, cutoff, coverage, horizons=[30, 6
                 lo, hi = None, None
                 rate = buyers / n if n > 0 and coverage else None
 
-            results.append({
-                "cohort": row["cohort"],
-                "horizon": horizon,
-                "cohort_n": row["cohort_n"],
-                "eligible_n": n if coverage else None,
-                "repeat_n": buyers if coverage else None,
-                "rate": rate,
-                "lower_ci": lo,
-                "upper_ci": hi,
-                "status": "eligible" if (coverage and n >= min_cohort_size)
-                        else "capture_unconfirmed" if not coverage
-                        else "insufficient_followup_or_n",
-            })
+            results.append(
+                {
+                    "cohort": row["cohort"],
+                    "horizon": horizon,
+                    "cohort_n": row["cohort_n"],
+                    "eligible_n": n if coverage else None,
+                    "repeat_n": buyers if coverage else None,
+                    "rate": rate,
+                    "lower_ci": lo,
+                    "upper_ci": hi,
+                    "status": "eligible"
+                    if (coverage and n >= min_cohort_size)
+                    else "capture_unconfirmed"
+                    if not coverage
+                    else "insufficient_followup_or_n",
+                }
+            )
 
     return pl.DataFrame(results) if results else pl.DataFrame()
 
@@ -1367,14 +1537,16 @@ def category_opportunity_map(validated, rows, cutoff, top_categories=30):
     Returns:
         DataFrame with category, penetration, occasions_per_buyer, spend_share, repeat_buyer_share, buyers
     """
-    import polars as pl
     from datetime import timedelta
+
+    import polars as pl
 
     if isinstance(cutoff, str):
         cutoff = date.fromisoformat(cutoff)
 
     # 365-day window
     from retail_analytics.core.constants import WINDOW_YEAR
+
     window_start = cutoff - timedelta(days=WINDOW_YEAR - 1)
 
     # Get snapshot customer IDs
@@ -1388,8 +1560,7 @@ def category_opportunity_map(validated, rows, cutoff, top_categories=30):
     # First deduplicate to customer × category × date (shopping occasions)
     cat_occasions = collect(
         validated.filter(
-            pl.col("date").is_between(window_start, cutoff) &
-            pl.col("customer_id").is_in(cust_ids)
+            pl.col("date").is_between(window_start, cutoff) & pl.col("customer_id").is_in(cust_ids)
         )
         .unique(subset=["customer_id", "department", "category", "date"])
         .group_by("department", "category", "customer_id")
@@ -1403,12 +1574,16 @@ def category_opportunity_map(validated, rows, cutoff, top_categories=30):
         return pl.DataFrame()
 
     # Aggregate to category level
-    cat_data = cat_occasions.group_by("department", "category").agg(
-        pl.len().alias("buyers"),
-        pl.col("occasions").mean().alias("occasions_per_buyer"),
-        pl.col("spend").sum().alias("total_spend"),
-        (pl.col("occasions") > 1).sum().alias("repeat_buyers"),
-    ).sort("buyers", descending=True)
+    cat_data = (
+        cat_occasions.group_by("department", "category")
+        .agg(
+            pl.len().alias("buyers"),
+            pl.col("occasions").mean().alias("occasions_per_buyer"),
+            pl.col("spend").sum().alias("total_spend"),
+            (pl.col("occasions") > 1).sum().alias("repeat_buyers"),
+        )
+        .sort("buyers", descending=True)
+    )
 
     # Total spend across ALL categories (for share denominator)
     total_spend_all = cat_data["total_spend"].sum()
@@ -1416,15 +1591,26 @@ def category_opportunity_map(validated, rows, cutoff, top_categories=30):
     # Select top categories for display
     cat_data = cat_data.head(top_categories)
 
-    result = cat_data.with_columns([
-        (pl.col("buyers") / total_customers).alias("penetration"),
-        (pl.col("repeat_buyers") / pl.col("buyers")).alias("repeat_buyer_share"),
-        (pl.col("total_spend") / total_spend_all).alias("spend_share"),
-        pl.concat_str([pl.col("department"), pl.lit(" / "), pl.col("category")]).alias("label"),
-    ])
+    result = cat_data.with_columns(
+        [
+            (pl.col("buyers") / total_customers).alias("penetration"),
+            (pl.col("repeat_buyers") / pl.col("buyers")).alias("repeat_buyer_share"),
+            (pl.col("total_spend") / total_spend_all).alias("spend_share"),
+            pl.concat_str([pl.col("department"), pl.lit(" / "), pl.col("category")]).alias("label"),
+        ]
+    )
 
-    return result.select("label", "department", "category", "buyers", "penetration",
-                          "occasions_per_buyer", "spend_share", "repeat_buyer_share", "total_spend")
+    return result.select(
+        "label",
+        "department",
+        "category",
+        "buyers",
+        "penetration",
+        "occasions_per_buyer",
+        "spend_share",
+        "repeat_buyer_share",
+        "total_spend",
+    )
 
 
 def rfm_response_surface(rows, coverage, recency_bins=5, frequency_bins=5):
@@ -1443,6 +1629,7 @@ def rfm_response_surface(rows, coverage, recency_bins=5, frequency_bins=5):
         DataFrame with recency_bin, frequency_bin, eligible_n, buyers, rate, lower_ci, upper_ci
     """
     import polars as pl
+
     from retail_analytics.core.stats import wilson
 
     if not coverage:
@@ -1455,9 +1642,9 @@ def rfm_response_surface(rows, coverage, recency_bins=5, frequency_bins=5):
         return pl.DataFrame({"error": [f"Missing columns: {missing}"]})
 
     eligible = rows.filter(
-        pl.col("eligible_followup_30d") &
-        pl.col("recency").is_finite() &
-        pl.col("purchases_90d").is_finite()
+        pl.col("eligible_followup_30d")
+        & pl.col("recency").is_finite()
+        & pl.col("purchases_90d").is_finite()
     )
 
     if eligible.select(pl.len()).collect().item() == 0:
@@ -1468,12 +1655,22 @@ def rfm_response_surface(rows, coverage, recency_bins=5, frequency_bins=5):
     freq_quantiles = [i / frequency_bins for i in range(frequency_bins + 1)]
 
     # Compute bin edges from data
-    rec_stats = collect(eligible.select(
-        *[pl.col("recency").quantile(q, interpolation="linear").alias(f"q{i}") for i, q in enumerate(recency_quantiles)]
-    )).row(0, named=True)
-    freq_stats = collect(eligible.select(
-        *[pl.col("purchases_90d").quantile(q, interpolation="linear").alias(f"q{i}") for i, q in enumerate(freq_quantiles)]
-    )).row(0, named=True)
+    rec_stats = collect(
+        eligible.select(
+            *[
+                pl.col("recency").quantile(q, interpolation="linear").alias(f"q{i}")
+                for i, q in enumerate(recency_quantiles)
+            ]
+        )
+    ).row(0, named=True)
+    freq_stats = collect(
+        eligible.select(
+            *[
+                pl.col("purchases_90d").quantile(q, interpolation="linear").alias(f"q{i}")
+                for i, q in enumerate(freq_quantiles)
+            ]
+        )
+    ).row(0, named=True)
 
     rec_edges = [rec_stats[f"q{i}"] for i in range(recency_bins + 1)]
     freq_edges = [freq_stats[f"q{i}"] for i in range(frequency_bins + 1)]
@@ -1485,25 +1682,29 @@ def rfm_response_surface(rows, coverage, recency_bins=5, frequency_bins=5):
     if len(rec_edges) < 2 or len(freq_edges) < 2:
         return pl.DataFrame()
 
-    rec_labels = [f"R{i+1}" for i in range(len(rec_edges) - 1)]
-    freq_labels = [f"F{i+1}" for i in range(len(freq_edges) - 1)]
+    rec_labels = [f"R{i + 1}" for i in range(len(rec_edges) - 1)]
+    freq_labels = [f"F{i + 1}" for i in range(len(freq_edges) - 1)]
 
     # Polars .cut() requires interior cut points (len(labels) == len(cut_points) + 1)
     rec_interior = rec_edges[1:-1]
     freq_interior = freq_edges[1:-1]
 
-    eligible = eligible.with_columns([
-        pl.col("recency").cut(rec_interior, labels=rec_labels).alias("recency_bin"),
-        pl.col("purchases_90d").cut(freq_interior, labels=freq_labels).alias("frequency_bin"),
-    ])
+    eligible = eligible.with_columns(
+        [
+            pl.col("recency").cut(rec_interior, labels=rec_labels).alias("recency_bin"),
+            pl.col("purchases_90d").cut(freq_interior, labels=freq_labels).alias("frequency_bin"),
+        ]
+    )
 
     # Compute response surface
     surface = collect(
-        eligible.group_by("recency_bin", "frequency_bin").agg(
+        eligible.group_by("recency_bin", "frequency_bin")
+        .agg(
             pl.len().alias("eligible_n"),
             (pl.col("future_purchases_30d") > 0).sum().alias("buyers"),
             (pl.col("future_purchases_30d") > 0).mean().alias("rate"),
-        ).sort("recency_bin", "frequency_bin")
+        )
+        .sort("recency_bin", "frequency_bin")
     )
 
     # Add Wilson CIs
@@ -1512,14 +1713,16 @@ def rfm_response_surface(rows, coverage, recency_bins=5, frequency_bins=5):
         n = row["eligible_n"]
         buyers = row["buyers"]
         lo, hi = wilson(buyers, n) if n >= 20 else (None, None)
-        results.append({
-            "recency_bin": row["recency_bin"],
-            "frequency_bin": row["frequency_bin"],
-            "eligible_n": n,
-            "buyers": buyers,
-            "rate": buyers / n if n > 0 else None,
-            "lower_ci": lo,
-            "upper_ci": hi,
-        })
+        results.append(
+            {
+                "recency_bin": row["recency_bin"],
+                "frequency_bin": row["frequency_bin"],
+                "eligible_n": n,
+                "buyers": buyers,
+                "rate": buyers / n if n > 0 else None,
+                "lower_ci": lo,
+                "upper_ci": hi,
+            }
+        )
 
     return pl.DataFrame(results)

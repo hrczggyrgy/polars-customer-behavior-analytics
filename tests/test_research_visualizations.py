@@ -19,11 +19,11 @@ import polars as pl
 
 from retail_analytics.core.retail_polars_workflow import run
 from retail_analytics.visualization.visual_insights_core import (
-    time_to_second_purchase,
     cadence_return_validation,
-    multi_horizon_cohort_repeat,
     category_opportunity_map,
+    multi_horizon_cohort_repeat,
     rfm_response_surface,
+    time_to_second_purchase,
 )
 
 
@@ -47,71 +47,81 @@ class ResearchVisualizationTests(unittest.TestCase):
         # Customer A - 4 purchases total (days 0, 10, 30, 60)
         for i, day in enumerate([0, 10, 30, 60]):
             d = (date(2025, 1, 1) + timedelta(days=day)).isoformat()
-            rows.append({
-                "customer_id": "A",
-                "transaction_date": d,
-                "transaction_id": f"A{i}",
-                "product_id": "P1",
-                "product_description": "Product 1",
-                "department": "D",
-                "category": "C1",
-                "price": 10.0,
-                "quantity": 1.0,
-            })
+            rows.append(
+                {
+                    "customer_id": "A",
+                    "transaction_date": d,
+                    "transaction_id": f"A{i}",
+                    "product_id": "P1",
+                    "product_description": "Product 1",
+                    "department": "D",
+                    "category": "C1",
+                    "price": 10.0,
+                    "quantity": 1.0,
+                }
+            )
         # Customer B - 2 purchases (days 0, 45)
         for i, day in enumerate([0, 45]):
             d = (date(2025, 1, 15) + timedelta(days=day)).isoformat()
-            rows.append({
-                "customer_id": "B",
-                "transaction_date": d,
-                "transaction_id": f"B{i}",
-                "product_id": "P1",
-                "product_description": "Product 1",
-                "department": "D",
-                "category": "C1",
-                "price": 10.0,
-                "quantity": 1.0,
-            })
+            rows.append(
+                {
+                    "customer_id": "B",
+                    "transaction_date": d,
+                    "transaction_id": f"B{i}",
+                    "product_id": "P1",
+                    "product_description": "Product 1",
+                    "department": "D",
+                    "category": "C1",
+                    "price": 10.0,
+                    "quantity": 1.0,
+                }
+            )
         # Customer C - 1 purchase only (day 0)
-        rows.append({
-            "customer_id": "C",
-            "transaction_date": "2025-02-01",
-            "transaction_id": "C0",
-            "product_id": "P2",
-            "product_description": "Product 2",
-            "department": "D",
-            "category": "C2",
-            "price": 20.0,
-            "quantity": 1.0,
-        })
+        rows.append(
+            {
+                "customer_id": "C",
+                "transaction_date": "2025-02-01",
+                "transaction_id": "C0",
+                "product_id": "P2",
+                "product_description": "Product 2",
+                "department": "D",
+                "category": "C2",
+                "price": 20.0,
+                "quantity": 1.0,
+            }
+        )
         # Customer D - 2 purchases (days 0, 5)
         for i, day in enumerate([0, 5]):
             d = (date(2025, 2, 15) + timedelta(days=day)).isoformat()
-            rows.append({
-                "customer_id": "D",
-                "transaction_date": d,
-                "transaction_id": f"D{i}",
-                "product_id": "P1",
-                "product_description": "Product 1",
-                "department": "D",
-                "category": "C1",
-                "price": 10.0,
-                "quantity": 1.0,
-            })
+            rows.append(
+                {
+                    "customer_id": "D",
+                    "transaction_date": d,
+                    "transaction_id": f"D{i}",
+                    "product_id": "P1",
+                    "product_description": "Product 1",
+                    "department": "D",
+                    "category": "C1",
+                    "price": 10.0,
+                    "quantity": 1.0,
+                }
+            )
         # Customer E - 2 purchases (days 0, 15)
         for i, day in enumerate([0, 15]):
             d = (date(2025, 3, 1) + timedelta(days=day)).isoformat()
-            rows.append({
-                "customer_id": "E",
-                "transaction_date": d,
-                "transaction_id": f"E{i}",
-                "product_id": "P3",
-                "product_description": "Product 3",
-                "department": "D",
-                "category": "C3",
-                "price": 5.0,
-                "quantity": 1.0,
-            })
+            rows.append(
+                {
+                    "customer_id": "E",
+                    "transaction_date": d,
+                    "transaction_id": f"E{i}",
+                    "product_id": "P3",
+                    "product_description": "Product 3",
+                    "department": "D",
+                    "category": "C3",
+                    "price": 5.0,
+                    "quantity": 1.0,
+                }
+            )
 
         pl.DataFrame(rows).write_parquet(self.source)
 
@@ -125,7 +135,7 @@ class ResearchVisualizationTests(unittest.TestCase):
             buckets=1,
             coverage_confirmed=True,
         )
-        
+
         self._tmp_refs = []
 
     def tearDown(self):
@@ -138,7 +148,7 @@ class ResearchVisualizationTests(unittest.TestCase):
         tmp = TemporaryDirectory()
         root = Path(tmp.name)
         out = root / "results"
-        
+
         run(
             str(self.source),
             str(out),
@@ -147,17 +157,17 @@ class ResearchVisualizationTests(unittest.TestCase):
             buckets=1,
             coverage_confirmed=True,
         )
-        
+
         snapshot_path = out / "snapshots" / cutoff_date / "b0.parquet"
         rows = pl.scan_parquet(str(snapshot_path))
         baskets_path = out / "events" / cutoff_date / "b0" / "baskets.parquet"
         baskets = pl.scan_parquet(str(baskets_path))
         validated_path = out / "validated.parquet"
         validated = pl.scan_parquet(str(validated_path))
-        
+
         # Store tmp reference to prevent premature cleanup
         self._tmp_refs.append(tmp)
-        
+
         return rows, baskets, validated
 
     def _load_snapshot(self, cutoff="2025-03-15"):
@@ -199,7 +209,16 @@ class ResearchVisualizationTests(unittest.TestCase):
         self.assertFalse(result.is_empty())
 
         # Check structure
-        expected_cols = ["days", "survival_prob", "lower_ci", "upper_ci", "at_risk", "events", "censored", "cum_repeat_prob"]
+        expected_cols = [
+            "days",
+            "survival_prob",
+            "lower_ci",
+            "upper_ci",
+            "at_risk",
+            "events",
+            "censored",
+            "cum_repeat_prob",
+        ]
         for col in expected_cols:
             self.assertIn(col, result.columns)
 
@@ -314,15 +333,17 @@ class ResearchVisualizationTests(unittest.TestCase):
     def test_cadence_return_validation_constant_lateness(self):
         """Test edge case where all customers have same lateness."""
         # Create data where all have same median_gap and recency
-        rows = pl.DataFrame({
-            "customer_id": ["X1", "X2", "X3"],
-            "median_gap": [10.0, 10.0, 10.0],
-            "recency": [5.0, 5.0, 5.0],  # lateness = 0.5 for all
-            "eligible_followup_30d": [True, True, True],
-            "future_purchases_30d": [1, 0, 1],
-            "eligible_followup_90d": [True, True, True],
-            "future_purchases_90d": [1, 1, 0],
-        }).lazy()
+        rows = pl.DataFrame(
+            {
+                "customer_id": ["X1", "X2", "X3"],
+                "median_gap": [10.0, 10.0, 10.0],
+                "recency": [5.0, 5.0, 5.0],  # lateness = 0.5 for all
+                "eligible_followup_30d": [True, True, True],
+                "future_purchases_30d": [1, 0, 1],
+                "eligible_followup_90d": [True, True, True],
+                "future_purchases_90d": [1, 1, 0],
+            }
+        ).lazy()
 
         result = cadence_return_validation(rows, coverage=True, max_lateness=5.0, bins=10)
         # Should still work - all fall in same bin
@@ -361,7 +382,9 @@ class ResearchVisualizationTests(unittest.TestCase):
         rows, baskets, _ = self._load_snapshot()
         cutoff = date(2025, 3, 15)
 
-        result = multi_horizon_cohort_repeat(baskets, rows, cutoff, coverage=True, min_cohort_size=1)
+        result = multi_horizon_cohort_repeat(
+            baskets, rows, cutoff, coverage=True, min_cohort_size=1
+        )
 
         self.assertFalse(result.is_empty())
 
@@ -382,7 +405,7 @@ class ResearchVisualizationTests(unittest.TestCase):
         feb = result.filter((pl.col("cohort") == date(2025, 2, 1)) & (pl.col("horizon") == 30))
         self.assertEqual(feb["cohort_n"][0], 2)
         self.assertEqual(feb["eligible_n"][0], 1)  # Only C eligible
-        self.assertEqual(feb["repeat_n"][0], 0)   # C has no repeat
+        self.assertEqual(feb["repeat_n"][0], 0)  # C has no repeat
         self.assertAlmostEqual(feb["rate"][0], 0.0)
 
         # Check CI bounds
@@ -399,7 +422,9 @@ class ResearchVisualizationTests(unittest.TestCase):
         rows, baskets, _ = self._load_snapshot()
         cutoff = date(2025, 3, 15)
 
-        result = multi_horizon_cohort_repeat(baskets, rows, cutoff, coverage=False, min_cohort_size=1)
+        result = multi_horizon_cohort_repeat(
+            baskets, rows, cutoff, coverage=False, min_cohort_size=1
+        )
 
         for row in result.to_dicts():
             self.assertIsNone(row["rate"])
@@ -429,8 +454,16 @@ class ResearchVisualizationTests(unittest.TestCase):
         self.assertAlmostEqual(spend_share_sum, 1.0, places=6)
 
         # Check structure
-        for col in ["label", "department", "category", "buyers", "penetration",
-                    "occasions_per_buyer", "spend_share", "repeat_buyer_share"]:
+        for col in [
+            "label",
+            "department",
+            "category",
+            "buyers",
+            "penetration",
+            "occasions_per_buyer",
+            "spend_share",
+            "repeat_buyer_share",
+        ]:
             self.assertIn(col, result.columns)
 
         # Penetration should be buyers / total_customers (5)
@@ -448,18 +481,50 @@ class ResearchVisualizationTests(unittest.TestCase):
 
             # Customer X buys 2 different products in C1 on same day
             rows = [
-                {"customer_id": "X", "transaction_date": "2025-01-01", "transaction_id": "X1",
-                 "product_id": "P1", "product_description": "P1", "department": "D", "category": "C1",
-                 "price": 10.0, "quantity": 1.0},
-                {"customer_id": "X", "transaction_date": "2025-01-01", "transaction_id": "X2",
-                 "product_id": "P2", "product_description": "P2", "department": "D", "category": "C1",
-                 "price": 10.0, "quantity": 1.0},
-                {"customer_id": "X", "transaction_date": "2025-01-15", "transaction_id": "X3",
-                 "product_id": "P1", "product_description": "P1", "department": "D", "category": "C1",
-                 "price": 10.0, "quantity": 1.0},
-                {"customer_id": "Y", "transaction_date": "2025-01-01", "transaction_id": "Y1",
-                 "product_id": "P1", "product_description": "P1", "department": "D", "category": "C1",
-                 "price": 10.0, "quantity": 1.0},
+                {
+                    "customer_id": "X",
+                    "transaction_date": "2025-01-01",
+                    "transaction_id": "X1",
+                    "product_id": "P1",
+                    "product_description": "P1",
+                    "department": "D",
+                    "category": "C1",
+                    "price": 10.0,
+                    "quantity": 1.0,
+                },
+                {
+                    "customer_id": "X",
+                    "transaction_date": "2025-01-01",
+                    "transaction_id": "X2",
+                    "product_id": "P2",
+                    "product_description": "P2",
+                    "department": "D",
+                    "category": "C1",
+                    "price": 10.0,
+                    "quantity": 1.0,
+                },
+                {
+                    "customer_id": "X",
+                    "transaction_date": "2025-01-15",
+                    "transaction_id": "X3",
+                    "product_id": "P1",
+                    "product_description": "P1",
+                    "department": "D",
+                    "category": "C1",
+                    "price": 10.0,
+                    "quantity": 1.0,
+                },
+                {
+                    "customer_id": "Y",
+                    "transaction_date": "2025-01-01",
+                    "transaction_id": "Y1",
+                    "product_id": "P1",
+                    "product_description": "P1",
+                    "department": "D",
+                    "category": "C1",
+                    "price": 10.0,
+                    "quantity": 1.0,
+                },
             ]
             pl.DataFrame(rows).write_parquet(source)
 
@@ -521,13 +586,15 @@ class ResearchVisualizationTests(unittest.TestCase):
 
     def test_rfm_response_surface_constant_values(self):
         """Test edge case where all customers have same recency/frequency."""
-        rows = pl.DataFrame({
-            "customer_id": ["X1", "X2", "X3", "X4"],
-            "recency": [10.0, 10.0, 10.0, 10.0],
-            "purchases_90d": [2, 2, 2, 2],
-            "eligible_followup_30d": [True, True, True, True],
-            "future_purchases_30d": [1, 0, 1, 0],
-        }).lazy()
+        rows = pl.DataFrame(
+            {
+                "customer_id": ["X1", "X2", "X3", "X4"],
+                "recency": [10.0, 10.0, 10.0, 10.0],
+                "purchases_90d": [2, 2, 2, 2],
+                "eligible_followup_30d": [True, True, True, True],
+                "future_purchases_30d": [1, 0, 1, 0],
+            }
+        ).lazy()
 
         result = rfm_response_surface(rows, coverage=True, recency_bins=5, frequency_bins=5)
 
@@ -535,7 +602,12 @@ class ResearchVisualizationTests(unittest.TestCase):
         # After dedup, should have < 2 edges -> return empty DataFrame
         # OR handle gracefully
         # Current implementation returns empty when < 2 unique edges
-        self.assertTrue(result.is_empty() or result.height == 0 or "warning" in result.columns or "error" in result.columns)
+        self.assertTrue(
+            result.is_empty()
+            or result.height == 0
+            or "warning" in result.columns
+            or "error" in result.columns
+        )
 
     def test_rfm_response_surface_no_coverage(self):
         """Test warning when coverage unconfirmed."""
@@ -564,7 +636,9 @@ class ResearchVisualizationTests(unittest.TestCase):
         self.assertFalse(cadence.is_empty())
 
         # multi_horizon_cohort_repeat
-        cohorts = multi_horizon_cohort_repeat(baskets, rows, cutoff, coverage=True, min_cohort_size=1)
+        cohorts = multi_horizon_cohort_repeat(
+            baskets, rows, cutoff, coverage=True, min_cohort_size=1
+        )
         self.assertFalse(cohorts.is_empty())
 
         # category_opportunity_map

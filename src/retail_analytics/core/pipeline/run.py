@@ -14,7 +14,6 @@ import shutil
 from dataclasses import asdict
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any
 
 import polars as pl
 
@@ -27,10 +26,10 @@ from retail_analytics.core.constants import (
     QUANTILE_VALUE_HIGH,
     QUANTILE_VALUE_LOW,
 )
-from retail_analytics.core.pipeline.prepare import prepare
-from retail_analytics.core.pipeline.snapshot import generate_snapshot
 from retail_analytics.core.pipeline.labeling import apply_labels
+from retail_analytics.core.pipeline.prepare import prepare
 from retail_analytics.core.pipeline.reporting import generate_reports
+from retail_analytics.core.pipeline.snapshot import generate_snapshot
 from retail_analytics.core.thresholds import (
     calibrate_thresholds,
     compute_data_profile,
@@ -160,8 +159,13 @@ def run_pipeline(
             sort_by="product_id",
         )
         for path in paths:
-            if pl.scan_parquet(path).filter(pl.col("date") <= d).select(pl.len()).collect().item() > 0:
-                result = generate_snapshot(path, d, end, root, coverage_confirmed, observation_start)
+            if (
+                pl.scan_parquet(path).filter(pl.col("date") <= d).select(pl.len()).collect().item()
+                > 0
+            ):
+                result = generate_snapshot(
+                    path, d, end, root, coverage_confirmed, observation_start
+                )
                 if result is not None:
                     numeric.append(result)
 
@@ -195,7 +199,9 @@ def run_pipeline(
     # Select reference cutoff: earliest with sufficient & stable population
     if reference_date is not None:
         ref_date: date | None = date.fromisoformat(reference_date)
-        ref: pl.LazyFrame | None = pl.scan_parquet([str(p) for p in numeric if p.parent.name == str(ref_date)])
+        ref: pl.LazyFrame | None = pl.scan_parquet(
+            [str(p) for p in numeric if p.parent.name == str(ref_date)]
+        )
         ref_info = {"selected": True, "reference_date": reference_date}
     else:
         ref_date, ref, ref_info = select_reference_cutoff(numeric, dates, root, policy)
@@ -305,9 +311,7 @@ def run_pipeline(
     )
 
 
-def _sink(
-    frame: pl.LazyFrame, path: Path, sort_by: list[str] | str | None = None
-) -> None:
+def _sink(frame: pl.LazyFrame, path: Path, sort_by: list[str] | str | None = None) -> None:
     """Write a LazyFrame to Parquet with ZSTD compression."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -332,7 +336,9 @@ def main() -> None:
     parser.add_argument("--date-format", help="Date format (e.g., %%Y-%%m-%%d)")
     parser.add_argument("--observed-through", help="Effective end date (YYYY-MM-DD)")
     parser.add_argument("--coverage-confirmed", action="store_true", help="Future data complete")
-    parser.add_argument("--drop-exact-duplicates", action="store_true", help="Drop exact duplicates")
+    parser.add_argument(
+        "--drop-exact-duplicates", action="store_true", help="Drop exact duplicates"
+    )
     parser.add_argument("--overwrite", action="store_true", help="Overwrite output directory")
     parser.add_argument("--timezone", help="Timezone for datetime conversion")
     parser.add_argument("--value-quantile-low", type=float, default=QUANTILE_VALUE_LOW)

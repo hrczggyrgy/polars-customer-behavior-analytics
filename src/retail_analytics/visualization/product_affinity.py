@@ -13,12 +13,10 @@ Key design principles:
 """
 
 import math
-from datetime import timedelta
-from typing import Optional
 
 import polars as pl
 
-from retail_analytics.core.constants import WINDOW_YEAR, WINDOW_RECENT
+from retail_analytics.core.constants import WINDOW_RECENT, WINDOW_YEAR
 
 
 def _support_from_counts(count: int, total_baskets: int) -> float:
@@ -26,18 +24,18 @@ def _support_from_counts(count: int, total_baskets: int) -> float:
     return count / total_baskets if total_baskets > 0 else 0.0
 
 
-def _confidence(support_ab: float, support_a: float) -> Optional[float]:
+def _confidence(support_ab: float, support_a: float) -> float | None:
     """Compute confidence P(B|A) = support(A∪B) / support(A)."""
     return support_ab / support_a if support_a > 0 else None
 
 
-def _lift(support_ab: float, support_a: float, support_b: float) -> Optional[float]:
+def _lift(support_ab: float, support_a: float, support_b: float) -> float | None:
     """Compute lift = P(A∪B) / (P(A) * P(B))."""
     denom = support_a * support_b
     return support_ab / denom if denom > 0 else None
 
 
-def _conviction(support_a: float, support_b: float, confidence_ab: float) -> Optional[float]:
+def _conviction(support_a: float, support_b: float, confidence_ab: float) -> float | None:
     """Compute conviction = (1 - P(B)) / (1 - P(B|A))."""
     if confidence_ab is None or confidence_ab >= 1.0:
         return None
@@ -49,14 +47,49 @@ class ProductAffinityConfig:
 
     def __init__(
         self,
-        min_support: float = 0.001,           # Minimum support for itemsets (fraction of baskets)
-        min_confidence: float = 0.1,          # Minimum confidence for rules
-        min_lift: float = 1.0,                # Minimum lift for rules
-        max_items_per_basket: int = 50,       # Cap basket size to limit pair explosion
-        top_k_items: int = 500,               # Consider only top-K frequent items
-        top_k_pairs: int = 2000,              # Emit only top-K pairs by support
-        category_level: bool = True,          # Also compute category-level affinities
+        min_support: float = 0.001,  # Minimum support for itemsets (fraction of baskets)
+        min_confidence: float = 0.1,  # Minimum confidence for rules
+        min_lift: float = 1.0,  # Minimum lift for rules
+        max_items_per_basket: int = 50,  # Cap basket size to limit pair explosion
+        top_k_items: int = 500,  # Consider only top-K frequent items
+        top_k_pairs: int = 2000,  # Emit only top-K pairs by support
+        category_level: bool = True,  # Also compute category-level affinities
     ):
+        # Validate parameters
+        if (
+            not isinstance(min_support, (int, float))
+            or isinstance(min_support, bool)
+            or not math.isfinite(min_support)
+            or not 0.0 <= min_support <= 1.0
+        ):
+            raise ValueError("min_support must be a finite number in [0, 1]")
+        if (
+            not isinstance(min_confidence, (int, float))
+            or isinstance(min_confidence, bool)
+            or not math.isfinite(min_confidence)
+            or not 0.0 <= min_confidence <= 1.0
+        ):
+            raise ValueError("min_confidence must be a finite number in [0, 1]")
+        if (
+            not isinstance(min_lift, (int, float))
+            or isinstance(min_lift, bool)
+            or not math.isfinite(min_lift)
+            or min_lift < 0.0
+        ):
+            raise ValueError("min_lift must be a finite non-negative number")
+        if (
+            not isinstance(max_items_per_basket, int)
+            or isinstance(max_items_per_basket, bool)
+            or max_items_per_basket <= 0
+        ):
+            raise ValueError("max_items_per_basket must be a positive integer")
+        if not isinstance(top_k_items, int) or isinstance(top_k_items, bool) or top_k_items <= 0:
+            raise ValueError("top_k_items must be a positive integer")
+        if not isinstance(top_k_pairs, int) or isinstance(top_k_pairs, bool) or top_k_pairs <= 0:
+            raise ValueError("top_k_pairs must be a positive integer")
+        if not isinstance(category_level, bool):
+            raise ValueError("category_level must be a boolean")
+
         self.min_support = min_support
         self.min_confidence = min_confidence
         self.min_lift = min_lift
@@ -70,7 +103,7 @@ def compute_frequent_items(
     baskets: pl.LazyFrame,
     item_col: str,
     config: ProductAffinityConfig,
-    cutoff_date: Optional[str] = None,
+    cutoff_date: str | None = None,
     window_days: int = WINDOW_YEAR,
 ) -> pl.DataFrame:
     """Compute frequent items (products or categories) from basket data.
@@ -94,15 +127,12 @@ def compute_frequent_items(
 
     # Total DISTINCT baskets in window (denominator for support)
     total_baskets = collect(
-        filtered.select("date", "customer_id", "transaction_id")
-        .unique()
-        .select(pl.len())
+        filtered.select("date", "customer_id", "transaction_id").unique().select(pl.len())
     ).item()
 
     # Get distinct items per basket (deduplicate within basket)
-    items_per_basket = (
-        filtered.select("date", "customer_id", "transaction_id", item_col)
-        .unique(subset=["date", "customer_id", "transaction_id", item_col])
+    items_per_basket = filtered.select("date", "customer_id", "transaction_id", item_col).unique(
+        subset=["date", "customer_id", "transaction_id", item_col]
     )
 
     # Count baskets per item
@@ -133,7 +163,7 @@ def compute_item_pairs(
     item_col: str,
     frequent_items: pl.DataFrame,
     config: ProductAffinityConfig,
-    cutoff_date: Optional[str] = None,
+    cutoff_date: str | None = None,
     window_days: int = WINDOW_YEAR,
 ) -> pl.DataFrame:
     """Compute co-occurrence pairs for frequent items.
@@ -155,18 +185,24 @@ def compute_item_pairs(
     # Get frequent item list as a Python list for filtering
     frequent_set = set(frequent_items[item_col].to_list())
     if len(frequent_set) < 2:
-        return pl.DataFrame(schema={
-            "item_a": pl.String, "item_b": pl.String,
-            "cooccurrence_count": pl.Int64, "support": pl.Float64,
-            "confidence_a_to_b": pl.Float64, "confidence_b_to_a": pl.Float64,
-            "lift": pl.Float64, "conviction_a_to_b": pl.Float64, "conviction_b_to_a": pl.Float64,
-        })
+        return pl.DataFrame(
+            schema={
+                "item_a": pl.String,
+                "item_b": pl.String,
+                "cooccurrence_count": pl.Int64,
+                "support": pl.Float64,
+                "confidence_a_to_b": pl.Float64,
+                "confidence_b_to_a": pl.Float64,
+                "lift": pl.Float64,
+                "conviction_a_to_b": pl.Float64,
+                "conviction_b_to_a": pl.Float64,
+            }
+        )
 
     # Map items to their individual supports
-    item_supports = dict(zip(
-        frequent_items[item_col].to_list(),
-        frequent_items["support"].to_list()
-    ))
+    item_supports = dict(
+        zip(frequent_items[item_col].to_list(), frequent_items["support"].to_list())
+    )
     # Use correct total_baskets from frequent_items (which now has correct denominator)
     total_baskets = frequent_items["total_baskets"][0] if len(frequent_items) > 0 else 0
     min_cooccurrence = max(1, math.ceil(config.min_support * total_baskets))
@@ -186,10 +222,14 @@ def compute_item_pairs(
     )
 
     # Count items per basket and filter to baskets with 2+ frequent items
-    basket_item_counts = basket_items.group_by(["date", "customer_id", "transaction_id"]).agg(
-        pl.col(item_col).alias("items"),
-        pl.len().alias("item_count"),
-    ).filter(pl.col("item_count") >= 2)
+    basket_item_counts = (
+        basket_items.group_by(["date", "customer_id", "transaction_id"])
+        .agg(
+            pl.col(item_col).alias("items"),
+            pl.len().alias("item_count"),
+        )
+        .filter(pl.col("item_count") >= 2)
+    )
 
     # Cap basket size to limit pair explosion
     basket_item_counts = basket_item_counts.with_columns(
@@ -202,8 +242,7 @@ def compute_item_pairs(
     # Self-join to generate pairs within each basket
     # This is the key sparse operation - only generates pairs from actual co-occurrences
     pairs = (
-        basket_item_counts
-        .explode("items_capped")
+        basket_item_counts.explode("items_capped")
         .rename({"items_capped": "item_a"})
         .join(
             basket_item_counts.explode("items_capped").rename({"items_capped": "item_b"}),
@@ -224,68 +263,130 @@ def compute_item_pairs(
 
     # Compute metrics
     return collect(
-        pair_counts.with_columns([
-            (pl.col("cooccurrence_count") / pl.lit(total_baskets)).alias("support"),
-        ])
-        .with_columns([
-            # Confidence A -> B
-            pl.when(pl.col("item_a").map_elements(lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64) > 0)
-            .then(pl.col("support") / pl.col("item_a").map_elements(lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64))
-            .otherwise(None)
-            .alias("confidence_a_to_b"),
-            # Confidence B -> A
-            pl.when(pl.col("item_b").map_elements(lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64) > 0)
-            .then(pl.col("support") / pl.col("item_b").map_elements(lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64))
-            .otherwise(None)
-            .alias("confidence_b_to_a"),
-        ])
-        .with_columns([
-            # Lift
-            pl.when(
-                (pl.col("item_a").map_elements(lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64) > 0) &
-                (pl.col("item_b").map_elements(lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64) > 0)
-            )
-            .then(
-                pl.col("support") /
-                (pl.col("item_a").map_elements(lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64) *
-                 pl.col("item_b").map_elements(lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64))
-            )
-            .otherwise(None)
-            .alias("lift"),
-        ])
-        .with_columns([
-            # Conviction A -> B
-            pl.when(
-                (pl.col("confidence_a_to_b").is_not_null()) &
-                (pl.col("confidence_a_to_b") < 1.0) &
-                (pl.col("item_b").map_elements(lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64) < 1.0)
-            )
-            .then(
-                (1.0 - pl.col("item_b").map_elements(lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64)) /
-                (1.0 - pl.col("confidence_a_to_b"))
-            )
-            .otherwise(None)
-            .alias("conviction_a_to_b"),
-            # Conviction B -> A
-            pl.when(
-                (pl.col("confidence_b_to_a").is_not_null()) &
-                (pl.col("confidence_b_to_a") < 1.0) &
-                (pl.col("item_a").map_elements(lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64) < 1.0)
-            )
-            .then(
-                (1.0 - pl.col("item_a").map_elements(lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64)) /
-                (1.0 - pl.col("confidence_b_to_a"))
-            )
-            .otherwise(None)
-            .alias("conviction_b_to_a"),
-        ])
-        .filter(
-            (pl.col("confidence_a_to_b") >= config.min_confidence) |
-            (pl.col("confidence_b_to_a") >= config.min_confidence)
+        pair_counts.with_columns(
+            [
+                (pl.col("cooccurrence_count") / pl.lit(total_baskets)).alias("support"),
+            ]
+        )
+        .with_columns(
+            [
+                # Confidence A -> B
+                pl.when(
+                    pl.col("item_a").map_elements(
+                        lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
+                    )
+                    > 0
+                )
+                .then(
+                    pl.col("support")
+                    / pl.col("item_a").map_elements(
+                        lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
+                    )
+                )
+                .otherwise(None)
+                .alias("confidence_a_to_b"),
+                # Confidence B -> A
+                pl.when(
+                    pl.col("item_b").map_elements(
+                        lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
+                    )
+                    > 0
+                )
+                .then(
+                    pl.col("support")
+                    / pl.col("item_b").map_elements(
+                        lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
+                    )
+                )
+                .otherwise(None)
+                .alias("confidence_b_to_a"),
+            ]
+        )
+        .with_columns(
+            [
+                # Lift
+                pl.when(
+                    (
+                        pl.col("item_a").map_elements(
+                            lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
+                        )
+                        > 0
+                    )
+                    & (
+                        pl.col("item_b").map_elements(
+                            lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
+                        )
+                        > 0
+                    )
+                )
+                .then(
+                    pl.col("support")
+                    / (
+                        pl.col("item_a").map_elements(
+                            lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
+                        )
+                        * pl.col("item_b").map_elements(
+                            lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
+                        )
+                    )
+                )
+                .otherwise(None)
+                .alias("lift"),
+            ]
+        )
+        .with_columns(
+            [
+                # Conviction A -> B
+                pl.when(
+                    (pl.col("confidence_a_to_b").is_not_null())
+                    & (pl.col("confidence_a_to_b") < 1.0)
+                    & (
+                        pl.col("item_b").map_elements(
+                            lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
+                        )
+                        < 1.0
+                    )
+                )
+                .then(
+                    (
+                        1.0
+                        - pl.col("item_b").map_elements(
+                            lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
+                        )
+                    )
+                    / (1.0 - pl.col("confidence_a_to_b"))
+                )
+                .otherwise(None)
+                .alias("conviction_a_to_b"),
+                # Conviction B -> A
+                pl.when(
+                    (pl.col("confidence_b_to_a").is_not_null())
+                    & (pl.col("confidence_b_to_a") < 1.0)
+                    & (
+                        pl.col("item_a").map_elements(
+                            lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
+                        )
+                        < 1.0
+                    )
+                )
+                .then(
+                    (
+                        1.0
+                        - pl.col("item_a").map_elements(
+                            lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
+                        )
+                    )
+                    / (1.0 - pl.col("confidence_b_to_a"))
+                )
+                .otherwise(None)
+                .alias("conviction_b_to_a"),
+            ]
         )
         .filter(
-            (pl.col("lift") >= config.min_lift) | (pl.col("lift").is_null())
+            (pl.col("confidence_a_to_b") >= config.min_confidence)
+            | (pl.col("confidence_b_to_a") >= config.min_confidence)
         )
+        .filter((pl.col("lift") >= config.min_lift) | (pl.col("lift").is_null()))
         .sort("support", descending=True)
     )
 
@@ -294,8 +395,8 @@ def product_affinity_analysis(
     validated: pl.LazyFrame,
     snapshots: pl.LazyFrame,
     cutoff: str,
-    config: Optional[ProductAffinityConfig] = None,
-    segment_filter: Optional[str] = None,
+    config: ProductAffinityConfig | None = None,
+    segment_filter: str | None = None,
 ) -> dict:
     """Run complete product affinity analysis for a snapshot.
 
@@ -320,13 +421,17 @@ def product_affinity_analysis(
 
     # Filter snapshot to segment if requested
     if segment_filter:
-        snapshots = snapshots.filter(pl.any_horizontal([
-            pl.col("behavior") == segment_filter,
-            pl.col("trajectory") == segment_filter,
-            pl.col("value_tier") == segment_filter,
-            pl.col("lifecycle") == segment_filter,
-            pl.col("evidence") == segment_filter,
-        ]))
+        snapshots = snapshots.filter(
+            pl.any_horizontal(
+                [
+                    pl.col("behavior") == segment_filter,
+                    pl.col("trajectory") == segment_filter,
+                    pl.col("value_tier") == segment_filter,
+                    pl.col("lifecycle") == segment_filter,
+                    pl.col("evidence") == segment_filter,
+                ]
+            )
+        )
 
     # Get customer IDs in segment
     segment_customers = collect(snapshots.select("customer_id").unique())
@@ -348,8 +453,8 @@ def product_affinity_analysis(
     window_start = cutoff_date - pl.duration(days=WINDOW_YEAR - 1)
 
     segment_validated = validated.filter(
-        pl.col("customer_id").is_in(segment_ids) &
-        pl.col("date").is_between(window_start, cutoff_date)
+        pl.col("customer_id").is_in(segment_ids)
+        & pl.col("date").is_between(window_start, cutoff_date)
     )
 
     # Build baskets with product_id and category_key
@@ -364,9 +469,7 @@ def product_affinity_analysis(
             pl.col("products").list.len().alias("product_count"),
             pl.col("categories").list.len().alias("category_count"),
         )
-        .filter(
-            (pl.col("product_count") > 0) & (pl.col("category_count") > 0)
-        )
+        .filter((pl.col("product_count") > 0) & (pl.col("category_count") > 0))
     )
 
     # Product-level analysis
@@ -404,7 +507,7 @@ def product_affinity_analysis(
 
 def cross_sell_recommendations(
     product_pairs: pl.DataFrame,
-    category_pairs: Optional[pl.DataFrame] = None,
+    category_pairs: pl.DataFrame | None = None,
     top_n: int = 20,
     min_lift: float = 1.2,
     min_confidence: float = 0.15,
@@ -421,39 +524,46 @@ def cross_sell_recommendations(
     Returns:
         Dict with 'product_recommendations' and 'category_recommendations' DataFrames
     """
+
     def _get_recs(pairs: pl.DataFrame) -> pl.DataFrame:
         if pairs.is_empty():
             return pl.DataFrame()
 
         # Filter by quality thresholds
         filtered = pairs.filter(
-            (pl.col("lift") >= min_lift) &
-            ((pl.col("confidence_a_to_b") >= min_confidence) |
-             (pl.col("confidence_b_to_a") >= min_confidence))
+            (pl.col("lift") >= min_lift)
+            & (
+                (pl.col("confidence_a_to_b") >= min_confidence)
+                | (pl.col("confidence_b_to_a") >= min_confidence)
+            )
         )
 
         if filtered.is_empty():
             return pl.DataFrame()
 
         # Generate directional recommendations
-        recs_a_to_b = filtered.select([
-            pl.col("item_a").alias("source_item"),
-            pl.col("item_b").alias("target_item"),
-            pl.col("support"),
-            pl.col("confidence_a_to_b").alias("confidence"),
-            pl.col("lift"),
-            pl.col("conviction_a_to_b").alias("conviction"),
-            pl.lit("A_to_B").alias("direction"),
-        ])
-        recs_b_to_a = filtered.select([
-            pl.col("item_b").alias("source_item"),
-            pl.col("item_a").alias("target_item"),
-            pl.col("support"),
-            pl.col("confidence_b_to_a").alias("confidence"),
-            pl.col("lift"),
-            pl.col("conviction_b_to_a").alias("conviction"),
-            pl.lit("B_to_A").alias("direction"),
-        ])
+        recs_a_to_b = filtered.select(
+            [
+                pl.col("item_a").alias("source_item"),
+                pl.col("item_b").alias("target_item"),
+                pl.col("support"),
+                pl.col("confidence_a_to_b").alias("confidence"),
+                pl.col("lift"),
+                pl.col("conviction_a_to_b").alias("conviction"),
+                pl.lit("A_to_B").alias("direction"),
+            ]
+        )
+        recs_b_to_a = filtered.select(
+            [
+                pl.col("item_b").alias("source_item"),
+                pl.col("item_a").alias("target_item"),
+                pl.col("support"),
+                pl.col("confidence_b_to_a").alias("confidence"),
+                pl.col("lift"),
+                pl.col("conviction_b_to_a").alias("conviction"),
+                pl.lit("B_to_A").alias("direction"),
+            ]
+        )
 
         all_recs = pl.concat([recs_a_to_b, recs_b_to_a])
         return collect(
@@ -466,7 +576,9 @@ def cross_sell_recommendations(
 
     return {
         "product_recommendations": _get_recs(product_pairs),
-        "category_recommendations": _get_recs(category_pairs) if category_pairs is not None else pl.DataFrame(),
+        "category_recommendations": _get_recs(category_pairs)
+        if category_pairs is not None
+        else pl.DataFrame(),
     }
 
 
@@ -499,15 +611,24 @@ def new_to_repeat_pathways(
         return pl.DataFrame()
 
     txns = validated.filter(
-        pl.col("customer_id").is_in(cust_ids) &
-        pl.col("date").is_between(window_start, cutoff_date)
+        pl.col("customer_id").is_in(cust_ids) & pl.col("date").is_between(window_start, cutoff_date)
     ).select("customer_id", "date", "product_id", "category_key")
 
     # For each customer, order their transactions
-    ordered = txns.sort(["customer_id", "date", "transaction_id"]).with_columns(
-        pl.col("product_id").shift(1).over("customer_id", order_by="date").alias("prev_product"),
-        pl.col("category_key").shift(1).over("customer_id", order_by="date").alias("prev_category"),
-    ).filter(pl.col("prev_product").is_not_null())
+    ordered = (
+        txns.sort(["customer_id", "date", "transaction_id"])
+        .with_columns(
+            pl.col("product_id")
+            .shift(1)
+            .over("customer_id", order_by="date")
+            .alias("prev_product"),
+            pl.col("category_key")
+            .shift(1)
+            .over("customer_id", order_by="date")
+            .alias("prev_category"),
+        )
+        .filter(pl.col("prev_product").is_not_null())
+    )
 
     # Product -> next product transitions
     product_paths = collect(
@@ -554,9 +675,7 @@ def basket_composition_by_segment(
     window_start = cutoff_date - pl.duration(days=WINDOW_RECENT - 1)
 
     # Get recent transactions for snapshot customers
-    recent_txns = validated.filter(
-        pl.col("date").is_between(window_start, cutoff_date)
-    ).join(
+    recent_txns = validated.filter(pl.col("date").is_between(window_start, cutoff_date)).join(
         snapshots.select("customer_id"), on="customer_id", how="inner"
     )
 
@@ -617,7 +736,7 @@ def run_product_affinity_dashboard(
     min_confidence: float = 0.1,
     min_lift: float = 1.0,
     top_k_pairs: int = 2000,
-    segment: Optional[str] = None,
+    segment: str | None = None,
 ) -> dict:
     """Dashboard-friendly product affinity analysis.
 
@@ -630,9 +749,7 @@ def run_product_affinity_dashboard(
         top_k_pairs=top_k_pairs,
         category_level=True,
     )
-    affinity_result = product_affinity_analysis(
-        validated, snapshots, cutoff, config, segment
-    )
+    affinity_result = product_affinity_analysis(validated, snapshots, cutoff, config, segment)
     recommendations = cross_sell_recommendations(
         affinity_result["product_pairs"],
         affinity_result.get("category_pairs"),

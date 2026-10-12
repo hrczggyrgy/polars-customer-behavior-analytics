@@ -1,40 +1,42 @@
 """Visualization module exports."""
 
-from retail_analytics.visualization.visual_insights_core import (
-    METRICS,
-    segment_summary,
-    concentration,
-    monthly_summary,
-    category_summary,
-    cohort_summary,
-    transition_summary,
-    momentum_map,
-    cadence_map,
-    category_participation_comparison,
-    trial_to_repeat_map,
-    revenue_waterfall,
-    value_tier_transition_waterfall,
-    behavior_trajectory_matrix,
-    purchase_rhythm_panel,
-    basket_composition_slope,
-    category_sankey,
-    future_outcome_validation,
-    # Product affinity
+from retail_analytics.visualization.product_affinity import (
     ProductAffinityConfig,
-    product_affinity_analysis,
+    basket_composition_by_segment,
     cross_sell_recommendations,
     new_to_repeat_pathways,
-    basket_composition_by_segment,
+    product_affinity_analysis,
     run_product_affinity_dashboard,
+)
+from retail_analytics.visualization.product_affinity import (
+    collect as collect_product_affinity,
+)
+from retail_analytics.visualization.visual_insights_core import (
+    METRICS,
+    basket_composition_slope,
+    behavior_trajectory_matrix,
+    cadence_map,
+    cadence_return_validation,
+    category_opportunity_map,
+    category_participation_comparison,
+    category_sankey,
+    category_summary,
+    cohort_summary,
+    concentration,
+    future_outcome_validation,
+    momentum_map,
+    monthly_summary,
+    multi_horizon_cohort_repeat,
+    purchase_rhythm_panel,
+    revenue_waterfall,
+    rfm_response_surface,
+    segment_summary,
     # Research-backed priority visualizations
     time_to_second_purchase,
-    cadence_return_validation,
-    multi_horizon_cohort_repeat,
-    category_opportunity_map,
-    rfm_response_surface,
+    transition_summary,
+    trial_to_repeat_map,
+    value_tier_transition_waterfall,
 )
-
-from retail_analytics.visualization.product_affinity import collect as collect_product_affinity
 
 __all__ = [
     "METRICS",
@@ -66,4 +68,5 @@ __all__ = [
     "multi_horizon_cohort_repeat",
     "category_opportunity_map",
     "rfm_response_surface",
+    "collect_product_affinity",
 ]

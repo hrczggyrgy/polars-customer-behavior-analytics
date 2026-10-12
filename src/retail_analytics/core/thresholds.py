@@ -31,16 +31,18 @@ from retail_analytics.core.constants import (
 # Policy
 # ──────────────────────────────────────────────────────────────────────
 
+
 @dataclass(frozen=True)
 class ThresholdPolicy:
     """Configuration for threshold calibration."""
+
     value_quantile_low: float = QUANTILE_VALUE_LOW
     value_quantile_high: float = QUANTILE_VALUE_HIGH
     style_quantile_low: float = QUANTILE_STYLE_LOW
     style_quantile_high: float = QUANTILE_STYLE_HIGH
     min_n: int = MIN_REFERENCE_POPULATION
     z: float = WILSON_Z
-    max_rel_ci: float = 0.5   # Reject if CI width > 50% of value
+    max_rel_ci: float = 0.5  # Reject if CI width > 50% of value
 
     def __post_init__(self):
         # Validate quantile pairs
@@ -58,7 +60,11 @@ class ThresholdPolicy:
             raise ValueError("z must be a finite positive number")
 
         # Validate max_rel_ci
-        if not isinstance(self.max_rel_ci, (int, float)) or not math.isfinite(self.max_rel_ci) or self.max_rel_ci < 0:
+        if (
+            not isinstance(self.max_rel_ci, (int, float))
+            or not math.isfinite(self.max_rel_ci)
+            or self.max_rel_ci < 0
+        ):
             raise ValueError("max_rel_ci must be a finite non-negative number")
 
     # Backward compatibility: support old constructor pattern
@@ -73,7 +79,7 @@ class ThresholdPolicy:
         **kwargs,
     ):
         """Create policy from legacy low_p/high_p parameters.
-        
+
         Legacy low_p maps to both value_quantile_low and style_quantile_low.
         Legacy high_p maps to both value_quantile_high and style_quantile_high.
         If value_quantile_* or style_quantile_* are explicitly provided, they take precedence.
@@ -113,6 +119,7 @@ class ThresholdPolicy:
 @dataclass(frozen=True)
 class ThresholdResult:
     """Result of a single threshold calibration."""
+
     name: str
     value: float | None
     raw: float | None
@@ -129,6 +136,7 @@ class ThresholdResult:
 # ──────────────────────────────────────────────────────────────────────
 # Core quantile estimation with distribution-free CI
 # ──────────────────────────────────────────────────────────────────────
+
 
 def _quantile_with_ci(
     s: pl.Series,
@@ -147,14 +155,12 @@ def _quantile_with_ci(
 
     if n == 0:
         return dict(
-            value=None, raw=None, ci=[None, None],
-            n=n, status="insufficient_n", method="linear"
+            value=None, raw=None, ci=[None, None], n=n, status="insufficient_n", method="linear"
         )
 
     if n < policy.min_n:
         return dict(
-            value=None, raw=None, ci=[None, None],
-            n=n, status="insufficient_n", method="linear"
+            value=None, raw=None, ci=[None, None], n=n, status="insufficient_n", method="linear"
         )
 
     # Point estimate (linear interpolation)
@@ -197,6 +203,7 @@ def _quantile_with_ci(
 # Reference population eligibility
 # ──────────────────────────────────────────────────────────────────────
 
+
 def _eligible_for_value_tier() -> pl.Expr:
     """Customers eligible for value tier calibration."""
     return (
@@ -230,6 +237,7 @@ def _eligible_for_lateness() -> pl.Expr:
 # Threshold calibration
 # ──────────────────────────────────────────────────────────────────────
 
+
 def calibrate_thresholds(
     ref: pl.LazyFrame,
     policy: ThresholdPolicy | None = None,
@@ -250,11 +258,20 @@ def calibrate_thresholds(
         policy = ThresholdPolicy()
 
     # Materialize reference columns we need
-    ref_cols = ref.select([
-        "spend_90d", "median_basket", "median_gap",
-        "tenure", "days_365d", "gap_count", "lateness",
-        "frequency_change", "basket_change", "breadth_change",
-    ]).collect(engine="streaming")
+    ref_cols = ref.select(
+        [
+            "spend_90d",
+            "median_basket",
+            "median_gap",
+            "tenure",
+            "days_365d",
+            "gap_count",
+            "lateness",
+            "frequency_change",
+            "basket_change",
+            "breadth_change",
+        ]
+    ).collect(engine="streaming")
 
     results: dict[str, Any] = {}
     policy_dict = asdict(policy)
@@ -264,18 +281,29 @@ def calibrate_thresholds(
     value_n = value_eligible.height
 
     if value_n >= policy.min_n:
-        for name, p in [("value_low", policy.value_quantile_low), ("value_high", policy.value_quantile_high)]:
+        for name, p in [
+            ("value_low", policy.value_quantile_low),
+            ("value_high", policy.value_quantile_high),
+        ]:
             res = _quantile_with_ci(value_eligible["spend_90d"], p, policy)
             results[name] = ThresholdResult(
-                name=name, reference_date=str(reference_date) if reference_date else None,
-                policy=policy_dict, **res
+                name=name,
+                reference_date=str(reference_date) if reference_date else None,
+                policy=policy_dict,
+                **res,
             )
     else:
         for name in ["value_low", "value_high"]:
             results[name] = ThresholdResult(
-                name=name, value=None, raw=None, ci=[None, None],
-                n=value_n, status="insufficient_n", method="linear",
-                policy=policy_dict, reference_date=str(reference_date) if reference_date else None
+                name=name,
+                value=None,
+                raw=None,
+                ci=[None, None],
+                n=value_n,
+                status="insufficient_n",
+                method="linear",
+                policy=policy_dict,
+                reference_date=str(reference_date) if reference_date else None,
             )
 
     # ─── Style thresholds (median_basket, median_gap) ───
@@ -283,24 +311,40 @@ def calibrate_thresholds(
     style_n = style_eligible.height
 
     if style_n >= policy.min_n:
-        for name, p in [("basket_low", policy.style_quantile_low), ("basket_high", policy.style_quantile_high)]:
+        for name, p in [
+            ("basket_low", policy.style_quantile_low),
+            ("basket_high", policy.style_quantile_high),
+        ]:
             res = _quantile_with_ci(style_eligible["median_basket"], p, policy)
             results[name] = ThresholdResult(
-                name=name, reference_date=str(reference_date) if reference_date else None,
-                policy=policy_dict, **res
+                name=name,
+                reference_date=str(reference_date) if reference_date else None,
+                policy=policy_dict,
+                **res,
             )
-        for name, p in [("gap_low", policy.style_quantile_low), ("gap_high", policy.style_quantile_high)]:
+        for name, p in [
+            ("gap_low", policy.style_quantile_low),
+            ("gap_high", policy.style_quantile_high),
+        ]:
             res = _quantile_with_ci(style_eligible["median_gap"], p, policy)
             results[name] = ThresholdResult(
-                name=name, reference_date=str(reference_date) if reference_date else None,
-                policy=policy_dict, **res
+                name=name,
+                reference_date=str(reference_date) if reference_date else None,
+                policy=policy_dict,
+                **res,
             )
     else:
         for name in ["basket_low", "basket_high", "gap_low", "gap_high"]:
             results[name] = ThresholdResult(
-                name=name, value=None, raw=None, ci=[None, None],
-                n=style_n, status="insufficient_n", method="linear",
-                policy=policy_dict, reference_date=str(reference_date) if reference_date else None
+                name=name,
+                value=None,
+                raw=None,
+                ci=[None, None],
+                n=style_n,
+                status="insufficient_n",
+                method="linear",
+                policy=policy_dict,
+                reference_date=str(reference_date) if reference_date else None,
             )
 
     # ─── Lateness threshold (Q95 of lateness, clamped to [1.5, 4]) ───
@@ -329,14 +373,22 @@ def calibrate_thresholds(
             res["clamp_bounds"] = [1.5, 4.0]
             res["clamped_value"] = clamped
         results["lateness_overdue_min"] = ThresholdResult(
-            name="lateness_overdue_min", reference_date=str(reference_date) if reference_date else None,
-            policy=policy_dict, **res
+            name="lateness_overdue_min",
+            reference_date=str(reference_date) if reference_date else None,
+            policy=policy_dict,
+            **res,
         )
     else:
         results["lateness_overdue_min"] = ThresholdResult(
-            name="lateness_overdue_min", value=None, raw=None, ci=[None, None],
-            n=late_n, status="insufficient_n", method="linear",
-            policy=policy_dict, reference_date=str(reference_date) if reference_date else None
+            name="lateness_overdue_min",
+            value=None,
+            raw=None,
+            ci=[None, None],
+            n=late_n,
+            status="insufficient_n",
+            method="linear",
+            policy=policy_dict,
+            reference_date=str(reference_date) if reference_date else None,
         )
 
     # ─── Change thresholds (empirical reference-population change heuristics) ───
@@ -376,15 +428,23 @@ def calibrate_thresholds(
                 res["clamp_bounds"] = [0.10, 0.50]
                 res["clamped_value"] = clamped
             results[threshold_name] = ThresholdResult(
-                name=threshold_name, reference_date=str(reference_date) if reference_date else None,
-                policy=policy_dict, **res
+                name=threshold_name,
+                reference_date=str(reference_date) if reference_date else None,
+                policy=policy_dict,
+                **res,
             )
     else:
         for threshold_name in ["frequency_change_threshold", "basket_change_threshold"]:
             results[threshold_name] = ThresholdResult(
-                name=threshold_name, value=None, raw=None, ci=[None, None],
-                n=change_n, status="insufficient_n", method="linear",
-                policy=policy_dict, reference_date=str(reference_date) if reference_date else None
+                name=threshold_name,
+                value=None,
+                raw=None,
+                ci=[None, None],
+                n=change_n,
+                status="insufficient_n",
+                method="linear",
+                policy=policy_dict,
+                reference_date=str(reference_date) if reference_date else None,
             )
 
     # ─── Fixed behavioral ratios (not calibrated, but documented) ───
@@ -392,62 +452,136 @@ def calibrate_thresholds(
     # They could be calibrated in future if domain expertise supports it.
     # Fixed rules: ci is null (not a statistical interval), clamp_bounds indicates the fixed value
     results["gap_cv_routine_max"] = ThresholdResult(
-        name="gap_cv_routine_max", value=GAP_CV_ROUTINE_MAX, raw=GAP_CV_ROUTINE_MAX,
-        ci=[None, None], clamp_bounds=[GAP_CV_ROUTINE_MAX, GAP_CV_ROUTINE_MAX], n=style_n,
-        status="fixed", method="fixed",
+        name="gap_cv_routine_max",
+        value=GAP_CV_ROUTINE_MAX,
+        raw=GAP_CV_ROUTINE_MAX,
+        ci=[None, None],
+        clamp_bounds=[GAP_CV_ROUTINE_MAX, GAP_CV_ROUTINE_MAX],
+        n=style_n,
+        status="fixed",
+        method="fixed",
         policy={"note": "Poisson arrival has CV≈1; 0.75 means clearly more regular"},
-        reference_date=str(reference_date) if reference_date else None
+        reference_date=str(reference_date) if reference_date else None,
     )
     results["established_share_routine_min"] = ThresholdResult(
-        name="established_share_routine_min", value=0.70, raw=0.70,
-        ci=[None, None], clamp_bounds=[0.70, 0.70], n=style_n, status="fixed", method="fixed",
+        name="established_share_routine_min",
+        value=0.70,
+        raw=0.70,
+        ci=[None, None],
+        clamp_bounds=[0.70, 0.70],
+        n=style_n,
+        status="fixed",
+        method="fixed",
         policy={"note": "High established share = routine repeat buyer"},
-        reference_date=str(reference_date) if reference_date else None
+        reference_date=str(reference_date) if reference_date else None,
     )
     results["dominant_share_focused_min"] = ThresholdResult(
-        name="dominant_share_focused_min", value=0.70, raw=0.70,
-        ci=[None, None], clamp_bounds=[0.70, 0.70], n=style_n, status="fixed", method="fixed",
-        policy={}, reference_date=str(reference_date) if reference_date else None
+        name="dominant_share_focused_min",
+        value=0.70,
+        raw=0.70,
+        ci=[None, None],
+        clamp_bounds=[0.70, 0.70],
+        n=style_n,
+        status="fixed",
+        method="fixed",
+        policy={},
+        reference_date=str(reference_date) if reference_date else None,
     )
     results["established_share_focused_min"] = ThresholdResult(
-        name="established_share_focused_min", value=0.70, raw=0.70,
-        ci=[None, None], clamp_bounds=[0.70, 0.70], n=style_n, status="fixed", method="fixed",
-        policy={}, reference_date=str(reference_date) if reference_date else None
+        name="established_share_focused_min",
+        value=0.70,
+        raw=0.70,
+        ci=[None, None],
+        clamp_bounds=[0.70, 0.70],
+        n=style_n,
+        status="fixed",
+        method="fixed",
+        policy={},
+        reference_date=str(reference_date) if reference_date else None,
     )
     results["median_breadth_broad_min"] = ThresholdResult(
-        name="median_breadth_broad_min", value=3, raw=3,
-        ci=[None, None], clamp_bounds=[3, 3], n=style_n, status="fixed", method="fixed",
-        policy={}, reference_date=str(reference_date) if reference_date else None
+        name="median_breadth_broad_min",
+        value=3,
+        raw=3,
+        ci=[None, None],
+        clamp_bounds=[3, 3],
+        n=style_n,
+        status="fixed",
+        method="fixed",
+        policy={},
+        reference_date=str(reference_date) if reference_date else None,
     )
     results["new_share_exploration_min"] = ThresholdResult(
-        name="new_share_exploration_min", value=0.40, raw=0.40,
-        ci=[None, None], clamp_bounds=[0.40, 0.40], n=style_n, status="fixed", method="fixed",
-        policy={}, reference_date=str(reference_date) if reference_date else None
+        name="new_share_exploration_min",
+        value=0.40,
+        raw=0.40,
+        ci=[None, None],
+        clamp_bounds=[0.40, 0.40],
+        n=style_n,
+        status="fixed",
+        method="fixed",
+        policy={},
+        reference_date=str(reference_date) if reference_date else None,
     )
     results["breadth_change_narrowing_max"] = ThresholdResult(
-        name="breadth_change_narrowing_max", value=-0.5, raw=-0.5,
-        ci=[None, None], clamp_bounds=[-0.5, -0.5], n=change_n, status="fixed", method="fixed",
-        policy={}, reference_date=str(reference_date) if reference_date else None
+        name="breadth_change_narrowing_max",
+        value=-0.5,
+        raw=-0.5,
+        ci=[None, None],
+        clamp_bounds=[-0.5, -0.5],
+        n=change_n,
+        status="fixed",
+        method="fixed",
+        policy={},
+        reference_date=str(reference_date) if reference_date else None,
     )
     results["overdue_categories_narrowing_min"] = ThresholdResult(
-        name="overdue_categories_narrowing_min", value=2, raw=2,
-        ci=[None, None], clamp_bounds=[2, 2], n=change_n, status="fixed", method="fixed",
-        policy={}, reference_date=str(reference_date) if reference_date else None
+        name="overdue_categories_narrowing_min",
+        value=2,
+        raw=2,
+        ci=[None, None],
+        clamp_bounds=[2, 2],
+        n=change_n,
+        status="fixed",
+        method="fixed",
+        policy={},
+        reference_date=str(reference_date) if reference_date else None,
     )
     results["frequency_change_expanding_min"] = ThresholdResult(
-        name="frequency_change_expanding_min", value=0.25, raw=0.25,
-        ci=[None, None], clamp_bounds=[0.25, 0.25], n=change_n, status="fixed", method="fixed",
-        policy={}, reference_date=str(reference_date) if reference_date else None
+        name="frequency_change_expanding_min",
+        value=0.25,
+        raw=0.25,
+        ci=[None, None],
+        clamp_bounds=[0.25, 0.25],
+        n=change_n,
+        status="fixed",
+        method="fixed",
+        policy={},
+        reference_date=str(reference_date) if reference_date else None,
     )
     results["basket_change_expanding_min"] = ThresholdResult(
-        name="basket_change_expanding_min", value=0.25, raw=0.25,
-        ci=[None, None], clamp_bounds=[0.25, 0.25], n=change_n, status="fixed", method="fixed",
-        policy={}, reference_date=str(reference_date) if reference_date else None
+        name="basket_change_expanding_min",
+        value=0.25,
+        raw=0.25,
+        ci=[None, None],
+        clamp_bounds=[0.25, 0.25],
+        n=change_n,
+        status="fixed",
+        method="fixed",
+        policy={},
+        reference_date=str(reference_date) if reference_date else None,
     )
     results["reactivation_events_min"] = ThresholdResult(
-        name="reactivation_events_min", value=1, raw=1,
-        ci=[None, None], clamp_bounds=[1, 1], n=style_n, status="fixed", method="fixed",
-        policy={}, reference_date=str(reference_date) if reference_date else None
+        name="reactivation_events_min",
+        value=1,
+        raw=1,
+        ci=[None, None],
+        clamp_bounds=[1, 1],
+        n=style_n,
+        status="fixed",
+        method="fixed",
+        policy={},
+        reference_date=str(reference_date) if reference_date else None,
     )
 
     # ─── Package into output dict (backward compatible flat keys + rich metadata) ───
@@ -496,7 +630,7 @@ def calibrate_thresholds(
                 "policy": r.policy,
             }
             for name, r in results.items()
-        }
+        },
     }
 
     return output
@@ -505,6 +639,7 @@ def calibrate_thresholds(
 # ──────────────────────────────────────────────────────────────────────
 # Data profile for manifest
 # ──────────────────────────────────────────────────────────────────────
+
 
 def compute_data_profile(
     ref: pl.LazyFrame,
@@ -517,11 +652,20 @@ def compute_data_profile(
     Returns observation span, eligibility rates, and distributional summaries.
     """
     # Materialize needed columns
-    cols = ref.select([
-        "customer_id", "first_purchase", "last_purchase",
-        "tenure", "days_365d", "gap_count", "median_gap",
-        "median_basket", "spend_90d", "purchases_90d",
-    ]).collect(engine="streaming")
+    cols = ref.select(
+        [
+            "customer_id",
+            "first_purchase",
+            "last_purchase",
+            "tenure",
+            "days_365d",
+            "gap_count",
+            "median_gap",
+            "median_basket",
+            "spend_90d",
+            "purchases_90d",
+        ]
+    ).collect(engine="streaming")
 
     n_customers = cols.height
     if n_customers == 0:
@@ -539,13 +683,17 @@ def compute_data_profile(
     zero_spend_n = cols.filter((pl.col("spend_90d") == 0) | (pl.col("spend_90d").is_null())).height
 
     # Median gap distribution
-    median_gap_stats = cols.select(
-        pl.col("median_gap").median().alias("median"),
-        pl.col("median_gap").quantile(0.25).alias("q25"),
-        pl.col("median_gap").quantile(0.75).alias("q75"),
-        pl.col("median_gap").min().alias("min"),
-        pl.col("median_gap").max().alias("max"),
-    ).to_dicts()[0] if cols["median_gap"].is_not_null().any() else {}
+    median_gap_stats = (
+        cols.select(
+            pl.col("median_gap").median().alias("median"),
+            pl.col("median_gap").quantile(0.25).alias("q25"),
+            pl.col("median_gap").quantile(0.75).alias("q75"),
+            pl.col("median_gap").min().alias("min"),
+            pl.col("median_gap").max().alias("max"),
+        ).to_dicts()[0]
+        if cols["median_gap"].is_not_null().any()
+        else {}
+    )
 
     # Tenure distribution
     tenure_stats = cols.select(
@@ -571,11 +719,17 @@ def compute_data_profile(
     # Warning flags
     warnings = []
     if style_eligible_n / n_customers < 0.1:
-        warnings.append(f"Low style eligibility: {style_eligible_n}/{n_customers} ({style_eligible_n/n_customers:.1%})")
+        warnings.append(
+            f"Low style eligibility: {style_eligible_n}/{n_customers} ({style_eligible_n / n_customers:.1%})"
+        )
     if median_gap_stats.get("median", 0) > 90:
-        warnings.append(f"Median gap ({median_gap_stats['median']:.0f}d) exceeds 90-day window; many customers may have <2 visits/window")
+        warnings.append(
+            f"Median gap ({median_gap_stats['median']:.0f}d) exceeds 90-day window; many customers may have <2 visits/window"
+        )
     if zero_spend_n / n_customers > 0.5:
-        warnings.append(f"High zero-spend share: {zero_spend_n}/{n_customers} ({zero_spend_n/n_customers:.1%})")
+        warnings.append(
+            f"High zero-spend share: {zero_spend_n}/{n_customers} ({zero_spend_n / n_customers:.1%})"
+        )
 
     return {
         "n_customers": n_customers,
@@ -597,6 +751,7 @@ def compute_data_profile(
 # ──────────────────────────────────────────────────────────────────────
 # Label share diagnostics
 # ──────────────────────────────────────────────────────────────────────
+
 
 def compute_label_shares(
     frame: pl.LazyFrame,
@@ -634,6 +789,7 @@ def compute_label_shares(
 # ──────────────────────────────────────────────────────────────────────
 # Select reference cutoff
 # ──────────────────────────────────────────────────────────────────────
+
 
 def select_reference_cutoff(
     numeric_paths: list[Path],
@@ -681,13 +837,15 @@ def select_reference_cutoff(
             value_n = ref.filter(_eligible_for_value_tier()).select(pl.len()).collect().item()
 
             if style_n < policy.min_n or value_n < policy.min_n:
-                checked.append({
-                    "date": str(d),
-                    "status": "insufficient_population",
-                    "style_population": style_n,
-                    "value_population": value_n,
-                    "min_n": policy.min_n,
-                })
+                checked.append(
+                    {
+                        "date": str(d),
+                        "status": "insufficient_population",
+                        "style_population": style_n,
+                        "value_population": value_n,
+                        "min_n": policy.min_n,
+                    }
+                )
                 continue
 
             # Also check stability by doing a quick calibration
@@ -695,53 +853,75 @@ def select_reference_cutoff(
             # Check if key thresholds are stable
             key_statuses = {
                 k: thresholds["threshold_details"][k]["status"]
-                for k in ["value_low", "value_high", "basket_low", "basket_high", "gap_low", "gap_high"]
+                for k in [
+                    "value_low",
+                    "value_high",
+                    "basket_low",
+                    "basket_high",
+                    "gap_low",
+                    "gap_high",
+                ]
             }
             key_stable = all(v == "ok" for v in key_statuses.values())
 
-            checked.append({
-                "date": str(d),
-                "status": "selected" if key_stable else "unstable_thresholds",
-                "style_population": style_n,
-                "value_population": value_n,
-                "threshold_statuses": key_statuses,
-            })
-
-            if key_stable:
-                return d, ref, {
-                    "selected": True,
-                    "reference_date": str(d),
+            checked.append(
+                {
+                    "date": str(d),
+                    "status": "selected" if key_stable else "unstable_thresholds",
                     "style_population": style_n,
                     "value_population": value_n,
-                    "checked_snapshots": checked,
+                    "threshold_statuses": key_statuses,
                 }
+            )
+
+            if key_stable:
+                return (
+                    d,
+                    ref,
+                    {
+                        "selected": True,
+                        "reference_date": str(d),
+                        "style_population": style_n,
+                        "value_population": value_n,
+                        "checked_snapshots": checked,
+                    },
+                )
         except (ValueError, KeyError, IndexError) as e:
             # Expected errors during calibration (insufficient data, missing columns, etc.)
             # Record and continue to next snapshot
-            checked.append({
-                "date": str(d),
-                "status": "error",
-                "error_type": type(e).__name__,
-                "error_message": str(e)[:500],
-            })
+            checked.append(
+                {
+                    "date": str(d),
+                    "status": "error",
+                    "error_type": type(e).__name__,
+                    "error_message": str(e)[:500],
+                }
+            )
             continue
         except Exception as e:
             # Unexpected errors (I/O, programming errors, schema corruption) - propagate with context
-            raise RuntimeError(f"Reference selection failed at cutoff {d}: {type(e).__name__}: {e}") from e
+            raise RuntimeError(
+                f"Reference selection failed at cutoff {d}: {type(e).__name__}: {e}"
+            ) from e
 
     # No cutoff met criteria
-    return None, None, {
-        "selected": False,
-        "reference_date": None,
-        "style_population": 0,
-        "value_population": 0,
-        "checked_snapshots": checked,
-    }
+    return (
+        None,
+        None,
+        {
+            "selected": False,
+            "reference_date": None,
+            "style_population": 0,
+            "value_population": 0,
+            "checked_snapshots": checked,
+        },
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
 # Persistence
 # ──────────────────────────────────────────────────────────────────────
+
 
 def write_thresholds(root: Path, thresholds: dict[str, Any]) -> None:
     """Write thresholds.json with both flat keys and rich metadata."""
@@ -751,12 +931,14 @@ def write_thresholds(root: Path, thresholds: dict[str, Any]) -> None:
 def read_thresholds(root: Path) -> dict[str, Any]:
     """Read thresholds.json."""
     import json as _json
+
     return _json.loads((root / "thresholds.json").read_text())  # type: ignore[no-any-return]
 
 
 # ──────────────────────────────────────────────────────────────────────
 # Default policy factory (for CLI/dashboard)
 # ──────────────────────────────────────────────────────────────────────
+
 
 def default_policy(
     value_quantile_low: float = QUANTILE_VALUE_LOW,
@@ -773,7 +955,9 @@ def default_policy(
     if min_reference_population < 0:
         raise ValueError("min_reference_population must be non-negative")
     # Allow 0 to mean "use default"
-    effective_min_n = min_reference_population if min_reference_population > 0 else MIN_REFERENCE_POPULATION
+    effective_min_n = (
+        min_reference_population if min_reference_population > 0 else MIN_REFERENCE_POPULATION
+    )
     return ThresholdPolicy(
         value_quantile_low=value_quantile_low,
         value_quantile_high=value_quantile_high,

@@ -6,6 +6,7 @@ import shutil
 from dataclasses import asdict
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 
@@ -22,7 +23,6 @@ from retail_analytics.core.pipeline import (
     apply_labels,
     generate_snapshot,
     prepare,
-    run_pipeline,
     sink,
 )
 from retail_analytics.core.thresholds import (
@@ -201,11 +201,15 @@ def inspect(job: dict) -> dict:
             (pl.col("department") == "__UNKNOWN__").sum().alias("unknown_department_rows"),
             (pl.col("category") == "__UNKNOWN__").sum().alias("unknown_category_rows"),
             pl.col("price").is_null().sum().alias("null_price"),
-            (pl.col("price").is_null() & pl.col("price_raw").is_not_null()).sum().alias("malformed_price"),
+            (pl.col("price").is_null() & pl.col("price_raw").is_not_null())
+            .sum()
+            .alias("malformed_price"),
             (~pl.col("price").is_finite()).sum().alias("nonfinite_price"),
             (pl.col("price") < 0).sum().alias("negative_price"),
             pl.col("quantity").is_null().sum().alias("null_quantity"),
-            (pl.col("quantity").is_null() & pl.col("quantity_raw").is_not_null()).sum().alias("malformed_quantity"),
+            (pl.col("quantity").is_null() & pl.col("quantity_raw").is_not_null())
+            .sum()
+            .alias("malformed_quantity"),
             (~pl.col("quantity").is_finite()).sum().alias("nonfinite_quantity"),
             (pl.col("quantity") <= 0).sum().alias("nonpositive_quantity"),
             (~value.is_finite()).sum().alias("nonfinite_value"),

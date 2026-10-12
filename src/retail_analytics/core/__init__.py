@@ -8,11 +8,12 @@ This package provides the fundamental building blocks for customer behavior anal
 - retail_polars_workflow: Backward-compatible facade for the complete workflow
 """
 
+# ruff: noqa: F403,F405
 from retail_analytics.core.constants import *
-from retail_analytics.core.stats import *
-from retail_analytics.core.thresholds import *
 from retail_analytics.core.pipeline import *
 from retail_analytics.core.retail_polars_workflow import *
+from retail_analytics.core.stats import *
+from retail_analytics.core.thresholds import *
 
 __all__ = [
     # Constants

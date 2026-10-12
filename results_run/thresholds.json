@@ -1,0 +1,485 @@
+{
+  "value_low": 149.3298,
+  "value_high": 702.1200000000001,
+  "basket_low": 12.6587,
+  "basket_high": 32.05,
+  "gap_low": 4.0,
+  "gap_high": 9.0,
+  "lateness_overdue_min": 4.0,
+  "frequency_change_threshold": null,
+  "basket_change_threshold": null,
+  "gap_cv_routine_max": 0.75,
+  "established_share_routine_min": 0.7,
+  "dominant_share_focused_min": 0.7,
+  "established_share_focused_min": 0.7,
+  "median_breadth_broad_min": 3,
+  "established_share_broad_min": 0.7,
+  "new_share_exploration_min": 0.4,
+  "breadth_change_narrowing_max": -0.5,
+  "overdue_categories_narrowing_min": 2,
+  "frequency_change_expanding_min": 0.25,
+  "basket_change_expanding_min": 0.25,
+  "reactivation_events_min": 1,
+  "reference_date": "2000-06-30",
+  "reference_population": 1414,
+  "value_population": 1704,
+  "style_population": 1414,
+  "calibration_policy": {
+    "value_quantile_low": 0.33,
+    "value_quantile_high": 0.8,
+    "style_quantile_low": 0.33,
+    "style_quantile_high": 0.8,
+    "min_n": 100,
+    "z": 1.959963984540054,
+    "max_rel_ci": 0.5
+  },
+  "threshold_details": {
+    "value_low": {
+      "value": 149.3298,
+      "raw": 149.3298,
+      "ci": [
+        132.98,
+        164.04000000000002
+      ],
+      "clamp_bounds": null,
+      "clamped_value": null,
+      "n": 1704,
+      "status": "ok",
+      "method": "linear",
+      "policy": {
+        "value_quantile_low": 0.33,
+        "value_quantile_high": 0.8,
+        "style_quantile_low": 0.33,
+        "style_quantile_high": 0.8,
+        "min_n": 100,
+        "z": 1.959963984540054,
+        "max_rel_ci": 0.5
+      }
+    },
+    "value_high": {
+      "value": 702.1200000000001,
+      "raw": 702.1200000000001,
+      "ci": [
+        659.58,
+        745.84
+      ],
+      "clamp_bounds": null,
+      "clamped_value": null,
+      "n": 1704,
+      "status": "ok",
+      "method": "linear",
+      "policy": {
+        "value_quantile_low": 0.33,
+        "value_quantile_high": 0.8,
+        "style_quantile_low": 0.33,
+        "style_quantile_high": 0.8,
+        "min_n": 100,
+        "z": 1.959963984540054,
+        "max_rel_ci": 0.5
+      }
+    },
+    "basket_low": {
+      "value": 12.6587,
+      "raw": 12.6587,
+      "ci": [
+        11.795000000000002,
+        13.21
+      ],
+      "clamp_bounds": null,
+      "clamped_value": null,
+      "n": 1414,
+      "status": "ok",
+      "method": "linear",
+      "policy": {
+        "value_quantile_low": 0.33,
+        "value_quantile_high": 0.8,
+        "style_quantile_low": 0.33,
+        "style_quantile_high": 0.8,
+        "min_n": 100,
+        "z": 1.959963984540054,
+        "max_rel_ci": 0.5
+      }
+    },
+    "basket_high": {
+      "value": 32.05,
+      "raw": 32.05,
+      "ci": [
+        30.250000000000004,
+        33.504999999999995
+      ],
+      "clamp_bounds": null,
+      "clamped_value": null,
+      "n": 1414,
+      "status": "ok",
+      "method": "linear",
+      "policy": {
+        "value_quantile_low": 0.33,
+        "value_quantile_high": 0.8,
+        "style_quantile_low": 0.33,
+        "style_quantile_high": 0.8,
+        "min_n": 100,
+        "z": 1.959963984540054,
+        "max_rel_ci": 0.5
+      }
+    },
+    "gap_low": {
+      "value": 4.0,
+      "raw": 4.0,
+      "ci": [
+        3.5,
+        4.0
+      ],
+      "clamp_bounds": null,
+      "clamped_value": null,
+      "n": 1414,
+      "status": "ok",
+      "method": "linear",
+      "policy": {
+        "value_quantile_low": 0.33,
+        "value_quantile_high": 0.8,
+        "style_quantile_low": 0.33,
+        "style_quantile_high": 0.8,
+        "min_n": 100,
+        "z": 1.959963984540054,
+        "max_rel_ci": 0.5
+      }
+    },
+    "gap_high": {
+      "value": 9.0,
+      "raw": 9.0,
+      "ci": [
+        9.0,
+        10.0
+      ],
+      "clamp_bounds": null,
+      "clamped_value": null,
+      "n": 1414,
+      "status": "ok",
+      "method": "linear",
+      "policy": {
+        "value_quantile_low": 0.33,
+        "value_quantile_high": 0.8,
+        "style_quantile_low": 0.33,
+        "style_quantile_high": 0.8,
+        "min_n": 100,
+        "z": 1.959963984540054,
+        "max_rel_ci": 0.5
+      }
+    },
+    "lateness_overdue_min": {
+      "value": 4.0,
+      "raw": 6.804545454545447,
+      "ci": [
+        6.0,
+        9.0
+      ],
+      "clamp_bounds": [
+        1.5,
+        4.0
+      ],
+      "clamped_value": 4.0,
+      "n": 1504,
+      "status": "ok",
+      "method": "linear",
+      "policy": {
+        "value_quantile_low": 0.33,
+        "value_quantile_high": 0.8,
+        "style_quantile_low": 0.33,
+        "style_quantile_high": 0.8,
+        "min_n": 100,
+        "z": 1.959963984540054,
+        "max_rel_ci": 0.5
+      }
+    },
+    "frequency_change_threshold": {
+      "value": null,
+      "raw": null,
+      "ci": [
+        null,
+        null
+      ],
+      "clamp_bounds": null,
+      "clamped_value": null,
+      "n": 0,
+      "status": "insufficient_n",
+      "method": "linear",
+      "policy": {
+        "value_quantile_low": 0.33,
+        "value_quantile_high": 0.8,
+        "style_quantile_low": 0.33,
+        "style_quantile_high": 0.8,
+        "min_n": 100,
+        "z": 1.959963984540054,
+        "max_rel_ci": 0.5
+      }
+    },
+    "basket_change_threshold": {
+      "value": null,
+      "raw": null,
+      "ci": [
+        null,
+        null
+      ],
+      "clamp_bounds": null,
+      "clamped_value": null,
+      "n": 0,
+      "status": "insufficient_n",
+      "method": "linear",
+      "policy": {
+        "value_quantile_low": 0.33,
+        "value_quantile_high": 0.8,
+        "style_quantile_low": 0.33,
+        "style_quantile_high": 0.8,
+        "min_n": 100,
+        "z": 1.959963984540054,
+        "max_rel_ci": 0.5
+      }
+    },
+    "gap_cv_routine_max": {
+      "value": 0.75,
+      "raw": 0.75,
+      "ci": [
+        null,
+        null
+      ],
+      "clamp_bounds": [
+        0.75,
+        0.75
+      ],
+      "clamped_value": null,
+      "n": 1414,
+      "status": "fixed",
+      "method": "fixed",
+      "policy": {
+        "note": "Poisson arrival has CV\u22481; 0.75 means clearly more regular"
+      }
+    },
+    "established_share_routine_min": {
+      "value": 0.7,
+      "raw": 0.7,
+      "ci": [
+        null,
+        null
+      ],
+      "clamp_bounds": [
+        0.7,
+        0.7
+      ],
+      "clamped_value": null,
+      "n": 1414,
+      "status": "fixed",
+      "method": "fixed",
+      "policy": {
+        "note": "High established share = routine repeat buyer"
+      }
+    },
+    "dominant_share_focused_min": {
+      "value": 0.7,
+      "raw": 0.7,
+      "ci": [
+        null,
+        null
+      ],
+      "clamp_bounds": [
+        0.7,
+        0.7
+      ],
+      "clamped_value": null,
+      "n": 1414,
+      "status": "fixed",
+      "method": "fixed",
+      "policy": {}
+    },
+    "established_share_focused_min": {
+      "value": 0.7,
+      "raw": 0.7,
+      "ci": [
+        null,
+        null
+      ],
+      "clamp_bounds": [
+        0.7,
+        0.7
+      ],
+      "clamped_value": null,
+      "n": 1414,
+      "status": "fixed",
+      "method": "fixed",
+      "policy": {}
+    },
+    "median_breadth_broad_min": {
+      "value": 3,
+      "raw": 3,
+      "ci": [
+        null,
+        null
+      ],
+      "clamp_bounds": [
+        3,
+        3
+      ],
+      "clamped_value": null,
+      "n": 1414,
+      "status": "fixed",
+      "method": "fixed",
+      "policy": {}
+    },
+    "new_share_exploration_min": {
+      "value": 0.4,
+      "raw": 0.4,
+      "ci": [
+        null,
+        null
+      ],
+      "clamp_bounds": [
+        0.4,
+        0.4
+      ],
+      "clamped_value": null,
+      "n": 1414,
+      "status": "fixed",
+      "method": "fixed",
+      "policy": {}
+    },
+    "breadth_change_narrowing_max": {
+      "value": -0.5,
+      "raw": -0.5,
+      "ci": [
+        null,
+        null
+      ],
+      "clamp_bounds": [
+        -0.5,
+        -0.5
+      ],
+      "clamped_value": null,
+      "n": 0,
+      "status": "fixed",
+      "method": "fixed",
+      "policy": {}
+    },
+    "overdue_categories_narrowing_min": {
+      "value": 2,
+      "raw": 2,
+      "ci": [
+        null,
+        null
+      ],
+      "clamp_bounds": [
+        2,
+        2
+      ],
+      "clamped_value": null,
+      "n": 0,
+      "status": "fixed",
+      "method": "fixed",
+      "policy": {}
+    },
+    "frequency_change_expanding_min": {
+      "value": 0.25,
+      "raw": 0.25,
+      "ci": [
+        null,
+        null
+      ],
+      "clamp_bounds": [
+        0.25,
+        0.25
+      ],
+      "clamped_value": null,
+      "n": 0,
+      "status": "fixed",
+      "method": "fixed",
+      "policy": {}
+    },
+    "basket_change_expanding_min": {
+      "value": 0.25,
+      "raw": 0.25,
+      "ci": [
+        null,
+        null
+      ],
+      "clamp_bounds": [
+        0.25,
+        0.25
+      ],
+      "clamped_value": null,
+      "n": 0,
+      "status": "fixed",
+      "method": "fixed",
+      "policy": {}
+    },
+    "reactivation_events_min": {
+      "value": 1,
+      "raw": 1,
+      "ci": [
+        null,
+        null
+      ],
+      "clamp_bounds": [
+        1,
+        1
+      ],
+      "clamped_value": null,
+      "n": 1414,
+      "status": "fixed",
+      "method": "fixed",
+      "policy": {}
+    }
+  },
+  "data_profile": {
+    "n_customers": 2493,
+    "observation_span_days": 710,
+    "style_eligible_n": 1414,
+    "style_eligible_rate": 0.5671881267549138,
+    "value_eligible_n": 1704,
+    "value_eligible_rate": 0.6835138387484958,
+    "zero_spend_n": 125,
+    "zero_spend_rate": 0.05014039310068191,
+    "median_gap": {
+      "median": 6.0,
+      "q25": 3.0,
+      "q75": 11.0,
+      "min": 1.0,
+      "max": 145.0
+    },
+    "tenure": {
+      "median": 113.0,
+      "q25": 87.0,
+      "q75": 146.0
+    },
+    "days_365d": {
+      "median": 12.0,
+      "q25": 6.0,
+      "q75": 22.0
+    },
+    "gap_count": {
+      "median": 11.0,
+      "q25": 5.0,
+      "q75": 21.0
+    },
+    "warnings": []
+  },
+  "reference_selection": {
+    "selected": true,
+    "reference_date": "2000-06-30",
+    "style_population": 1414,
+    "value_population": 1704,
+    "checked_snapshots": [
+      {
+        "date": "2000-06-30",
+        "status": "selected",
+        "style_population": 1414,
+        "value_population": 1704,
+        "threshold_statuses": {
+          "value_low": "ok",
+          "value_high": "ok",
+          "basket_low": "ok",
+          "basket_high": "ok",
+          "gap_low": "ok",
+          "gap_high": "ok"
+        }
+      }
+    ]
+  }
+}

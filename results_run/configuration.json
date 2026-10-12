@@ -1,0 +1,22 @@
+{
+  "source": "/home/lptop/Documents/coding/polars-customer-behavior-analytics/polars-customer-behavior-analytics/data/customer_transactions.parquet",
+  "price_mode": "unit",
+  "snapshots": [
+    "2000-06-30",
+    "2001-06-30",
+    "2001-12-11"
+  ],
+  "buckets": 4,
+  "exclude_invalid": true,
+  "date_format": null,
+  "observed_through": null,
+  "coverage_confirmed": true,
+  "timezone": null,
+  "value_quantile_low": 0.33,
+  "value_quantile_high": 0.8,
+  "style_quantile_low": 0.33,
+  "style_quantile_high": 0.8,
+  "min_reference_population": 100,
+  "reference_date": null,
+  "version": "reconstructed-1.3"
+}

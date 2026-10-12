@@ -13,27 +13,14 @@ This module computes all customer-level behavioral features from transaction dat
 - Price features: relative price paid vs reference
 """
 
-import math
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any
 
 import polars as pl
 
 from retail_analytics.core.constants import (
     CENSOR_DAYS,
-    HASH_SEED_BUCKETING,
-    MIN_DAYS_STYLE,
-    MIN_GAP_COUNT_STRONGER,
-    MIN_GAP_COUNT_STYLE,
     MIN_TENURE_COMPARABLE,
-    MIN_TENURE_ONE_SHOPPING_DAY,
-    MIN_TENURE_STYLE,
-    MIN_TENURE_VALUE_EXPOSURE,
-    QUANTILE_STYLE_HIGH,
-    QUANTILE_STYLE_LOW,
-    QUANTILE_VALUE_HIGH,
-    QUANTILE_VALUE_LOW,
     WINDOW_PREVIOUS_START_OFFSET,
     WINDOW_RECENT,
     WINDOW_RECENT_30,
@@ -70,9 +57,7 @@ def _compute_baskets(line: pl.LazyFrame, out: Path) -> pl.LazyFrame:
     return pl.scan_parquet(out / "baskets.parquet")
 
 
-def _sink(
-    frame: pl.LazyFrame, path: Path, sort_by: list[str] | str | None = None
-) -> None:
+def _sink(frame: pl.LazyFrame, path: Path, sort_by: list[str] | str | None = None) -> None:
     """Write a LazyFrame to Parquet with ZSTD compression."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -279,7 +264,10 @@ def compute_breadth_last6days(
     """
     last6 = (
         day.with_columns(
-            pl.col("date").cum_count().over(customer_col, order_by="date", descending=True).alias("rank")
+            pl.col("date")
+            .cum_count()
+            .over(customer_col, order_by="date", descending=True)
+            .alias("rank")
         )
         .filter(pl.col("rank") <= 6)
         .select(customer_col, "date")
@@ -336,7 +324,9 @@ def compute_product_features(
     )
     _sink(ph, out / "product_history.parquet", sort_by=product_keys)
 
-    eligible = pl.col("trial").is_between(d - timedelta(days=WINDOW_YEAR - 1), d - timedelta(days=90))
+    eligible = pl.col("trial").is_between(
+        d - timedelta(days=WINDOW_YEAR - 1), d - timedelta(days=90)
+    )
     success = (
         eligible
         & pl.col("repeat").is_not_null()
@@ -375,7 +365,12 @@ def compute_habit_features(
     product_baskets = (
         line.select(basket_keys + ["product_id"])
         .unique()
-        .join(pd.select(product_keys + ["date", "prior_days"]), on=product_keys + ["date"], how="left", validate="m:1")
+        .join(
+            pd.select(product_keys + ["date", "prior_days"]),
+            on=product_keys + ["date"],
+            how="left",
+            validate="m:1",
+        )
         .group_by(basket_keys)
         .agg(
             (pl.col("prior_days") == 0).mean().alias("new_share"),
@@ -418,7 +413,12 @@ def compute_quantity_features(pd: pl.LazyFrame, customer_col: str, year: pl.Expr
 
 
 def compute_category_features(
-    line: pl.LazyFrame, category_keys: list[str], customer_col: str, year: pl.Expr, d: date, out: Path
+    line: pl.LazyFrame,
+    category_keys: list[str],
+    customer_col: str,
+    year: pl.Expr,
+    d: date,
+    out: Path,
 ) -> pl.LazyFrame:
     """Compute category-level features (spend, gaps, overdue).
 
@@ -448,15 +448,21 @@ def compute_category_features(
         pl.col("gap").median().alias("median_gap"),
     )
     ch = ch.with_columns(
-        safe_ratio(pl.col("year_spend"), pl.col("year_spend").sum().over(customer_col)).alias("share"),
-        safe_ratio((pl.lit(d) - pl.col("last")).dt.total_days(), pl.col("median_gap")).alias("lateness"),
+        safe_ratio(pl.col("year_spend"), pl.col("year_spend").sum().over(customer_col)).alias(
+            "share"
+        ),
+        safe_ratio((pl.lit(d) - pl.col("last")).dt.total_days(), pl.col("median_gap")).alias(
+            "lateness"
+        ),
     )
     _sink(ch, out / "category_history.parquet", sort_by=category_keys)
 
     return ch
 
 
-def compute_category_aggregations(ch: pl.LazyFrame, customer_col: str) -> tuple[pl.LazyFrame, pl.LazyFrame]:
+def compute_category_aggregations(
+    ch: pl.LazyFrame, customer_col: str
+) -> tuple[pl.LazyFrame, pl.LazyFrame]:
     """Compute category-level aggregations per customer.
 
     Args:
@@ -481,7 +487,10 @@ def compute_category_aggregations(ch: pl.LazyFrame, customer_col: str) -> tuple[
     )
     dominant = (
         ch.filter(pl.col("year_days") > 0)
-        .sort([customer_col, "year_spend", "department", "category"], descending=[False, True, False, False])
+        .sort(
+            [customer_col, "year_spend", "department", "category"],
+            descending=[False, True, False, False],
+        )
         .group_by(customer_col, maintain_order=True)
         .agg(
             pl.col("department").first().alias("dominant_department"),
@@ -564,7 +573,9 @@ def add_derived_features(frame: pl.LazyFrame, d: date, end: date) -> pl.LazyFram
         (pl.lit(d) - pl.col("first_purchase")).dt.total_days().alias("tenure"),
         (pl.lit(d) - pl.col("last_purchase")).dt.total_days().alias("recency"),
         safe_ratio(pl.col("spend_90d"), pl.col("purchases_90d")).alias("aov_recent"),
-        safe_ratio(pl.col("spend_previous90d"), pl.col("purchases_previous90d")).alias("aov_previous"),
+        safe_ratio(pl.col("spend_previous90d"), pl.col("purchases_previous90d")).alias(
+            "aov_previous"
+        ),
         safe_ratio(pl.col("repeated_trials"), pl.col("eligible_trials")).alias("trial_conversion"),
         safe_ratio(pl.col("core_spend"), pl.col("spend_365d")).alias("core_spend_share"),
     )

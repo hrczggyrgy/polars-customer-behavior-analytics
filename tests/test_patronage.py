@@ -78,8 +78,14 @@ class RuleTests(unittest.TestCase):
         )
 
     @unittest.skipUnless(
-        (Path(__file__).parent.parent / "src" / "retail_analytics" / "dashboard" / "loyalty_app.py").exists(),
-        "Patronage UI not installed"
+        (
+            Path(__file__).parent.parent
+            / "src"
+            / "retail_analytics"
+            / "dashboard"
+            / "loyalty_app.py"
+        ).exists(),
+        "Patronage UI not installed",
     )
     def test_adapter_reruns_preserve_original_renderer(self):
         import ast
@@ -88,7 +94,13 @@ class RuleTests(unittest.TestCase):
         calls = []
         app = SimpleNamespace(display_results=lambda r, c: calls.append((r, c)))
         st = SimpleNamespace(radio=lambda *a, **k: "Visual analytics")
-        loyalty_app_path = Path(__file__).parent.parent / "src" / "retail_analytics" / "dashboard" / "loyalty_app.py"
+        loyalty_app_path = (
+            Path(__file__).parent.parent
+            / "src"
+            / "retail_analytics"
+            / "dashboard"
+            / "loyalty_app.py"
+        )
         parsed = ast.parse(loyalty_app_path.read_text())
         nodes = [
             n

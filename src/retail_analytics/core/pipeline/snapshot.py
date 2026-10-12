@@ -4,9 +4,8 @@ This module generates customer feature snapshots at specific cutoff dates,
 ensuring no temporal leakage and proper feature computation.
 """
 
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
-from typing import Any
 
 import polars as pl
 
@@ -27,7 +26,7 @@ from retail_analytics.core.pipeline.features import (
     compute_weekday_entropy,
     merge_features,
 )
-from retail_analytics.core.pipeline.prepare import _sink, C, K, P, G
+from retail_analytics.core.pipeline.prepare import C, G, K, P, _sink
 
 
 def generate_snapshot(

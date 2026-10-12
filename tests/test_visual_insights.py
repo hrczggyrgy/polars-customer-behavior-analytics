@@ -16,7 +16,6 @@ if HAS_POLARS:
     from retail_analytics.visualization.visual_insights_core import (
         cadence_map,
         cohort_summary,
-        collect,
         concentration,
         momentum_map,
         revenue_waterfall,
@@ -84,19 +83,21 @@ class Aggregates(unittest.TestCase):
 
     def test_momentum_map(self):
         # Test momentum map with customers having finite changes
-        rows = pl.DataFrame({
-            "customer_id": ["A", "B", "C", "D", "E"],
-            "frequency_change": [0.5, -0.3, 0.2, None, -0.1],
-            "basket_change": [0.2, -0.4, None, 0.1, -0.2],
-            "value_tier": ["high", "middle", "low", "high", "middle"],
-            "lifecycle": ["established_repeat"] * 5,
-            "evidence": ["stronger", "limited", "stronger", "limited", "stronger"],
-            "spend_90d": [100.0, 50.0, 75.0, 200.0, 30.0],
-            "purchases_90d": [5, 3, 4, 10, 2],
-            "purchases_previous90d": [4, 4, 3, 8, 2],
-            "aov_recent": [20.0, 16.7, 18.75, 20.0, 15.0],
-            "aov_previous": [16.0, 25.0, 20.0, 18.0, 18.0],
-        }).lazy()
+        rows = pl.DataFrame(
+            {
+                "customer_id": ["A", "B", "C", "D", "E"],
+                "frequency_change": [0.5, -0.3, 0.2, None, -0.1],
+                "basket_change": [0.2, -0.4, None, 0.1, -0.2],
+                "value_tier": ["high", "middle", "low", "high", "middle"],
+                "lifecycle": ["established_repeat"] * 5,
+                "evidence": ["stronger", "limited", "stronger", "limited", "stronger"],
+                "spend_90d": [100.0, 50.0, 75.0, 200.0, 30.0],
+                "purchases_90d": [5, 3, 4, 10, 2],
+                "purchases_previous90d": [4, 4, 3, 8, 2],
+                "aov_recent": [20.0, 16.7, 18.75, 20.0, 15.0],
+                "aov_previous": [16.0, 25.0, 20.0, 18.0, 18.0],
+            }
+        ).lazy()
 
         result = momentum_map(rows)
         # A, B, E have both finite (C has null basket, D has null freq)
@@ -115,18 +116,20 @@ class Aggregates(unittest.TestCase):
         self.assertIn("declining_both", quadrants)
 
     def test_cadence_map(self):
-        rows = pl.DataFrame({
-            "customer_id": ["A", "B", "C", "D"],
-            "median_gap": [7.0, 14.0, 30.0, None],
-            "recency": [5.0, 20.0, 100.0, 10.0],
-            "lateness": [0.7, 1.4, 3.3, None],
-            "value_tier": ["high", "middle", "low", "high"],
-            "evidence": ["stronger", "limited", "stronger", "limited"],
-            "lifecycle": ["established_repeat"] * 4,
-            "gap_cv": [0.2, 0.5, 0.8, 0.3],
-            "days_365d": [50, 25, 12, 40],
-            "style_eligible": [True, True, True, False],
-        }).lazy()
+        rows = pl.DataFrame(
+            {
+                "customer_id": ["A", "B", "C", "D"],
+                "median_gap": [7.0, 14.0, 30.0, None],
+                "recency": [5.0, 20.0, 100.0, 10.0],
+                "lateness": [0.7, 1.4, 3.3, None],
+                "value_tier": ["high", "middle", "low", "high"],
+                "evidence": ["stronger", "limited", "stronger", "limited"],
+                "lifecycle": ["established_repeat"] * 4,
+                "gap_cv": [0.2, 0.5, 0.8, 0.3],
+                "days_365d": [50, 25, 12, 40],
+                "style_eligible": [True, True, True, False],
+            }
+        ).lazy()
 
         result = cadence_map(rows)
         # D has null median_gap, filtered out -> 3 remain
@@ -143,17 +146,21 @@ class Aggregates(unittest.TestCase):
     def test_revenue_waterfall(self):
         # Fixture: Previous: 2 buyers, 4 baskets, spend 40. Current: 2 buyers, 6 baskets, spend 90.
         # Expected: buyer contribution 0, frequency +20, AOV +30, total +50, residual ~0.
-        current = pl.DataFrame({
-            "customer_id": ["A", "B", "C"],
-            "purchases_90d": [2, 4, 0],
-            "spend_90d": [20.0, 70.0, 0.0],
-        }).lazy()
+        current = pl.DataFrame(
+            {
+                "customer_id": ["A", "B", "C"],
+                "purchases_90d": [2, 4, 0],
+                "spend_90d": [20.0, 70.0, 0.0],
+            }
+        ).lazy()
 
-        previous = pl.DataFrame({
-            "customer_id": ["A", "B", "C"],
-            "purchases_90d": [2, 2, 0],
-            "spend_90d": [20.0, 20.0, 0.0],
-        }).lazy()
+        previous = pl.DataFrame(
+            {
+                "customer_id": ["A", "B", "C"],
+                "purchases_90d": [2, 2, 0],
+                "spend_90d": [20.0, 20.0, 0.0],
+            }
+        ).lazy()
 
         cutoff = date(2024, 6, 1)
         result = revenue_waterfall(current, previous, cutoff)
@@ -188,17 +195,21 @@ class Aggregates(unittest.TestCase):
 
     def test_revenue_waterfall_zero_previous_activity(self):
         # Previous period has no purchasing activity
-        current = pl.DataFrame({
-            "customer_id": ["A", "B"],
-            "purchases_90d": [2, 3],
-            "spend_90d": [20.0, 30.0],
-        }).lazy()
+        current = pl.DataFrame(
+            {
+                "customer_id": ["A", "B"],
+                "purchases_90d": [2, 3],
+                "spend_90d": [20.0, 30.0],
+            }
+        ).lazy()
 
-        previous = pl.DataFrame({
-            "customer_id": ["A", "B"],
-            "purchases_90d": [0, 0],
-            "spend_90d": [0.0, 0.0],
-        }).lazy()
+        previous = pl.DataFrame(
+            {
+                "customer_id": ["A", "B"],
+                "purchases_90d": [0, 0],
+                "spend_90d": [0.0, 0.0],
+            }
+        ).lazy()
 
         cutoff = date(2024, 6, 1)
         result = revenue_waterfall(current, previous, cutoff)
@@ -209,22 +220,28 @@ class Aggregates(unittest.TestCase):
         self.assertAlmostEqual(comp_vals["Current period spend"], 50.0)
         self.assertAlmostEqual(comp_vals["Total change"], 50.0)
         self.assertIsNone(comp_vals["Decomposition"])
-        self.assertEqual(result.filter(pl.col("component") == "Decomposition")["status"][0],
-                         "unavailable: zero purchasing customers or baskets in previous period")
+        self.assertEqual(
+            result.filter(pl.col("component") == "Decomposition")["status"][0],
+            "unavailable: zero purchasing customers or baskets in previous period",
+        )
 
     def test_revenue_waterfall_zero_current_activity(self):
         # Current period has no purchasing activity
-        current = pl.DataFrame({
-            "customer_id": ["A", "B"],
-            "purchases_90d": [0, 0],
-            "spend_90d": [0.0, 0.0],
-        }).lazy()
+        current = pl.DataFrame(
+            {
+                "customer_id": ["A", "B"],
+                "purchases_90d": [0, 0],
+                "spend_90d": [0.0, 0.0],
+            }
+        ).lazy()
 
-        previous = pl.DataFrame({
-            "customer_id": ["A", "B"],
-            "purchases_90d": [2, 3],
-            "spend_90d": [20.0, 30.0],
-        }).lazy()
+        previous = pl.DataFrame(
+            {
+                "customer_id": ["A", "B"],
+                "purchases_90d": [2, 3],
+                "spend_90d": [20.0, 30.0],
+            }
+        ).lazy()
 
         cutoff = date(2024, 6, 1)
         result = revenue_waterfall(current, previous, cutoff)
@@ -235,8 +252,10 @@ class Aggregates(unittest.TestCase):
         self.assertAlmostEqual(comp_vals["Current period spend"], 0.0)
         self.assertAlmostEqual(comp_vals["Total change"], -50.0)
         self.assertIsNone(comp_vals["Decomposition"])
-        self.assertEqual(result.filter(pl.col("component") == "Decomposition")["status"][0],
-                         "unavailable: zero purchasing customers or baskets in current period")
+        self.assertEqual(
+            result.filter(pl.col("component") == "Decomposition")["status"][0],
+            "unavailable: zero purchasing customers or baskets in current period",
+        )
 
     def test_revenue_waterfall_none_input(self):
         # None input should return empty DataFrame
@@ -246,33 +265,37 @@ class Aggregates(unittest.TestCase):
     def test_value_tier_transition_waterfall_eager_lazy(self):
         """Test value_tier_transition_waterfall with both eager and lazy inputs."""
         # Create test data with value_tier transitions
-        before = pl.DataFrame({
-            "customer_id": ["A", "B", "C", "D", "E"],
-            "value_tier": ["high", "high", "middle", "middle", "low"],
-        }).lazy()
-        
-        after = pl.DataFrame({
-            "customer_id": ["A", "B", "C", "D", "E"],
-            "value_tier": ["high", "middle", "middle", "low", "low"],
-        }).lazy()
-        
+        before = pl.DataFrame(
+            {
+                "customer_id": ["A", "B", "C", "D", "E"],
+                "value_tier": ["high", "high", "middle", "middle", "low"],
+            }
+        ).lazy()
+
+        after = pl.DataFrame(
+            {
+                "customer_id": ["A", "B", "C", "D", "E"],
+                "value_tier": ["high", "middle", "middle", "low", "low"],
+            }
+        ).lazy()
+
         # Get transitions
         flows, counts = transition_summary(before, after, "value_tier")
-        
+
         # Test with lazy flows (as returned by transition_summary)
         waterfall_lazy = value_tier_transition_waterfall(flows)
         self.assertEqual(waterfall_lazy.height, 3)  # high, middle, low
-        
+
         # Test with eager flows - transition_summary returns eager DataFrame already
         # Just call value_tier_transition_waterfall again with the same flows
         waterfall_eager = value_tier_transition_waterfall(flows)
         self.assertEqual(waterfall_eager.height, 3)
-        
+
         # Both should give same results
         lazy_dict = {row["tier"]: row["net_change"] for row in waterfall_lazy.to_dicts()}
         eager_dict = {row["tier"]: row["net_change"] for row in waterfall_eager.to_dicts()}
         self.assertEqual(lazy_dict, eager_dict)
-        
+
         # Verify net changes:
         # high: outflow=2 (A stays, B moves to middle), inflow=1 (A stays) -> net = -1
         # middle: outflow=2 (C stays, D moves to low), inflow=2 (B from high, C stays) -> net = 0
@@ -280,45 +303,54 @@ class Aggregates(unittest.TestCase):
         self.assertEqual(lazy_dict["high"], -1)
         self.assertEqual(lazy_dict["middle"], 0)
         self.assertEqual(lazy_dict["low"], 1)
-        
+
         # Sum of net changes should be 0 for matched population
         self.assertEqual(sum(lazy_dict.values()), 0)
-    
+
     def test_value_tier_transition_waterfall_empty(self):
         """Test value_tier_transition_waterfall with empty flows."""
-        empty_flows = pl.DataFrame({
-            "from_label": [],
-            "to_label": [],
-            "len": [],
-        }).lazy()
-        
+        empty_flows = pl.DataFrame(
+            {
+                "from_label": [],
+                "to_label": [],
+                "len": [],
+            }
+        ).lazy()
+
         result = value_tier_transition_waterfall(empty_flows)
         self.assertEqual(result.height, 0)
-    
+
     def test_value_tier_transition_waterfall_one_sided(self):
         """Test value_tier_transition_waterfall with tiers appearing only on one side."""
-        before = pl.DataFrame({
-            "customer_id": ["A", "B"],
-            "value_tier": ["high", "middle"],
-        }).lazy()
-        
-        after = pl.DataFrame({
-            "customer_id": ["A", "B", "C"],
-            "value_tier": ["middle", "low", "high"],
-        }).lazy()
-        
+        before = pl.DataFrame(
+            {
+                "customer_id": ["A", "B"],
+                "value_tier": ["high", "middle"],
+            }
+        ).lazy()
+
+        after = pl.DataFrame(
+            {
+                "customer_id": ["A", "B", "C"],
+                "value_tier": ["middle", "low", "high"],
+            }
+        ).lazy()
+
         flows, _ = transition_summary(before, after, "value_tier")
         waterfall = value_tier_transition_waterfall(flows)
-        
+
         # Should have all three tiers
         tiers = set(waterfall["tier"].to_list())
         self.assertEqual(tiers, {"high", "middle", "low"})
-        
+
         # Net change should sum to 0 for matched population
-        matched_net = waterfall.filter(pl.col("tier").is_in(["high", "middle", "low"]))["net_change"].sum()
+        matched_net = waterfall.filter(pl.col("tier").is_in(["high", "middle", "low"]))[
+            "net_change"
+        ].sum()
         # For matched customers (A, B): high->middle (high -1, middle +1), middle->low (middle -1, low +1)
         # Net: high=-1, middle=0, low=+1, sum=0
         self.assertEqual(matched_net, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

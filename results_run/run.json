@@ -1,0 +1,12 @@
+{
+  "snapshots": [
+    "2000-06-30",
+    "2001-06-30",
+    "2001-12-11"
+  ],
+  "coverage_confirmed": true,
+  "observed_through": "2001-12-11",
+  "price_mode": "unit",
+  "polars_version": "2.0.0",
+  "reference_date": "2000-06-30"
+}

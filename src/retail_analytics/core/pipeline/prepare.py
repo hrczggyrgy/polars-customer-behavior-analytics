@@ -11,54 +11,16 @@ This module handles:
 """
 
 import json
-import argparse
-from dataclasses import asdict
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 from typing import Any, Literal
 
 import polars as pl
 
 from retail_analytics.core.constants import (
-    BREADTH_CHANGE_NARROWING_MAX,
     CENSOR_DAYS,
-    DOMINANT_SHARE_FOCUSED_MIN,
-    ESTABLISHED_SHARE_BROAD_MIN,
-    ESTABLISHED_SHARE_FOCUSED_MIN,
-    ESTABLISHED_SHARE_ROUTINE_MIN,
-    GAP_CV_ROUTINE_MAX,
     HASH_SEED_BUCKETING,
-    LATENESS_OVERDUE_MIN,
-    MEDIAN_BREADTH_BROAD_MIN,
-    MIN_DAYS_STYLE,
-    MIN_GAP_COUNT_STRONGER,
-    MIN_GAP_COUNT_STYLE,
-    MIN_REFERENCE_POPULATION,
-    MIN_TENURE_COMPARABLE,
-    MIN_TENURE_ONE_SHOPPING_DAY,
-    MIN_TENURE_STYLE,
-    MIN_TENURE_VALUE_EXPOSURE,
-    NEW_SHARE_EXPLORATION_MIN,
-    OVERDUE_CATEGORIES_NARROWING_MIN,
-    QUANTILE_STYLE_HIGH,
-    QUANTILE_STYLE_LOW,
-    QUANTILE_VALUE_HIGH,
-    QUANTILE_VALUE_LOW,
-    REACTIVATION_EVENTS_MIN,
-    WINDOW_PREVIOUS_START_OFFSET,
-    WINDOW_RECENT,
-    WINDOW_RECENT_30,
-    WINDOW_YEAR,
 )
-from retail_analytics.core.thresholds import (
-    calibrate_thresholds,
-    compute_data_profile,
-    compute_label_shares,
-    default_policy,
-    select_reference_cutoff,
-    write_thresholds,
-)
-from retail_analytics.core.stats import ratio as safe_ratio
 
 # Column definitions
 REQUIRED_COLS = COLS = [
@@ -94,9 +56,7 @@ def _safe_ratio(a: pl.Expr, b: pl.Expr) -> pl.Expr:
 ratio = _safe_ratio
 
 
-def _sink(
-    frame: pl.LazyFrame, path: Path, sort_by: list[str] | str | None = None
-) -> None:
+def _sink(frame: pl.LazyFrame, path: Path, sort_by: list[str] | str | None = None) -> None:
     """Write a LazyFrame to Parquet with ZSTD compression (internal)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -259,11 +219,7 @@ def _handle_price_quantity(
     else:
         raw = raw.with_columns(
             # Preserve raw string values before casting to distinguish missing vs malformed
-            pl.col("price")
-            .cast(pl.String)
-            .str.strip_chars()
-            .replace("", None)
-            .alias("price_raw"),
+            pl.col("price").cast(pl.String).str.strip_chars().replace("", None).alias("price_raw"),
             pl.col("quantity")
             .cast(pl.String)
             .str.strip_chars()
@@ -591,7 +547,7 @@ def prepare(
     raw = raw.with_columns(good.alias("valid"))
 
     rejected = raw.filter(~pl.col("valid"))
-    rejected_count = rejected.select(pl.len()).collect().item()
+    rejected.select(pl.len()).collect().item()
     valid = raw.filter(pl.col("valid"))
 
     # Enhanced quality audit
@@ -685,10 +641,12 @@ def prepare(
     (root / "quality.json").write_text(json.dumps(audit, default=str, indent=2))
 
     _sink(
-        clean.group_by("product_id").agg(
+        clean.group_by("product_id")
+        .agg(
             pl.struct(["department", "category"]).n_unique().alias("classifications"),
             pl.col("product_description").n_unique().alias("descriptions"),
-        ).filter((pl.col("classifications") > 1) | (pl.col("descriptions") > 1)),
+        )
+        .filter((pl.col("classifications") > 1) | (pl.col("descriptions") > 1)),
         root / "product_variation.parquet",
         sort_by="product_id",
     )
