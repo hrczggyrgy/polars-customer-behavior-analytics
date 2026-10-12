@@ -1283,7 +1283,12 @@ def display_results(root, coverage):
             "Shows which style-trajectory combinations are growing, declining, or at risk."
         )
 
-        matrix = behavior_trajectory_matrix(rows)
+        try:
+            matrix = behavior_trajectory_matrix(rows)
+        except Exception as e:
+            st.error(f"behavior_trajectory_matrix failed: {type(e).__name__}: {e}")
+            st.caption("This may be due to missing behavior/trajectory columns.")
+            return
 
         if matrix.is_empty():
             st.info("No behavior-trajectory combinations in this population.")

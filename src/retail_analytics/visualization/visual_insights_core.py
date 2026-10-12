@@ -734,22 +734,54 @@ def behavior_trajectory_matrix(rows):
     """
     import polars as pl
 
-    # For trajectory, we need to handle multi-tag combinations
-    # The pipeline stores trajectory as joined tags (e.g., "slowing+overdue")
-    # We'll use the combined trajectory label for the matrix
+    # Check required columns exist
+    schema = rows.collect_schema()
+    required_cols = ["behavior", "trajectory", "spend_90d"]
+    optional_cols = ["future_purchases_30d", "future_purchases_90d", "eligible_followup_30d", "eligible_followup_90d"]
+    missing = [c for c in required_cols if c not in schema]
+    if missing:
+        # Return empty DataFrame with expected schema
+        empty_schema = {
+            "behavior": pl.String, "trajectory": pl.String, "customers": pl.Int64,
+            "median_spend": pl.Float64, "mean_spend": pl.Float64,
+            "future_30d_rate": pl.Float64, "future_90d_rate": pl.Float64,
+            "eligible_30d": pl.Int64, "eligible_90d": pl.Int64,
+        }
+        return pl.DataFrame(schema=empty_schema)
+
+    # Build aggregation expressions dynamically based on available columns
+    agg_exprs = [
+        pl.len().alias("customers"),
+        pl.col("spend_90d").median().alias("median_spend"),
+        pl.col("spend_90d").mean().alias("mean_spend"),
+    ]
+
+    if "future_purchases_30d" in schema and "eligible_followup_30d" in schema:
+        agg_exprs.extend([
+            (pl.col("future_purchases_30d") > 0).mean().alias("future_30d_rate"),
+            pl.col("eligible_followup_30d").sum().alias("eligible_30d"),
+        ])
+    else:
+        agg_exprs.extend([
+            pl.lit(None, dtype=pl.Float64).alias("future_30d_rate"),
+            pl.lit(0, dtype=pl.Int64).alias("eligible_30d"),
+        ])
+
+    if "future_purchases_90d" in schema and "eligible_followup_90d" in schema:
+        agg_exprs.extend([
+            (pl.col("future_purchases_90d") > 0).mean().alias("future_90d_rate"),
+            pl.col("eligible_followup_90d").sum().alias("eligible_90d"),
+        ])
+    else:
+        agg_exprs.extend([
+            pl.lit(None, dtype=pl.Float64).alias("future_90d_rate"),
+            pl.lit(0, dtype=pl.Int64).alias("eligible_90d"),
+        ])
 
     # Get behavior and trajectory combinations
     combo = (
         rows.group_by("behavior", "trajectory")
-        .agg(
-            pl.len().alias("customers"),
-            pl.col("spend_90d").median().alias("median_spend"),
-            pl.col("spend_90d").mean().alias("mean_spend"),
-            (pl.col("future_purchases_30d") > 0).mean().alias("future_30d_rate"),
-            (pl.col("future_purchases_90d") > 0).mean().alias("future_90d_rate"),
-            pl.col("eligible_followup_30d").sum().alias("eligible_30d"),
-            pl.col("eligible_followup_90d").sum().alias("eligible_90d"),
-        )
+        .agg(*agg_exprs)
         .filter(pl.col("customers") > 0)
         .sort("customers", descending=True)
     )
