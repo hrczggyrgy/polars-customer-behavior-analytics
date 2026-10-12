@@ -26,6 +26,12 @@ from retail_analytics.visualization.visual_insights_core import (
     new_to_repeat_pathways,
     basket_composition_by_segment,
     run_product_affinity_dashboard,
+    # Research-backed priority visualizations
+    time_to_second_purchase,
+    cadence_return_validation,
+    multi_horizon_cohort_repeat,
+    category_opportunity_map,
+    rfm_response_surface,
 )
 
 from retail_analytics.visualization.product_affinity import collect as collect_product_affinity
@@ -55,4 +61,9 @@ __all__ = [
     "new_to_repeat_pathways",
     "basket_composition_by_segment",
     "run_product_affinity_dashboard",
+    "time_to_second_purchase",
+    "cadence_return_validation",
+    "multi_horizon_cohort_repeat",
+    "category_opportunity_map",
+    "rfm_response_surface",
 ]

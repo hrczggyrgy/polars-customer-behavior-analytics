@@ -1,7 +1,7 @@
 """Transaction-only aggregate views. Includes lightweight product affinity analysis."""
 
 import math
-from datetime import timedelta
+from datetime import date, timedelta
 
 from retail_analytics.core.stats import wilson
 from retail_analytics.visualization.product_affinity import (
@@ -1020,3 +1020,474 @@ def future_outcome_validation(rows):
         results.append(stats_90)
 
     return pl.concat(results, how="vertical_relaxed") if results else pl.DataFrame()
+
+
+# ============================================================================
+# RESEARCH-BACKED PRIORITY VISUALIZATIONS
+# ============================================================================
+
+def time_to_second_purchase(baskets, rows, cutoff, max_days=180, confidence=0.95):
+    """Kaplan-Meier time-to-second-purchase survival curve.
+
+    Research basis: Schmittlein, Morrison & Colombo (1987) - Counting Your Customers.
+    Non-contractual customer activity models with right-censoring.
+
+    Args:
+        baskets: LazyFrame with basket data (customer_id, date)
+        rows: LazyFrame with snapshot customer features (customer_id, first_purchase)
+        cutoff: Snapshot cutoff date (date object or ISO string)
+        max_days: Maximum days to track (default 180)
+        confidence: Confidence level for bands (default 0.95)
+
+    Returns:
+        DataFrame with columns: days, survival_prob, lower_ci, upper_ci, at_risk, events, censored
+    """
+    import polars as pl
+    from datetime import timedelta
+    import math
+
+    if isinstance(cutoff, str):
+        cutoff = date.fromisoformat(cutoff)
+
+    # Get first purchase dates for all customers in snapshot
+    cust_first = rows.select("customer_id", "first_purchase").unique().collect()
+
+    # Get all basket dates for these customers up to cutoff
+    cust_ids = cust_first["customer_id"].to_list()
+    basket_data = collect(
+        baskets.filter(pl.col("customer_id").is_in(cust_ids))
+        .filter(pl.col("date") <= pl.lit(cutoff))
+        .select("customer_id", "date")
+        .unique(subset=["customer_id", "date"])
+        .sort("customer_id", "date")
+    )
+
+    if basket_data.is_empty():
+        return pl.DataFrame()
+
+    # Find second purchase date for each customer
+    second_purchase = (
+        basket_data.group_by("customer_id")
+        .agg(pl.col("date").nth(1).alias("second_purchase"))
+        .filter(pl.col("second_purchase").is_not_null())
+    )
+
+    # Merge with first purchase
+    cust_data = cust_first.join(second_purchase, on="customer_id", how="left")
+
+    # Compute time to second purchase (or censoring at cutoff)
+    cust_data = cust_data.with_columns([
+        (pl.col("second_purchase") - pl.col("first_purchase")).dt.total_days().alias("days_to_second"),
+        (pl.lit(cutoff) - pl.col("first_purchase")).dt.total_days().alias("censor_days"),
+    ])
+
+    # Event: second purchase observed within max_days and before cutoff
+    # Censored: no second purchase observed, or first purchase too recent to observe full window
+    cust_data = cust_data.with_columns([
+        pl.when(pl.col("days_to_second").is_not_null() & (pl.col("days_to_second") <= max_days) & (pl.col("days_to_second") <= pl.col("censor_days")))
+        .then(1).otherwise(0).alias("event"),
+        pl.when(pl.col("days_to_second").is_null() | (pl.col("days_to_second") > max_days) | (pl.col("days_to_second") > pl.col("censor_days")))
+        .then(1).otherwise(0).alias("censored"),
+    ])
+
+    # Only include customers with first_purchase early enough to have at least 1 day of observation
+    cust_data = cust_data.filter(pl.col("censor_days") >= 1)
+
+    if cust_data.is_empty():
+        return pl.DataFrame()
+
+    # Kaplan-Meier estimation
+    # For each day t: survival(t) = product over t' <= t of (1 - events(t') / at_risk(t'))
+    # Where at_risk(t) = number of customers with censor_days >= t
+
+    max_censor = min(max_days, int(cust_data["censor_days"].max()))
+
+    results = []
+    survival = 1.0
+
+    for t in range(1, max_censor + 1):
+        at_risk = cust_data.filter(pl.col("censor_days") >= t).height
+        if at_risk == 0:
+            break
+
+        events_t = cust_data.filter((pl.col("days_to_second") == t) & (pl.col("event") == 1)).height
+        censored_t = cust_data.filter((pl.col("censor_days") == t) & (pl.col("censored") == 1)).height
+
+        if events_t > 0:
+            hazard = events_t / at_risk
+            survival *= (1 - hazard)
+
+        # Greenwood formula for confidence intervals
+        # var(survival) = survival^2 * sum(hazard / (at_risk - events))
+        # We'll compute cumulative variance
+        if t == 1:
+            cum_var = 0.0
+        if events_t > 0 and at_risk > events_t:
+            cum_var += (events_t / at_risk) / (at_risk - events_t)
+
+        # Z-score for confidence level
+        z = 1.96 if confidence >= 0.95 else 1.645  # 95% or 90%
+        se = survival * math.sqrt(cum_var) if cum_var > 0 else 0
+        lower = max(0.0, survival - z * se)
+        upper = min(1.0, survival + z * se)
+
+        results.append({
+            "days": t,
+            "survival_prob": survival,
+            "lower_ci": lower,
+            "upper_ci": upper,
+            "at_risk": at_risk,
+            "events": events_t,
+            "censored": censored_t,
+            "cum_repeat_prob": 1 - survival,
+        })
+
+    return pl.DataFrame(results)
+
+
+def cadence_return_validation(rows, coverage, max_lateness=5.0, bins=10):
+    """Cadence vs observed return probability validation.
+
+    Bins customers by lateness (recency / median_gap) and plots
+    confirmed future purchase rates with Wilson intervals.
+
+    Research basis: Repeat-buying models (BG/NBD) - does the 2x median_gap
+    heuristic boundary correspond to actual return probability changes?
+
+    Args:
+        rows: LazyFrame with customer features (must have recency, median_gap, future_*)
+        coverage: Boolean - whether coverage is confirmed
+        max_lateness: Maximum lateness to include in plot
+        bins: Number of lateness bins
+
+    Returns:
+        DataFrame with lateness bin statistics
+    """
+    import polars as pl
+    from retail_analytics.core.stats import wilson
+
+    if not coverage:
+        return pl.DataFrame({"warning": ["Coverage unconfirmed - future outcomes unavailable"]})
+
+    schema = rows.collect_schema()
+    required = ["recency", "median_gap", "future_purchases_30d", "eligible_followup_30d",
+                "future_purchases_90d", "eligible_followup_90d", "median_gap"]
+    missing = [c for c in required if c not in schema]
+    if missing:
+        return pl.DataFrame({"error": [f"Missing columns: {missing}"]})
+
+    # Filter to customers with finite cadence metrics and eligible follow-up
+    eligible = rows.filter(
+        pl.col("median_gap").is_finite() &
+        (pl.col("median_gap") > 0) &
+        pl.col("recency").is_finite() &
+        pl.col("eligible_followup_30d")
+    )
+
+    if eligible.select(pl.len()).collect().item() == 0:
+        return pl.DataFrame()
+
+    # Compute lateness
+    eligible = eligible.with_columns(
+        (pl.col("recency") / pl.col("median_gap")).alias("lateness")
+    ).filter(
+        (pl.col("lateness") >= 0) & (pl.col("lateness") <= max_lateness)
+    )
+
+    if eligible.select(pl.len()).collect().item() == 0:
+        return pl.DataFrame()
+
+    # Create lateness bins
+    bin_edges = [i * max_lateness / bins for i in range(bins + 1)]
+    bin_labels = [f"{bin_edges[i]:.1f}–{bin_edges[i+1]:.1f}" for i in range(bins)]
+
+    eligible = eligible.with_columns(
+        pl.col("lateness").cut(bin_edges, labels=bin_labels).alias("lateness_bin")
+    )
+
+    # Compute return rates by bin for both horizons
+    results = []
+    for horizon, fut_col, elig_col in [
+        (30, "future_purchases_30d", "eligible_followup_30d"),
+        (90, "future_purchases_90d", "eligible_followup_90d"),
+    ]:
+        h_data = eligible.filter(pl.col(elig_col))
+        if h_data.select(pl.len()).collect().item() == 0:
+            continue
+
+        bin_stats = collect(
+            h_data.group_by("lateness_bin").agg(
+                pl.len().alias("eligible_n"),
+                (pl.col(fut_col) > 0).sum().alias("buyers"),
+                (pl.col(fut_col) > 0).mean().alias("purchase_rate"),
+            ).sort("lateness_bin")
+        )
+
+        for row in bin_stats.to_dicts():
+            n = row["eligible_n"]
+            buyers = row["buyers"]
+            lo, hi = wilson(buyers, n) if n >= 20 else (None, None)
+            results.append({
+                "horizon": horizon,
+                "lateness_bin": row["lateness_bin"],
+                "eligible_n": n,
+                "buyers": buyers,
+                "purchase_rate": buyers / n if n > 0 else None,
+                "lower_ci": lo,
+                "upper_ci": hi,
+            })
+
+    return pl.DataFrame(results)
+
+
+def multi_horizon_cohort_repeat(baskets, rows, cutoff, coverage, horizons=[30, 60, 90], min_cohort_size=20):
+    """Multi-horizon repeat curves by cohort with confidence intervals.
+
+    Extends existing cohort_summary to show all horizons together.
+
+    Args:
+        baskets: LazyFrame with basket data
+        rows: LazyFrame with snapshot features
+        cutoff: Cutoff date
+        coverage: Coverage confirmation boolean
+        horizons: List of horizons in days
+        min_cohort_size: Minimum cohort size for display
+
+    Returns:
+        DataFrame with cohort, horizon, rate, lower_ci, upper_ci, eligible_n, repeat_n
+    """
+    import polars as pl
+    from datetime import timedelta
+    from retail_analytics.core.stats import wilson
+
+    if isinstance(cutoff, str):
+        cutoff = date.fromisoformat(cutoff)
+
+    # Get customer cohorts (first purchase month)
+    cust_cohorts = rows.select("customer_id", "first_purchase").unique().collect()
+    cust_cohorts = cust_cohorts.with_columns(
+        pl.col("first_purchase").dt.truncate("1mo").alias("cohort")
+    )
+
+    # Get repeat purchases from baskets
+    cust_ids = cust_cohorts["customer_id"].to_list()
+    repeat_data = collect(
+        baskets.filter(pl.col("customer_id").is_in(cust_ids))
+        .filter(pl.col("date") <= pl.lit(cutoff))
+        .filter(pl.col("date") > pl.col("first_purchase"))  # Need first_purchase - join below
+        .group_by("customer_id")
+        .agg(pl.col("date").min().alias("repeat_date"))
+    )
+
+    # Merge
+    cohort_data = cust_cohorts.join(repeat_data, on="customer_id", how="left")
+
+    results = []
+    for horizon in horizons:
+        eligible = pl.col("first_purchase") + pl.duration(days=horizon) <= pl.lit(cutoff)
+        success = (
+            eligible
+            & pl.col("repeat_date").is_not_null()
+            & (pl.col("repeat_date") <= pl.col("first_purchase") + pl.duration(days=horizon))
+        )
+
+        cohort_stats = cohort_data.group_by("cohort").agg(
+            pl.len().alias("cohort_n"),
+            eligible.sum().alias("eligible_n"),
+            success.fill_null(False).sum().alias("repeat_n"),
+        ).filter(pl.col("cohort_n") >= min_cohort_size)
+
+        for row in cohort_stats.to_dicts():
+            n = row["eligible_n"]
+            buyers = row["repeat_n"]
+            if coverage and n >= min_cohort_size:
+                lo, hi = wilson(buyers, n)
+                rate = buyers / n if n > 0 else None
+            else:
+                lo, hi = None, None
+                rate = buyers / n if n > 0 and coverage else None
+
+            results.append({
+                "cohort": row["cohort"],
+                "horizon": horizon,
+                "cohort_n": row["cohort_n"],
+                "eligible_n": n if coverage else None,
+                "repeat_n": buyers if coverage else None,
+                "rate": rate,
+                "lower_ci": lo,
+                "upper_ci": hi,
+                "status": "eligible" if (coverage and n >= min_cohort_size)
+                        else "capture_unconfirmed" if not coverage
+                        else "insufficient_followup_or_n",
+            })
+
+    return pl.DataFrame(results) if results else pl.DataFrame()
+
+
+def category_opportunity_map(validated, rows, cutoff, top_categories=30):
+    """Category penetration × buying intensity opportunity map.
+
+    X: Penetration (% of customers buying category)
+    Y: Purchase occasions per category buyer
+    Bubble: Category spend share
+    Color: Repeat buyer share
+
+    Research basis: Dirichlet model for repeat buying; Ehrenberg (1988) - Repeat Buying.
+
+    Args:
+        validated: LazyFrame with validated transaction data
+        rows: LazyFrame with snapshot customer features
+        cutoff: Cutoff date
+        top_categories: Max categories to return
+
+    Returns:
+        DataFrame with category, penetration, occasions_per_buyer, spend_share, repeat_buyer_share, buyers
+    """
+    import polars as pl
+    from datetime import timedelta
+
+    if isinstance(cutoff, str):
+        cutoff = date.fromisoformat(cutoff)
+
+    # 365-day window
+    from retail_analytics.core.constants import WINDOW_YEAR
+    window_start = cutoff - timedelta(days=WINDOW_YEAR - 1)
+
+    # Get snapshot customer IDs
+    cust_ids = rows.select("customer_id").unique().collect()["customer_id"].to_list()
+    total_customers = len(cust_ids)
+
+    if total_customers == 0:
+        return pl.DataFrame()
+
+    # Get category-level data in window
+    cat_data = collect(
+        validated.filter(
+            pl.col("date").is_between(window_start, cutoff) &
+            pl.col("customer_id").is_in(cust_ids)
+        )
+        .group_by("department", "category", "customer_id")
+        .agg(
+            pl.len().alias("occasions"),
+            pl.col("value").sum().alias("spend"),
+        )
+        .group_by("department", "category")
+        .agg(
+            pl.len().alias("buyers"),
+            pl.col("occasions").mean().alias("occasions_per_buyer"),
+            pl.col("spend").sum().alias("total_spend"),
+            (pl.col("occasions") > 1).sum().alias("repeat_buyers"),
+        )
+        .sort("buyers", descending=True)
+        .head(top_categories)
+    )
+
+    if cat_data.is_empty():
+        return pl.DataFrame()
+
+    # Total spend for share calculation
+    total_spend = cat_data["total_spend"].sum()
+
+    result = cat_data.with_columns([
+        (pl.col("buyers") / total_customers).alias("penetration"),
+        (pl.col("repeat_buyers") / pl.col("buyers")).alias("repeat_buyer_share"),
+        (pl.col("total_spend") / total_spend).alias("spend_share"),
+        pl.concat_str([pl.col("department"), pl.lit(" / "), pl.col("category")]).alias("label"),
+    ])
+
+    return result.select("label", "department", "category", "buyers", "penetration",
+                          "occasions_per_buyer", "spend_share", "repeat_buyer_share", "total_spend")
+
+
+def rfm_response_surface(rows, coverage, recency_bins=5, frequency_bins=5):
+    """RFM response surface: repeat probability heatmap across recency × frequency.
+
+    Research basis: RFM models and Pareto/NBD - explicit response surfaces
+    rather than single scores (Fader, Hardie & Lee, 2005).
+
+    Args:
+        rows: LazyFrame with customer features
+        coverage: Coverage confirmation boolean
+        recency_bins: Number of recency quantile bins
+        frequency_bins: Number of frequency quantile bins
+
+    Returns:
+        DataFrame with recency_bin, frequency_bin, eligible_n, buyers, rate, lower_ci, upper_ci
+    """
+    import polars as pl
+    from retail_analytics.core.stats import wilson
+
+    if not coverage:
+        return pl.DataFrame({"warning": ["Coverage unconfirmed - future outcomes unavailable"]})
+
+    schema = rows.collect_schema()
+    required = ["recency", "purchases_90d", "future_purchases_30d", "eligible_followup_30d"]
+    missing = [c for c in required if c not in schema]
+    if missing:
+        return pl.DataFrame({"error": [f"Missing columns: {missing}"]})
+
+    eligible = rows.filter(
+        pl.col("eligible_followup_30d") &
+        pl.col("recency").is_finite() &
+        pl.col("purchases_90d").is_finite()
+    )
+
+    if eligible.select(pl.len()).collect().item() == 0:
+        return pl.DataFrame()
+
+    # Create quantile bins
+    recency_quantiles = [i / recency_bins for i in range(recency_bins + 1)]
+    freq_quantiles = [i / frequency_bins for i in range(frequency_bins + 1)]
+
+    # Compute bin edges from data
+    rec_stats = collect(eligible.select(
+        *[pl.col("recency").quantile(q, interpolation="linear").alias(f"q{i}") for i, q in enumerate(recency_quantiles)]
+    )).row(0, named=True)
+    freq_stats = collect(eligible.select(
+        *[pl.col("purchases_90d").quantile(q, interpolation="linear").alias(f"q{i}") for i, q in enumerate(freq_quantiles)]
+    )).row(0, named=True)
+
+    rec_edges = [rec_stats[f"q{i}"] for i in range(recency_bins + 1)]
+    freq_edges = [freq_stats[f"q{i}"] for i in range(frequency_bins + 1)]
+
+    # Ensure unique edges
+    rec_edges = sorted(set(rec_edges))
+    freq_edges = sorted(set(freq_edges))
+
+    if len(rec_edges) < 2 or len(freq_edges) < 2:
+        return pl.DataFrame()
+
+    rec_labels = [f"R{i+1}" for i in range(len(rec_edges) - 1)]
+    freq_labels = [f"F{i+1}" for i in range(len(freq_edges) - 1)]
+
+    eligible = eligible.with_columns([
+        pl.col("recency").cut(rec_edges, labels=rec_labels).alias("recency_bin"),
+        pl.col("purchases_90d").cut(freq_edges, labels=freq_labels).alias("frequency_bin"),
+    ])
+
+    # Compute response surface
+    surface = collect(
+        eligible.group_by("recency_bin", "frequency_bin").agg(
+            pl.len().alias("eligible_n"),
+            (pl.col("future_purchases_30d") > 0).sum().alias("buyers"),
+            (pl.col("future_purchases_30d") > 0).mean().alias("rate"),
+        ).sort("recency_bin", "frequency_bin")
+    )
+
+    # Add Wilson CIs
+    results = []
+    for row in surface.to_dicts():
+        n = row["eligible_n"]
+        buyers = row["buyers"]
+        lo, hi = wilson(buyers, n) if n >= 20 else (None, None)
+        results.append({
+            "recency_bin": row["recency_bin"],
+            "frequency_bin": row["frequency_bin"],
+            "eligible_n": n,
+            "buyers": buyers,
+            "rate": buyers / n if n > 0 else None,
+            "lower_ci": lo,
+            "upper_ci": hi,
+        })
+
+    return pl.DataFrame(results)

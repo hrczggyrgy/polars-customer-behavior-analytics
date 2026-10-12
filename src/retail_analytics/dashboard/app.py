@@ -29,6 +29,8 @@ from retail_analytics.visualization.visual_insights_core import (
     basket_composition_slope,
     behavior_trajectory_matrix,
     cadence_map,
+    cadence_return_validation,
+    category_opportunity_map,
     category_participation_comparison,
     cohort_summary,
     collect,
@@ -36,9 +38,12 @@ from retail_analytics.visualization.visual_insights_core import (
     cross_sell_recommendations,
     future_outcome_validation,
     momentum_map,
+    multi_horizon_cohort_repeat,
     new_to_repeat_pathways,
     purchase_rhythm_panel,
     revenue_waterfall,
+    rfm_response_surface,
+    time_to_second_purchase,
     transition_summary,
     trial_to_repeat_map,
     value_tier_transition_waterfall,
@@ -384,6 +389,12 @@ def display_results(root, coverage):
             "Quality",
             "Customer",
             "Methods",
+            # Research-backed priority views
+            "Time to Repeat",
+            "Cadence Validation",
+            "Multi-Horizon Cohorts",
+            "Category Opportunity Map",
+            "RFM Response Surface",
         ],
         horizontal=True,
     )
@@ -2118,6 +2129,383 @@ def display_results(root, coverage):
                 )
             else:
                 st.info("Customer not found in this filtered population.")
+
+    # Research-backed priority views
+    elif view == "Time to Repeat":
+        st.subheader("Time to second purchase: Kaplan–Meier survival curve")
+        st.caption(
+            "Non-contractual customer activity model (Schmittlein, Morrison & Colombo, 1987). "
+            "Duration starts at first observed shopping date; ends at second distinct shopping date. "
+            "Customers without a second purchase by cutoff are right-censored. "
+            "Shaded bands: 95% Greenwood confidence intervals."
+        )
+
+        try:
+            baskets_paths = list((root / "events" / chosen).glob("*/baskets.parquet"))
+            if not baskets_paths:
+                st.info("No basket data available for this cutoff.")
+            else:
+                baskets = pl.scan_parquet(baskets_paths)
+                cutoff_date = date.fromisoformat(chosen)
+                km = time_to_second_purchase(baskets, rows, cutoff_date, max_days=180)
+
+                if km.is_empty():
+                    st.info("Insufficient data for survival curve.")
+                else:
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=km["days"].to_list(),
+                        y=(1 - km["survival_prob"]).to_list(),
+                        mode="lines",
+                        name="Cumulative repeat probability",
+                        line=dict(color="#0072B2", width=2),
+                        hovertemplate="Day: %{x}<br>Repeat prob: %{y:.1%}<br>At risk: %{customdata[0]}<br>Events: %{customdata[1]}<extra></extra>",
+                        customdata=list(zip(km["at_risk"].to_list(), km["events"].to_list())),
+                    ))
+                    fig.add_trace(go.Scatter(
+                        x=km["days"].to_list(),
+                        y=(1 - km["upper_ci"]).to_list(),
+                        mode="lines",
+                        name="Upper CI (95%)",
+                        line=dict(color="#0072B2", width=1, dash="dash"),
+                        showlegend=False,
+                        hoverinfo="skip",
+                    ))
+                    fig.add_trace(go.Scatter(
+                        x=km["days"].to_list(),
+                        y=(1 - km["lower_ci"]).to_list(),
+                        mode="lines",
+                        name="Lower CI (95%)",
+                        line=dict(color="#0072B2", width=1, dash="dash"),
+                        fill="tonexty",
+                        fillcolor="rgba(0,114,178,0.1)",
+                        showlegend=False,
+                        hoverinfo="skip",
+                    ))
+
+                    for pct in [0.25, 0.5, 0.75]:
+                        idx = (km["cum_repeat_prob"] - pct).abs().arg_min()
+                        day = km["days"][idx]
+                        fig.add_vline(x=day, line_dash="dot", line_color="gray", opacity=0.5,
+                                     annotation_text=f"P{pct:.0%}={day}d", annotation_position="top")
+
+                    fig.update_yaxes(range=[0, 1], tickformat=".0%")
+                    chart(fig, "Time to second observed shopping day (Kaplan–Meier)", "km_survival",
+                          "Days since first observed purchase", "Cumulative repeat probability")
+
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        total = km["at_risk"][0] if km.height > 0 else 0
+                        st.metric("Customers at risk (day 1)", f"{total:,}")
+                    with col2:
+                        total_events = km["events"].sum()
+                        st.metric("Observed second purchases", f"{total_events:,}")
+                    with col3:
+                        median_day = km.filter(pl.col("cum_repeat_prob") >= 0.5)["days"].min()
+                        st.metric("Median time to repeat", f"{median_day}d" if median_day is not None else "Not reached")
+                    with col4:
+                        pct_30 = km.filter(pl.col("days") <= 30)["cum_repeat_prob"].max()
+                        st.metric("Repeat within 30 days", f"{pct_30:.1%}" if pct_30 is not None else "N/A")
+
+                    st.caption(
+                        f"Right-censored at cutoff ({cutoff_date}). First observed purchase ≠ true acquisition. "
+                        f"Greenwood 95% CI. Research: Schmittlein, Morrison & Colombo (1987), Management Science."
+                    )
+                    table(km.select("days", "at_risk", "events", "censored", "cum_repeat_prob", "lower_ci", "upper_ci"))
+
+        except Exception as e:
+            st.error(f"Time-to-repeat analysis failed: {type(e).__name__}: {e}")
+
+    elif view == "Cadence Validation":
+        st.subheader("Cadence vs observed return probability")
+        st.caption(
+            "Tests whether the lateness = recency/median_gap boundary (2×) corresponds to "
+            "actual changes in 30/90-day return probability. "
+            "Bins customers by lateness; plots Wilson 95% CI for future purchase rates."
+        )
+
+        if not coverage:
+            st.warning("Coverage unconfirmed: future outcome validation unavailable. "
+                       "Enable coverage confirmation in sidebar.")
+        else:
+            try:
+                max_lateness = st.slider("Max lateness to display", 2.0, 10.0, 5.0, 0.5)
+                bins = st.slider("Number of lateness bins", 5, 20, 10)
+
+                val = cadence_return_validation(rows, coverage, max_lateness=max_lateness, bins=bins)
+
+                if "warning" in val.columns:
+                    st.warning(val["warning"][0])
+                elif "error" in val.columns:
+                    st.error(val["error"][0])
+                elif val.is_empty():
+                    st.info("No eligible customers with finite cadence metrics.")
+                else:
+                    for horizon in [30, 90]:
+                        h_data = val.filter(pl.col("horizon") == horizon)
+                        if h_data.is_empty():
+                            continue
+
+                        fig = go.Figure()
+                        fig.add_trace(go.Bar(
+                            x=h_data["lateness_bin"].to_list(),
+                            y=h_data["purchase_rate"].to_list(),
+                            name=f"{horizon}d return rate",
+                            marker_color="#0072B2" if horizon == 30 else "#E69F00",
+                            error_y=dict(
+                                type="data",
+                                symmetric=False,
+                                array=(h_data["upper_ci"] - h_data["purchase_rate"]).to_list() if h_data["upper_ci"].not_null().any() else None,
+                                arrayminus=(h_data["purchase_rate"] - h_data["lower_ci"]).to_list() if h_data["lower_ci"].not_null().any() else None,
+                                visible=True,
+                            ) if h_data["upper_ci"].not_null().any() else None,
+                            customdata=list(zip(
+                                h_data["eligible_n"].to_list(),
+                                h_data["buyers"].to_list(),
+                            )),
+                            hovertemplate="Lateness bin: %{x}<br>Return rate: %{y:.1%}<br>Eligible: %{customdata[0]:,}<br>Buyers: %{customdata[1]:,}<extra></extra>",
+                        ))
+                        fig.add_vline(x="1.5–2.0" if "1.5–2.0" in h_data["lateness_bin"].to_list() else 2.0,
+                                     line_dash="dash", line_color="red",
+                                     annotation_text="2× median_gap boundary", annotation_position="top")
+
+                        fig.update_yaxes(range=[0, 1], tickformat=".0%")
+                        chart(fig, f"{horizon}-day return rate by lateness bin", f"cadence_val_{horizon}",
+                              "Lateness (recency / median_gap)", "Future purchase rate (Wilson 95% CI)")
+
+                    table(val.select("horizon", "lateness_bin", "eligible_n", "buyers", "purchase_rate", "lower_ci", "upper_ci"))
+                    st.caption(
+                        "Wilson 95% CI shown for bins with ≥20 eligible customers. "
+                        "Lateness = recency / median_gap. Research: BG/NBD repeat-buying models."
+                    )
+
+            except Exception as e:
+                st.error(f"Cadence validation failed: {type(e).__name__}: {e}")
+
+    elif view == "Multi-Horizon Cohorts":
+        st.subheader("Multi-horizon repeat curves by cohort")
+        st.caption(
+            "Age-aligned repeat purchase rates at 30, 60, and 90 days by first-observed month cohort. "
+            "Wilson 95% confidence intervals. First cohort is left-censored (first purchase = observation start)."
+        )
+
+        if not coverage:
+            st.warning("Coverage unconfirmed: future outcome validation unavailable. "
+                       "Enable coverage confirmation in sidebar.")
+        else:
+            try:
+                horizons = [30, 60, 90]
+                min_cohort = st.number_input("Minimum cohort size", 5, 1000, 20)
+
+                baskets_paths = list((root / "events" / chosen).glob("*/baskets.parquet"))
+                if not baskets_paths:
+                    st.info("No basket data available for this cutoff.")
+                else:
+                    baskets = pl.scan_parquet(baskets_paths)
+                    cutoff_date = date.fromisoformat(chosen)
+                    cohort_data = multi_horizon_cohort_repeat(baskets, rows, cutoff_date, coverage, horizons, min_cohort)
+
+                    if cohort_data.is_empty():
+                        st.info("No eligible cohorts.")
+                    else:
+                        fig = go.Figure()
+                        colors = {30: "#0072B2", 60: "#009E73", 90: "#E69F00"}
+
+                        for horizon in horizons:
+                            h_data = cohort_data.filter(pl.col("horizon") == horizon).sort("cohort")
+                            if h_data.is_empty():
+                                continue
+
+                            eligible = h_data.filter(pl.col("status") == "eligible")
+                            if not eligible.is_empty():
+                                fig.add_trace(go.Scatter(
+                                    x=safe_list(eligible["cohort"].dt.strftime("%Y-%m")),
+                                    y=safe_list(eligible["rate"]),
+                                    mode="lines+markers",
+                                    name=f"{horizon}d (eligible)",
+                                    line=dict(color=colors[horizon], width=2),
+                                    marker=dict(size=8),
+                                    error_y=dict(
+                                        type="data", symmetric=False,
+                                        array=safe_list(eligible["upper_ci"] - eligible["rate"]),
+                                        arrayminus=safe_list(eligible["rate"] - eligible["lower_ci"]),
+                                        visible=True,
+                                    ),
+                                    customdata=list(zip(
+                                        safe_list(eligible["eligible_n"]),
+                                        safe_list(eligible["repeat_n"]),
+                                    )),
+                                    hovertemplate="Cohort: %{x}<br>Rate: %{y:.1%}<br>Eligible: %{customdata[0]:,}<br>Repeats: %{customdata[1]:,}<extra></extra>",
+                                ))
+
+                            ineligible = h_data.filter(pl.col("status") != "eligible")
+                            if not ineligible.is_empty():
+                                fig.add_trace(go.Scatter(
+                                    x=safe_list(ineligible["cohort"].dt.strftime("%Y-%m")),
+                                    y=[None] * ineligible.height,
+                                    mode="markers",
+                                    name=f"{horizon}d (insufficient)",
+                                    marker=dict(color=colors[horizon], size=8, symbol="x"),
+                                    showlegend=True,
+                                ))
+
+                        first_cohort = cohort_data["cohort"].min()
+                        if first_cohort is not None:
+                            fig.add_vline(
+                                x=first_cohort.strftime("%Y-%m"),
+                                line_dash="dash", line_color="red",
+                                annotation_text="First cohort (left-censored)", annotation_position="top left",
+                            )
+
+                        fig.update_xaxes(tickformat="%Y-%m")
+                        fig.update_yaxes(range=[0, 1], tickformat=".0%")
+                        chart(fig, "Age-aligned repeat purchase rates by cohort (30/60/90d)", "multi_horizon_cohorts",
+                              "Cohort month", "Repeat rate (Wilson 95% CI)")
+
+                        table(cohort_data.sort("cohort", "horizon"))
+                        st.caption(
+                            "Age-aligned: repeat within X days of first purchase. Wilson 95% CI for eligible cohorts. "
+                            "First cohort left-censored. Caveat: first observed ≠ true acquisition."
+                        )
+
+            except Exception as e:
+                st.error(f"Multi-horizon cohort analysis failed: {type(e).__name__}: {e}")
+
+    elif view == "Category Opportunity Map":
+        st.subheader("Category opportunity map: penetration × intensity")
+        st.caption(
+            "X: Penetration (% of customers buying category). Y: Purchase occasions per category buyer. "
+            "Bubble: Category spend share. Color: Repeat buyer share. "
+            "Research basis: Dirichlet model for repeat buying (Ehrenberg, 1988)."
+        )
+
+        try:
+            validated_path = root / "validated.parquet"
+            if not validated_path.exists():
+                st.info("No validated data available.")
+            else:
+                validated = pl.scan_parquet(validated_path)
+                cutoff_date = date.fromisoformat(chosen)
+                opp_map = category_opportunity_map(validated, rows, cutoff_date, top_categories=30)
+
+                if opp_map.is_empty():
+                    st.info("No category data for this population.")
+                else:
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=opp_map["penetration"].to_list(),
+                        y=opp_map["occasions_per_buyer"].to_list(),
+                        mode="markers+text",
+                        text=opp_map["label"].to_list(),
+                        textposition="top center",
+                        marker=dict(
+                            size=[max(10, min(80, s * 200)) for s in opp_map["spend_share"].to_list()],
+                            color=opp_map["repeat_buyer_share"].to_list(),
+                            colorscale="Viridis",
+                            showscale=True,
+                            colorbar=dict(title="Repeat buyer share", thickness=15),
+                            opacity=0.7,
+                        ),
+                        customdata=list(zip(
+                            opp_map["buyers"].to_list(),
+                            opp_map["spend_share"].to_list(),
+                            opp_map["repeat_buyer_share"].to_list(),
+                            opp_map["total_spend"].to_list(),
+                        )),
+                        hovertemplate=(
+                            "%{text}<br>"
+                            "Penetration: %{x:.1%}<br>"
+                            "Occasions/buyer: %{y:.2f}<br>"
+                            "Buyers: %{customdata[0]:,}<br>"
+                            "Spend share: %{customdata[1]:.1%}<br>"
+                            "Repeat buyer share: %{customdata[2]:.1%}<br>"
+                            "Total spend: %{customdata[3]:,.2f}<extra></extra>"
+                        ),
+                    ))
+                    chart(fig, "Category opportunity map", "cat_opp_map",
+                          "Penetration (customer %)", "Purchase occasions per category buyer")
+
+                    table(opp_map.select("label", "buyers", "penetration", "occasions_per_buyer",
+                                          "spend_share", "repeat_buyer_share", "total_spend"))
+                    st.caption(
+                        "Penetration = category buyers / population. Occasions/buyer = mean shopping days per buyer. "
+                        "Bubble size ∝ spend share. Color = repeat buyer share. "
+                        "Research: Ehrenberg (1988), Repeat Buying; Dirichlet model benchmarks."
+                    )
+
+        except Exception as e:
+            st.error(f"Category opportunity map failed: {type(e).__name__}: {e}")
+
+    elif view == "RFM Response Surface":
+        st.subheader("RFM response surface: repeat probability heatmap")
+        st.caption(
+            "30-day repeat probability across recency × frequency quantile bins. "
+            "Wilson 95% CI per cell. Research: RFM/Pareto-NBD response surfaces (Fader, Hardie & Lee, 2005). "
+            "Descriptive heatmap — not a calibrated CLV forecast."
+        )
+
+        if not coverage:
+            st.warning("Coverage unconfirmed: future outcome validation unavailable. "
+                       "Enable coverage confirmation in sidebar.")
+        else:
+            try:
+                rec_bins = st.slider("Recency quantile bins", 3, 10, 5)
+                freq_bins = st.slider("Frequency quantile bins", 3, 10, 5)
+
+                surface = rfm_response_surface(rows, coverage, recency_bins=rec_bins, frequency_bins=freq_bins)
+
+                if "warning" in surface.columns:
+                    st.warning(surface["warning"][0])
+                elif "error" in surface.columns:
+                    st.error(surface["error"][0])
+                elif surface.is_empty():
+                    st.info("No eligible customers for response surface.")
+                else:
+                    z = []
+                    hover = []
+                    for r_bin in sorted(surface["recency_bin"].unique()):
+                        z_row = []
+                        hover_row = []
+                        for f_bin in sorted(surface["frequency_bin"].unique()):
+                            cell = surface.filter(
+                                (pl.col("recency_bin") == r_bin) & (pl.col("frequency_bin") == f_bin)
+                            )
+                            if cell.height > 0:
+                                z_row.append(cell["rate"][0] if cell["rate"][0] is not None else None)
+                                n = cell["eligible_n"][0]
+                                buyers = cell["buyers"][0]
+                                lo = cell["lower_ci"][0] if cell["lower_ci"][0] is not None else None
+                                hi = cell["upper_ci"][0] if cell["upper_ci"][0] is not None else None
+                                hover_row.append(f"Recency: {r_bin}<br>Freq: {f_bin}<br>Rate: {cell['rate'][0]:.1%}<br>N: {n}<br>Buyers: {buyers}<br>CI: [{lo:.1%}, {hi:.1%}]" if lo else f"Recency: {r_bin}<br>Freq: {f_bin}<br>N: {n}")
+                            else:
+                                z_row.append(None)
+                                hover_row.append(f"Recency: {r_bin}<br>Freq: {f_bin}<br>No data")
+                        z.append(z_row)
+                        hover.append(hover_row)
+
+                    fig = go.Figure(go.Heatmap(
+                        z=z,
+                        x=sorted(surface["frequency_bin"].unique()),
+                        y=sorted(surface["recency_bin"].unique()),
+                        colorscale="RdYlGn",
+                        zmin=0, zmax=1,
+                        colorbar=dict(tickformat=".0%", title="30d repeat rate"),
+                        hovertext=hover,
+                        hoverinfo="text",
+                    ))
+                    chart(fig, "RFM response surface: 30-day repeat probability", "rfm_surface",
+                          "Frequency bin (purchases_90d quantiles)", "Recency bin (recency quantiles)")
+
+                    table(surface.select("recency_bin", "frequency_bin", "eligible_n", "buyers", "rate", "lower_ci", "upper_ci"))
+                    st.caption(
+                        "Quantile bins on recency and frequency_90d. Wilson 95% CI for cells with ≥20 eligible. "
+                        "Descriptive association, not causal prediction or CLV forecast. "
+                        "Multiple comparisons not multiplicity-adjusted."
+                    )
+
+            except Exception as e:
+                st.error(f"RFM response surface failed: {type(e).__name__}: {e}")
+
     else:
         visual_manifest = dict(
             manifest, result_cutoff=chosen, population_filters=filters, chart_sample_limit=PAGE_ROWS
