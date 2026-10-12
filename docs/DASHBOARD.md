@@ -21,7 +21,7 @@ customers at one cutoff; they do not correct exploratory multiple comparisons or
 establish causality. Rule labels are not calibrated confidence, permanent churn,
 profit CLV or elasticity. No automatic seasonal adjustment or attribute parsing.
 
-Limits: 100 MiB upload, 2 million rows, 12 cutoffs, 32 buckets, 10-minute workers.
+Limits: 100 MiB upload, 3 million rows, 12 cutoffs, 32 buckets, 10-minute workers.
 Disk estimates and streaming are not guarantees: compressed files expand and
 ordered/grouped calculations retain state. Use deployment-level memory/CPU limits,
 authentication and encrypted transport. Do not expose sensitive data in an open

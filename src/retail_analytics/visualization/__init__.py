@@ -1,0 +1,58 @@
+"""Visualization module exports."""
+
+from retail_analytics.visualization.visual_insights_core import (
+    METRICS,
+    segment_summary,
+    concentration,
+    monthly_summary,
+    category_summary,
+    cohort_summary,
+    transition_summary,
+    momentum_map,
+    cadence_map,
+    category_participation_comparison,
+    trial_to_repeat_map,
+    revenue_waterfall,
+    value_tier_transition_waterfall,
+    behavior_trajectory_matrix,
+    purchase_rhythm_panel,
+    basket_composition_slope,
+    category_sankey,
+    future_outcome_validation,
+    # Product affinity
+    ProductAffinityConfig,
+    product_affinity_analysis,
+    cross_sell_recommendations,
+    new_to_repeat_pathways,
+    basket_composition_by_segment,
+    run_product_affinity_dashboard,
+)
+
+from retail_analytics.visualization.product_affinity import collect as collect_product_affinity
+
+__all__ = [
+    "METRICS",
+    "segment_summary",
+    "concentration",
+    "monthly_summary",
+    "category_summary",
+    "cohort_summary",
+    "transition_summary",
+    "momentum_map",
+    "cadence_map",
+    "category_participation_comparison",
+    "trial_to_repeat_map",
+    "revenue_waterfall",
+    "value_tier_transition_waterfall",
+    "behavior_trajectory_matrix",
+    "purchase_rhythm_panel",
+    "basket_composition_slope",
+    "category_sankey",
+    "future_outcome_validation",
+    "ProductAffinityConfig",
+    "product_affinity_analysis",
+    "cross_sell_recommendations",
+    "new_to_repeat_pathways",
+    "basket_composition_by_segment",
+    "run_product_affinity_dashboard",
+]

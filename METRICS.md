@@ -635,4 +635,4 @@ Rejection reason codes:
 5. **No causal claims**: All associations descriptive. Segment differences ≠ intervention effects.
 6. **Future outcomes require coverage_confirmed**: Without explicit confirmation, future metrics are null.
 7. **Currency**: Amounts in input data's currency; no conversion or symbol assumed.
-8. **Timezone**: Datetimes converted to date; time component discarded. No timezone handling.
+8. **Timezone**: Datetimes converted to date; time component discarded. Timezone-aware Datetime input is supported when the `--timezone` parameter is provided; naive dates are used as-is.

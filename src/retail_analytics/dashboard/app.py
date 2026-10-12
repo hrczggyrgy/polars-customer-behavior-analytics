@@ -33,13 +33,18 @@ from retail_analytics.visualization.visual_insights_core import (
     cohort_summary,
     collect,
     concentration,
+    cross_sell_recommendations,
     future_outcome_validation,
     momentum_map,
+    new_to_repeat_pathways,
     purchase_rhythm_panel,
     revenue_waterfall,
     transition_summary,
     trial_to_repeat_map,
     value_tier_transition_waterfall,
+    ProductAffinityConfig,
+    product_affinity_analysis,
+    basket_composition_by_segment,
 )
 
 
@@ -366,6 +371,7 @@ def display_results(root, coverage):
             "Purchase Cadence",
             "Category Participation",
             "Trial to Repeat",
+            "Product Affinity",
             "Revenue Waterfall",
             "Value-Tier Transitions",
             "Behavior × Trajectory",
@@ -930,6 +936,195 @@ def display_results(root, coverage):
                     )
                     table(plot_data.select("product_id", "eligible_trials", "repeated_trials",
                                            "trialling_customers", "trial_conversion"))
+
+    elif view == "Product Affinity":
+        st.subheader("Product affinity & market-basket analysis")
+        st.caption(
+            "Lightweight association mining using sparse basket-level co-occurrence. "
+            "No dense customer×product matrices. "
+            "Support = fraction of baskets containing itemset. "
+            "Confidence = P(B|A). Lift = P(A∪B)/(P(A)P(B)). Conviction = (1-P(B))/(1-P(B|A)). "
+            "Minimum support and top-K limits keep computation tractable."
+        )
+
+        if not coverage:
+            st.warning("Coverage unconfirmed: segment-specific affinity requires confirmed follow-up. "
+                       "Enable coverage confirmation in sidebar to analyze by segment.")
+        else:
+            # Configuration
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                min_support = st.number_input("Minimum support", 0.0001, 0.1, 0.001, format="%.4f",
+                                              help="Fraction of baskets containing itemset. Lower = more pairs, more compute.")
+            with col2:
+                min_confidence = st.number_input("Minimum confidence", 0.01, 1.0, 0.10, format="%.2f",
+                                                  help="P(B|A) threshold for association rules.")
+            with col3:
+                min_lift = st.number_input("Minimum lift", 0.5, 5.0, 1.0, format="%.2f",
+                                           help="Lift = P(A∪B)/(P(A)P(B)). >1 means positive association.")
+
+            col4, col5, col6 = st.columns(3)
+            with col4:
+                top_k_items = st.number_input("Top-K items", 50, 2000, 500, step=50,
+                                              help="Max frequent items to consider.")
+            with col5:
+                top_k_pairs = st.number_input("Top-K pairs", 100, 10000, 2000, step=100,
+                                              help="Max pairs to emit by support.")
+            with col6:
+                max_items_per_basket = st.number_input("Max items/basket", 10, 100, 50,
+                                                        help="Cap basket size to limit pair explosion.")
+
+            category_level = st.checkbox("Include category-level analysis", value=True)
+
+            # Segment filter
+            segment_options = ["All customers"] + sorted(set(
+                str(v) for dim in ["behavior", "trajectory", "value_tier", "lifecycle", "evidence"]
+                for v in collect(rows.select(dim).unique().sort(dim))[dim].to_list()
+            ))
+            segment_filter = st.selectbox("Segment filter (optional)", segment_options)
+            segment = None if segment_filter == "All customers" else segment_filter
+
+            # Load validated data for basket-level analysis
+            validated_path = root / "validated.parquet"
+            if not validated_path.exists():
+                st.info("No validated data available for this analysis.")
+            else:
+                try:
+                    validated = pl.scan_parquet(validated_path)
+
+                    with st.spinner("Computing product affinities..."):
+                        config = ProductAffinityConfig(
+                            min_support=min_support,
+                            min_confidence=min_confidence,
+                            min_lift=min_lift,
+                            top_k_items=top_k_items,
+                            top_k_pairs=top_k_pairs,
+                            max_items_per_basket=max_items_per_basket,
+                            category_level=category_level,
+                        )
+                        result = product_affinity_analysis(
+                            validated, rows, chosen, config, segment
+                        )
+
+                    # Frequent products
+                    st.write("**Frequent products**")
+                    pf = result["product_frequent"]
+                    if pf.is_empty():
+                        st.info("No products meet the minimum support threshold.")
+                    else:
+                        display_pf = pf.head(50)
+                        bars(display_pf, "product_id", "basket_count", "Top 50 products by basket count",
+                             "freq_products", color_map)
+                        st.caption(f"Total frequent products: {pf.height:,} (min support = {min_support:.3%} of {pf['total_baskets'][0]:,} baskets)")
+                        table(display_pf.select("product_id", "basket_count", "support"))
+
+                    # Product association rules
+                    st.write("**Product association rules**")
+                    pp = result["product_pairs"]
+                    if pp.is_empty():
+                        st.info("No product pairs meet the minimum support/confidence/lift thresholds.")
+                    else:
+                        display_pp = pp.head(50)
+                        # Format for display
+                        bars(display_pp, "item_a", "support", "Top 50 product pairs by support",
+                             "prod_pairs_support", color_map)
+                        table(display_pp.select("item_a", "item_b", "cooccurrence_count", "support",
+                                                 "confidence_a_to_b", "confidence_b_to_a", "lift",
+                                                 "conviction_a_to_b", "conviction_b_to_a"))
+
+                    # Cross-sell recommendations
+                    st.write("**Cross-sell recommendations**")
+                    recs = cross_sell_recommendations(
+                        result["product_pairs"],
+                        result.get("category_pairs"),
+                        top_n=10,
+                        min_lift=min_lift,
+                        min_confidence=min_confidence,
+                    )
+                    prod_recs = recs["product_recommendations"]
+                    if prod_recs.is_empty():
+                        st.info("No recommendations meet the quality thresholds.")
+                    else:
+                        table(prod_recs.head(100).select("source_item", "target_item", "support",
+                                                          "confidence", "lift", "conviction", "direction"))
+
+                    # Category-level analysis
+                    if category_level:
+                        st.write("**Frequent categories**")
+                        cf = result.get("category_frequent", pl.DataFrame())
+                        if cf.is_empty():
+                            st.info("No categories meet the minimum support threshold.")
+                        else:
+                            display_cf = cf.head(50)
+                            bars(display_cf, "category_key", "basket_count", "Top 50 categories by basket count",
+                                 "freq_categories", color_map)
+                            st.caption(f"Total frequent categories: {cf.height:,}")
+                            table(display_cf.select("category_key", "basket_count", "support"))
+
+                        st.write("**Category association rules**")
+                        cp = result.get("category_pairs", pl.DataFrame())
+                        if cp.is_empty():
+                            st.info("No category pairs meet the minimum support/confidence/lift thresholds.")
+                        else:
+                            display_cp = cp.head(50)
+                            bars(display_cp, "item_a", "support", "Top 50 category pairs by support",
+                                 "cat_pairs_support", color_map)
+                            table(display_cp.select("item_a", "item_b", "cooccurrence_count", "support",
+                                                     "confidence_a_to_b", "confidence_b_to_a", "lift",
+                                                     "conviction_a_to_b", "conviction_b_to_a"))
+
+                        cat_recs = recs["category_recommendations"]
+                        if not cat_recs.is_empty():
+                            st.write("**Category cross-sell recommendations**")
+                            table(cat_recs.head(100).select("source_item", "target_item", "support",
+                                                              "confidence", "lift", "conviction", "direction"))
+
+                    # New-to-repeat pathways
+                    st.write("**New-to-repeat pathways**")
+                    st.caption(
+                        "Products/categories customers tend to buy AFTER their first purchase "
+                        "of a given product/category. Shows sequential purchase patterns."
+                    )
+                    pathways = new_to_repeat_pathways(validated, rows, chosen, min_trials=5)
+                    prod_paths = pathways["product_transitions"]
+                    cat_paths = pathways["category_transitions"]
+
+                    if not prod_paths.is_empty():
+                        st.write("Product → next product transitions")
+                        table(prod_paths.head(50).select("prev_product", "product_id", "transition_count"))
+                    else:
+                        st.info("No product transitions meet minimum threshold.")
+
+                    if not cat_paths.is_empty():
+                        st.write("Category → next category transitions")
+                        table(cat_paths.head(50).select("prev_category", "category_key", "transition_count"))
+                    else:
+                        st.info("No category transitions meet minimum threshold.")
+
+                    # Basket composition by segment
+                    if segment_filter == "All customers":
+                        st.write("**Basket composition by segment**")
+                        st.caption(
+                            "Spend share of products/categories within each segment. "
+                            "Shows what different customer segments actually buy."
+                        )
+                        comp = basket_composition_by_segment(
+                            rows, validated, chosen,
+                            dimensions=["behavior", "value_tier", "lifecycle"]
+                        )
+                        for dim, data in comp.items():
+                            st.write(f"By {dim}")
+                            col_a, col_b = st.columns(2)
+                            with col_a:
+                                st.write("Product composition (top 20)")
+                                table(data["product_composition"].head(20).select(dim, "product_id", "spend_share", "buyers"))
+                            with col_b:
+                                st.write("Category composition (top 20)")
+                                table(data["category_composition"].head(20).select(dim, "category_key", "spend_share", "buyers"))
+
+                except Exception as e:
+                    st.error(f"Product affinity analysis failed: {type(e).__name__}: {e}")
+                    st.caption("Check that validated.parquet exists and has required columns. Large datasets may need adjusted thresholds.")
 
     elif view == "Revenue Waterfall":
         st.subheader("Revenue driver waterfall: recent 90d vs previous 90d")

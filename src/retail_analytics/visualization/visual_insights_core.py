@@ -1,9 +1,17 @@
-"""Transaction-only aggregate views. No product-pair matrix or association mining."""
+"""Transaction-only aggregate views. Includes lightweight product affinity analysis."""
 
 import math
 from datetime import timedelta
 
 from retail_analytics.core.stats import wilson
+from retail_analytics.visualization.product_affinity import (
+    ProductAffinityConfig,
+    product_affinity_analysis,
+    cross_sell_recommendations,
+    new_to_repeat_pathways,
+    basket_composition_by_segment,
+    run_product_affinity_dashboard,
+)
 
 METRICS = {
     "spend_90d": ("Recorded spend, last 90 days", "currency units"),

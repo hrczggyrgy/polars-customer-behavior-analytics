@@ -22,10 +22,10 @@ This document specifies the input requirements, output schemas, and validation r
 
 ### Date Handling
 
-- **Accepted formats**: `Date`, `Datetime` (any time unit, timezone-naive), or `String`
+- **Accepted formats**: `Date`, `Datetime` (any time unit, timezone-naive or timezone-aware), or `String`
 - **String parsing**: If `String`, uses `--date-format` if provided; otherwise tries ISO `YYYY-MM-DD` (first 10 chars)
 - **Epoch timestamps**: NOT accepted (no automatic unit detection)
-- **Timezone**: Discarded; only date component used
+- **Timezone**: Timezone-aware Datetime input is supported when `--timezone` parameter is provided (e.g., `UTC`, `US/Eastern`); the datetime is converted to the specified timezone before extracting the date component. Naive dates are used as-is.
 - **Output date column**: `date` (Date type, derived from `transaction_date`)
 
 ### Price Mode Semantics
