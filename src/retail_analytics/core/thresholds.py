@@ -63,7 +63,15 @@ class ThresholdPolicy:
 
     # Backward compatibility: support old constructor pattern
     @classmethod
-    def from_legacy(cls, low_p: float = None, high_p: float = None, min_n: int = None, z: float = None, max_rel_ci: float = None, **kwargs):
+    def from_legacy(
+        cls,
+        low_p: float | None = None,
+        high_p: float | None = None,
+        min_n: int | None = None,
+        z: float | None = None,
+        max_rel_ci: float | None = None,
+        **kwargs,
+    ):
         """Create policy from legacy low_p/high_p parameters.
         
         Legacy low_p maps to both value_quantile_low and style_quantile_low.
@@ -150,15 +158,18 @@ def _quantile_with_ci(
         )
 
     # Point estimate (linear interpolation)
-    raw_value = float(x.quantile(p, interpolation="linear"))
+    quantile_result = x.quantile(p, interpolation="linear")
+    raw_value = float(quantile_result) if quantile_result is not None else 0.0
 
     # Order-statistic CI bounds (rank-based, no bootstrap)
     half = policy.z * math.sqrt(n * p * (1 - p))
     lo_idx = max(0, math.floor(n * p - half))
     hi_idx = min(n - 1, math.ceil(n * p + half))
 
-    lo = float(x[lo_idx]) if lo_idx < n else None
-    hi = float(x[hi_idx]) if hi_idx < n else None
+    lo_val = x[lo_idx] if lo_idx < n else None
+    hi_val = x[hi_idx] if hi_idx < n else None
+    lo = float(lo_val) if lo_val is not None else None
+    hi = float(hi_val) if hi_val is not None else None
 
     # Stability gate: reject if CI is too wide relative to estimate
     unstable = False
@@ -596,7 +607,7 @@ def compute_label_shares(
     if n == 0:
         return {}
 
-    out = {}
+    out: dict[str, Any] = {}
     for col in ["behavior", "value_tier", "lifecycle", "evidence"]:
         vc = labels[col].value_counts().sort("count", descending=True)
         out[col] = [
@@ -604,16 +615,19 @@ def compute_label_shares(
             for row in vc.to_dicts()
         ]
         # Flag sparse or dominant labels
+        warnings_list: list[str] = []
         for row in vc.to_dicts():
             share = row["count"] / n
             if share < 0.01:
-                out.setdefault("warnings", []).append(
+                warnings_list.append(
                     f"Label '{col}={row[col]}' covers only {share:.1%} of customers"
                 )
             elif share > 0.60:
-                out.setdefault("warnings", []).append(
+                warnings_list.append(
                     f"Label '{col}={row[col]}' covers {share:.1%} of customers (dominant)"
                 )
+        if warnings_list:
+            out["warnings"] = warnings_list
     return out
 
 
@@ -655,7 +669,7 @@ def select_reference_cutoff(
         except ValueError:
             continue
 
-    checked = []
+    checked: list[dict[str, Any]] = []
     for d in sorted(snapshots):
         if d not in numeric_by_date:
             checked.append({"date": str(d), "status": "no_numeric_data"})
@@ -736,7 +750,8 @@ def write_thresholds(root: Path, thresholds: dict[str, Any]) -> None:
 
 def read_thresholds(root: Path) -> dict[str, Any]:
     """Read thresholds.json."""
-    return json.loads((root / "thresholds.json").read_text())
+    import json as _json
+    return _json.loads((root / "thresholds.json").read_text())  # type: ignore[no-any-return]
 
 
 # ──────────────────────────────────────────────────────────────────────

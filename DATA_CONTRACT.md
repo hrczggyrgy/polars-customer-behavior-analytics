@@ -189,7 +189,7 @@ Used for `relative_paid_price` feature (requires `reference_count ≥ 5`).
 
 ### 5. snapshots/{snapshot_date}/b{N}.parquet
 
-Customer feature snapshots (79 columns). One file per bucket per snapshot.
+Customer feature snapshots (**79 columns**). One file per bucket per snapshot.
 
 #### Identity & Temporal
 | Column | Type | Description |
@@ -386,17 +386,126 @@ Transition counts and rates between snapshots.
 
 ### 9. thresholds.json
 
-Quantile thresholds computed at first snapshot.
+Quantile thresholds computed at first snapshot, with full calibration metadata.
 
 ```json
 {
   "value_low": 149.33,
-  "value_high": 701.44,
-  "basket_low": 12.65,
+  "value_high": 702.12,
+  "basket_low": 12.66,
   "basket_high": 32.05,
   "gap_low": 4.0,
   "gap_high": 9.0,
-  "reference_date": "2000-06-30"
+  "lateness_overdue_min": 4.0,
+  "frequency_change_threshold": null,
+  "basket_change_threshold": null,
+  "reference_date": "2000-06-30",
+  "reference_population": 1414,
+  "value_population": 1704,
+  "style_population": 1414,
+  "calibration_policy": {
+    "value_quantile_low": 0.33,
+    "value_quantile_high": 0.80,
+    "style_quantile_low": 0.33,
+    "style_quantile_high": 0.80,
+    "min_n": 100,
+    "z": 1.959963984540054,
+    "max_rel_ci": 0.5
+  },
+  "threshold_details": {
+    "value_low": {
+      "value": 149.33,
+      "raw": 149.33,
+      "ci": [132.98, 164.04],
+      "n": 1704,
+      "status": "ok",
+      "method": "linear"
+    },
+    "value_high": {
+      "value": 702.12,
+      "raw": 702.12,
+      "ci": [659.58, 745.84],
+      "n": 1704,
+      "status": "ok",
+      "method": "linear"
+    },
+    "basket_low": {
+      "value": 12.66,
+      "raw": 12.66,
+      "ci": [11.80, 13.21],
+      "n": 1414,
+      "status": "ok",
+      "method": "linear"
+    },
+    "basket_high": {
+      "value": 32.05,
+      "raw": 32.05,
+      "ci": [30.25, 33.50],
+      "n": 1414,
+      "status": "ok",
+      "method": "linear"
+    },
+    "gap_low": {
+      "value": 4.0,
+      "raw": 4.0,
+      "ci": [3.5, 4.0],
+      "n": 1414,
+      "status": "ok",
+      "method": "linear"
+    },
+    "gap_high": {
+      "value": 9.0,
+      "raw": 9.0,
+      "ci": [9.0, 10.0],
+      "n": 1414,
+      "status": "ok",
+      "method": "linear"
+    },
+    "lateness_overdue_min": {
+      "value": 4.0,
+      "raw": 6.80,
+      "ci": [6.0, 9.0],
+      "clamp_bounds": [1.5, 4.0],
+      "clamped_value": 4.0,
+      "n": 1504,
+      "status": "ok",
+      "method": "linear"
+    },
+    "frequency_change_threshold": {
+      "value": null,
+      "raw": null,
+      "ci": [null, null],
+      "n": 0,
+      "status": "insufficient_n",
+      "method": "linear"
+    },
+    "basket_change_threshold": {
+      "value": null,
+      "raw": null,
+      "ci": [null, null],
+      "n": 0,
+      "status": "insufficient_n",
+      "method": "linear"
+    }
+  },
+  "data_profile": {
+    "n_customers": 2493,
+    "observation_span_days": 710,
+    "style_eligible_n": 1414,
+    "style_eligible_rate": 0.567,
+    "value_eligible_n": 1704,
+    "value_eligible_rate": 0.684,
+    "zero_spend_n": 125,
+    "zero_spend_rate": 0.050,
+    "warnings": []
+  },
+  "reference_selection": {
+    "selected": true,
+    "reference_date": "2000-06-30",
+    "style_population": 1414,
+    "value_population": 1704,
+    "checked_snapshots": [...]
+  }
 }
 ```
 
@@ -408,7 +517,23 @@ Quantile thresholds computed at first snapshot.
 | `basket_high` | Float64 | 80th percentile of `median_basket` (style-eligible) |
 | `gap_low` | Float64 | 33rd percentile of `median_gap` (style-eligible) |
 | `gap_high` | Float64 | 80th percentile of `median_gap` (style-eligible) |
+| `lateness_overdue_min` | Float64 | Calibrated P95 of lateness, clamped to [1.5, 4.0] |
+| `frequency_change_threshold` | Float64 \| null | Calibrated P90 of |frequency_change|, clamped to [0.10, 0.50] |
+| `basket_change_threshold` | Float64 \| null | Calibrated P90 of |basket_change|, clamped to [0.10, 0.50] |
 | `reference_date` | Date (string) | Snapshot where thresholds computed |
+| `reference_population` | Int64 | Style-eligible customers at reference snapshot |
+| `value_population` | Int64 | Value-eligible customers at reference snapshot |
+| `style_population` | Int64 | Style-eligible customers at reference snapshot |
+| `calibration_policy` | Object | Policy used for calibration |
+| `threshold_details` | Object | Per-threshold metadata (value, raw, CI, n, status, clamp_bounds, clamped_value) |
+| `data_profile` | Object | Data quality diagnostics for the reference snapshot |
+| `reference_selection` | Object | Which snapshot was selected and why |
+
+**Key behaviors:**
+- If no snapshot meets minimum population, all quantile thresholds are `null` and `reference_date` is `null`
+- Calibrated thresholds (`lateness_overdue_min`, change thresholds) include `clamp_bounds` and `clamped_value`
+- Fixed thresholds (e.g., `gap_cv_routine_max=0.75`) have `status: "fixed"` and `ci: [null, null]`
+- Unstable thresholds (CI too wide) have `status: "unstable"` and `value: null`
 
 ---
 

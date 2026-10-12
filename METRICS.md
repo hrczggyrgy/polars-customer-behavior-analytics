@@ -12,6 +12,28 @@ This document defines every user-visible metric produced by the pipeline. Each m
   - `line_total`: `price` (interpreted as line total)
 - **Null semantics**: A metric is `null` (not zero) when its denominator is zero, required inputs are absent, or sample size is below the documented threshold.
 
+## Time Window Definitions
+
+```mermaid
+timeline
+    title Time Window Definitions (Relative to Cutoff Date C)
+    section Historical Windows (inclusive of C)
+        C-364 to C    : 365-day window
+        C-89 to C     : 90-day window  
+        C-29 to C     : 30-day window
+        C-179 to C-90 : Previous 90-day window (for change metrics)
+    section Future Windows (exclusive of C)
+        C+1 to C+30   : 30-day follow-up
+        C+1 to C+90   : 90-day follow-up
+    section Key Boundaries
+        C             : Cutoff date (included in historical)
+        C+1           : First future day
+        tenure        : C - first_purchase_date
+        recency       : C - last_purchase_date
+```
+
+All historical windows are **inclusive of C**. Future windows start at **C+1**. Change metrics (frequency_change, basket_change, spend_change) compare [C-89, C] vs [C-179, C-90] and require `tenure ≥ 179` (`comparable_windows = true`).
+
 ---
 
 ## Core Transaction Metrics

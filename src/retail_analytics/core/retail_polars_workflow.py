@@ -1,10 +1,20 @@
-"""Purchase-only customer analytics from a nine-column Parquet source."""
+"""Purchase-only customer analytics from a nine-column Parquet source.
+
+This module implements a complete customer behavior analytics pipeline:
+- Data preparation and validation from 9-column transaction data
+- Point-in-time snapshot generation with rich behavioral features
+- Data-driven threshold calibration with uncertainty quantification
+- Multi-label behavioral and trajectory classification
+- Segment profiling and transition analysis
+"""
 
 import argparse
 import json
+import shutil
 from dataclasses import asdict
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any, Literal
 
 import polars as pl
 
@@ -47,8 +57,10 @@ from retail_analytics.core.thresholds import (
     select_reference_cutoff,
     write_thresholds,
 )
+from retail_analytics.core.stats import ratio as safe_ratio
 
-COLS = [
+# Column definitions
+REQUIRED_COLS = COLS = [
     "customer_id",
     "transaction_date",
     "transaction_id",
@@ -59,28 +71,50 @@ COLS = [
     "price",
     "quantity",
 ]
+
+# Key aliases for readability
 C = "customer_id"
 K = [C, "transaction_id", "date"]
 P = [C, "product_id"]
 G = [C, "department", "category"]
+
 VERSION = "reconstructed-1.3"
 
+# Type aliases
+PriceMode = Literal["unit", "line_total"]
 
-def ratio(a, b):
+
+def _safe_ratio(a: pl.Expr, b: pl.Expr) -> pl.Expr:
     """Safe division: returns null when denominator is null or <= 0."""
     return pl.when(b.is_not_null() & (b > 0)).then(a / b).otherwise(None)
 
 
-def sink(frame, path, sort_by=None):
+# Backward compatibility alias
+ratio = _safe_ratio
+
+
+def _sink(
+    frame: pl.LazyFrame, path: Path, sort_by: list[str] | str | None = None
+) -> None:
+    """Write a LazyFrame to Parquet with ZSTD compression (internal)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if sort_by is not None:
+        if isinstance(sort_by, str):
+            sort_by = [sort_by]
         frame = frame.sort(sort_by)
-    frame.sink_parquet(path, compression="zstd", engine="streaming")
+    # Use non-streaming engine for reliability; streaming can skip empty frames
+    frame.collect(engine="streaming").write_parquet(path, compression="zstd")
 
 
-def taglist(pairs):
+def sink(frame: pl.LazyFrame, path: Path, sort_by: list[str] | str | None = None) -> None:
+    """Write a LazyFrame to Parquet with ZSTD compression (public API)."""
+    _sink(frame, path, sort_by)
+
+
+def _taglist(pairs: list[tuple[str, pl.Expr]]) -> pl.Expr:
     """Create a list of tags from (name, boolean_expression) pairs.
+
     ALL matching tags are collected in order (not first-match exclusive).
     The resulting list preserves the order of the input pairs.
     """
@@ -94,9 +128,13 @@ def taglist(pairs):
     ).list.drop_nulls()
 
 
-def _rejection_reasons(raw):
-    """Compute per-row rejection reason codes."""
+def _rejection_reasons(raw: pl.LazyFrame) -> pl.Expr:
+    """Compute per-row rejection reason codes.
+
+    Returns the first matching reason in priority order.
+    """
     reasons = []
+
     # Required string fields non-null and non-empty after trim
     for col in [C, "transaction_id", "product_id"]:
         reasons.append(
@@ -104,10 +142,12 @@ def _rejection_reasons(raw):
             .then(pl.lit(f"missing_{col}"))
             .otherwise(pl.lit(None))
         )
+
     # Date parse failure (date becomes null)
     reasons.append(
         pl.when(pl.col("date").is_null()).then(pl.lit("invalid_date")).otherwise(pl.lit(None))
     )
+
     # Price checks - distinguish missing source (null after strip) from malformed token (null after cast)
     reasons.append(
         pl.when(pl.col("price").is_null() & pl.col("price_raw").is_not_null())
@@ -127,6 +167,7 @@ def _rejection_reasons(raw):
     reasons.append(
         pl.when(pl.col("price") < 0).then(pl.lit("negative_price")).otherwise(pl.lit(None))
     )
+
     # Quantity checks - distinguish missing source from malformed token
     reasons.append(
         pl.when(pl.col("quantity").is_null() & pl.col("quantity_raw").is_not_null())
@@ -148,41 +189,33 @@ def _rejection_reasons(raw):
         .then(pl.lit("nonpositive_quantity"))
         .otherwise(pl.lit(None))
     )
+
     # Value computation
     reasons.append(
         pl.when(~pl.col("value").is_finite())
         .then(pl.lit("nonfinite_value"))
         .otherwise(pl.lit(None))
     )
+
     # Combine: first non-null reason wins (priority order above)
     combined = pl.coalesce(*reasons)
     return combined.alias("rejection_reason")
 
 
-def prepare(
-    source,
-    root,
-    mode,
-    buckets,
-    exclude,
-    fmt,
-    through,
-    coverage_confirmed=False,
-    drop_exact_duplicates=False,
-    timezone=None,
-):
-    src = pl.scan_parquet(source)
-    schema = src.collect_schema()
-    if set(COLS) - set(schema.names()):
-        raise ValueError(f"Missing columns: {set(COLS) - set(schema.names())}")
-    dtype = schema["transaction_date"]
+def _parse_dates(
+    src: pl.LazyFrame,
+    fmt: str | None,
+    timezone: str | None,
+) -> pl.Expr:
+    """Parse transaction_date column to Date based on its dtype."""
+    dtype = src.collect_schema()["transaction_date"]
+
     if dtype == pl.String:
         text = pl.col("transaction_date") if fmt else pl.col("transaction_date").str.slice(0, 10)
-        dates = text.str.to_date(fmt or "%Y-%m-%d", strict=False)
+        return text.str.to_date(fmt or "%Y-%m-%d", strict=False)
     elif dtype == pl.Date:
-        dates = pl.col("transaction_date").cast(pl.Date)
+        return pl.col("transaction_date").cast(pl.Date)
     elif isinstance(dtype, pl.Datetime):
-        # Preserve timezone through precision conversion
         dt_col = pl.col("transaction_date")
         if dtype.time_unit != "us":
             dt_col = dt_col.cast(pl.Datetime("us", time_zone=dtype.time_zone))
@@ -190,26 +223,14 @@ def prepare(
             if timezone is None:
                 raise ValueError("Timezone-aware Datetime input requires --timezone parameter")
             dt_col = dt_col.dt.convert_time_zone(timezone)
-        dates = dt_col.cast(pl.Date)
+        return dt_col.cast(pl.Date)
     else:
         raise ValueError("Dates must be Date, Datetime, or strings; epoch units are not guessed")
-    # Include price_raw/quantity_raw in select if they exist (from dashboard canonical)
-    select_cols = COLS + [c for c in ["price_raw", "quantity_raw"] if c in schema.names()]
-    
-    # Preserve original source columns for exact deduplication (before normalization)
-    # These are the literal 9 input columns as they appear in the source
-    raw = src.select(select_cols).with_columns(
-        dates.alias("date"),
-        # Keep original source columns for exact deduplication
-        pl.col(C).alias("customer_id_source"),
-        pl.col("transaction_date").alias("transaction_date_source"),
-        pl.col("transaction_id").alias("transaction_id_source"),
-        pl.col("product_id").alias("product_id_source"),
-        pl.col("product_description").alias("product_description_source"),
-        pl.col("department").alias("department_source"),
-        pl.col("category").alias("category_source"),
-        pl.col("price").alias("price_source"),
-        pl.col("quantity").alias("quantity_source"),
+
+
+def _normalize_strings(raw: pl.LazyFrame) -> pl.LazyFrame:
+    """Normalize string columns: trim, replace empty with null/unknown."""
+    return raw.with_columns(
         *[
             pl.col(x).cast(pl.String).str.strip_chars().replace("", None)
             for x in [C, "transaction_id", "product_id"]
@@ -220,8 +241,16 @@ def prepare(
         ],
         pl.col("product_description").cast(pl.String).fill_null(""),
     )
+
+
+def _handle_price_quantity(
+    raw: pl.LazyFrame,
+    mode: PriceMode,
+    schema: dict[str, pl.DataType],
+) -> pl.LazyFrame:
+    """Handle price/quantity parsing and value computation."""
     # Handle price/quantity: if raw columns already exist (from dashboard canonical), use them
-    if "price_raw" in schema.names() and "quantity_raw" in schema.names():
+    if "price_raw" in schema and "quantity_raw" in schema:
         raw = raw.with_columns(
             pl.col("price").cast(pl.Float64, strict=False),
             pl.col("quantity").cast(pl.Float64, strict=False),
@@ -229,7 +258,11 @@ def prepare(
     else:
         raw = raw.with_columns(
             # Preserve raw string values before casting to distinguish missing vs malformed
-            pl.col("price").cast(pl.String).str.strip_chars().replace("", None).alias("price_raw"),
+            pl.col("price")
+            .cast(pl.String)
+            .str.strip_chars()
+            .replace("", None)
+            .alias("price_raw"),
             pl.col("quantity")
             .cast(pl.String)
             .str.strip_chars()
@@ -237,14 +270,16 @@ def prepare(
             .alias("quantity_raw"),
             *[pl.col(x).cast(pl.Float64, strict=False) for x in ["price", "quantity"]],
         )
+
     raw = raw.with_columns(
         (pl.col("price") * pl.col("quantity") if mode == "unit" else pl.col("price")).alias("value")
     )
+    return raw
 
-    # Compute rejection reasons before filtering
-    raw = raw.with_columns(_rejection_reasons(raw))
 
-    good = (
+def _compute_validity_mask(raw: pl.LazyFrame) -> pl.Expr:
+    """Compute validity mask for rows."""
+    return (
         pl.all_horizontal(
             [pl.col(x).is_not_null() for x in [C, "transaction_id", "product_id", "date"]]
         )
@@ -254,28 +289,28 @@ def prepare(
         & (pl.col("quantity") > 0)
         & pl.col("value").is_finite()
     ).fill_null(False)
-    raw = raw.with_columns(good.alias("valid"))
 
-    # Enhanced quality audit - compute ALL counts from raw frame (before filtering)
-    # This ensures null/invalid counts are non-zero when problems exist
+
+def _compute_quality_audit(
+    raw: pl.LazyFrame,
+    valid: pl.LazyFrame,
+    rejected: pl.LazyFrame,
+    observation_start: date | None,
+    censor_days: int,
+) -> dict[str, Any]:
+    """Compute comprehensive quality audit metrics."""
     total_rows = raw.select(pl.len()).collect().item()
-    rejected = raw.filter(~pl.col("valid"))
     rejected_count = rejected.select(pl.len()).collect().item()
-    valid = raw.filter(pl.col("valid"))
     valid_count = total_rows - rejected_count
 
-    # Observation start (min valid date)
-    observation_start = valid.select(pl.col("date").min()).collect().item()
-
     # Left-censoring: customers whose first purchase is within CENSOR_DAYS of observation_start
-    # We compute this per customer and add it to the quality audit
     if observation_start is not None and valid_count > 0:
         first_purchase_per_customer = valid.group_by(C).agg(
             pl.col("date").min().alias("first_purchase")
         )
         left_censored_count = (
             first_purchase_per_customer.filter(
-                (pl.col("first_purchase") - pl.lit(observation_start)).dt.total_days() < CENSOR_DAYS
+                (pl.col("first_purchase") - pl.lit(observation_start)).dt.total_days() < censor_days
             )
             .select(pl.len())
             .collect()
@@ -302,8 +337,6 @@ def prepare(
     )
 
     # Exact duplicate detection - track both source-exact and normalized same-day
-    # Source-exact: identical on all 9 original columns including transaction_date timestamp
-    # Normalized same-day: identical on 9 columns but using parsed business date
     exact_source_cols = [
         C,
         "transaction_date",
@@ -324,9 +357,6 @@ def prepare(
         .item()
         or 0
     )
-    # Excess value = value beyond one representative line per duplicate group
-    # For n identical lines worth v each: excess = (n-1) * v
-    # Only include valid finite values in monetary impact
     valid_raw = raw.filter(pl.col("valid"))
     exact_dup_value = (
         valid_raw.group_by(exact_source_cols)
@@ -338,8 +368,7 @@ def prepare(
         or 0.0
     )
 
-    # Normalized same-day duplicate detection (for audit only - not used for removal)
-    # Identical on parsed date and normalized fields
+    # Normalized same-day duplicate detection (for audit only)
     norm_source_cols = [
         C,
         "transaction_id",
@@ -360,7 +389,6 @@ def prepare(
         .item()
         or 0
     )
-    # Only include valid finite values in monetary impact
     norm_dup_value = (
         valid_raw.group_by(norm_source_cols)
         .agg(pl.col("value").first().alias("line_value"), pl.len().alias("dup_count"))
@@ -371,7 +399,7 @@ def prepare(
         or 0.0
     )
 
-    # Baskets with rejected lines (customer+transaction has >=1 rejected AND >=1 valid row)
+    # Baskets with rejected lines
     baskets_with_rejected = (
         raw.group_by([C, "transaction_id"])
         .agg(
@@ -384,7 +412,16 @@ def prepare(
         .item()
     )
 
-    # Base audit metrics - ALL counts from raw
+    # Rejection breakdown
+    if rejected_count > 0:
+        breakdown_df = rejected.select(pl.col("rejection_reason").value_counts()).collect()
+        breakdown = {}
+        for row in breakdown_df.to_dicts():
+            struct_val = row["rejection_reason"]
+            breakdown[struct_val["rejection_reason"]] = struct_val["count"]
+    else:
+        breakdown = {}
+
     audit_base = (
         raw.select(
             pl.lit(total_rows).alias("source_rows"),
@@ -397,7 +434,7 @@ def prepare(
             pl.col("transaction_id").is_null().sum().alias("null_transaction_id"),
             pl.col("product_id").is_null().sum().alias("null_product_id"),
             pl.col("date").is_null().sum().alias("null_date"),
-            # Invalid numerics - separate missing source from malformed and non-finite
+            # Invalid numerics
             pl.col("price").is_null().sum().alias("null_price"),
             (~pl.col("price").is_finite()).sum().alias("nonfinite_price"),
             (pl.col("price") < 0).sum().alias("negative_price"),
@@ -420,21 +457,11 @@ def prepare(
             # Left-censoring fields
             pl.lit(left_censored_count).alias("left_censored_customers"),
             pl.lit(total_customers).alias("total_customers_at_start"),
-            pl.lit(CENSOR_DAYS).alias("censor_threshold_days"),
+            pl.lit(censor_days).alias("censor_threshold_days"),
         )
         .collect(engine="streaming")
         .to_dicts()[0]
     )
-
-    # Rejection breakdown (only if there are rejected rows)
-    if rejected_count > 0:
-        breakdown_df = rejected.select(pl.col("rejection_reason").value_counts()).collect()
-        breakdown = {}
-        for row in breakdown_df.to_dicts():
-            struct_val = row["rejection_reason"]
-            breakdown[struct_val["rejection_reason"]] = struct_val["count"]
-    else:
-        breakdown = {}
 
     audit_base["rejection_breakdown"] = breakdown
     audit_base["rejection_rate"] = (
@@ -442,7 +469,120 @@ def prepare(
         if audit_base["source_rows"] > 0
         else 0.0
     )
-    audit = audit_base
+    return audit_base
+
+
+def _write_partitions(
+    clean: pl.LazyFrame,
+    root: Path,
+    buckets: int,
+    audit: dict[str, Any],
+    clean_schema: pl.Schema,
+) -> list[Path]:
+    """Write partitioned data and check for basket conflicts."""
+    paths = []
+    # Remove bucket column from schema for empty partition handling
+    partition_schema = pl.Schema({k: v for k, v in clean_schema.items() if k != "bucket"})
+    for b in range(buckets):
+        path = root / "partitions" / f"b{b}.parquet"
+        partition_frame = clean.filter(pl.col("bucket") == b).drop("bucket")
+        _sink(partition_frame, path, sort_by=C)
+        # Ensure file exists even for empty partitions (streaming sink may skip empty)
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            pl.DataFrame(schema=partition_schema).write_parquet(path)
+        part = pl.scan_parquet(path)
+        conflicts = (
+            part.group_by([C, "transaction_id"])
+            .agg(pl.col("date").n_unique().alias("dates"))
+            .filter(pl.col("dates") > 1)
+        )
+        if conflicts.select(pl.len()).collect().item():
+            _sink(conflicts, root / "basket_conflicts.parquet", sort_by=[C, "transaction_id"])
+            raise ValueError("Customer/transaction key spans dates; resolve its grain")
+        audit["preserved_duplicate_extras"] += (
+            part.group_by(part.collect_schema().names())
+            .len()
+            .select((pl.col("len") - 1).sum())
+            .collect()
+            .item()
+            or 0
+        )
+        paths.append(path)
+    return paths
+
+
+def prepare(
+    source: str,
+    root: Path,
+    mode: PriceMode,
+    buckets: int,
+    exclude: bool,
+    fmt: str | None,
+    through: str | None,
+    coverage_confirmed: bool = False,
+    drop_exact_duplicates: bool = False,
+    timezone: str | None = None,
+) -> tuple[list[Path], date, date | None]:
+    """Prepare validated data from source Parquet.
+
+    Args:
+        source: Path to source Parquet file.
+        root: Output root directory.
+        mode: Price mode ("unit" or "line_total").
+        buckets: Number of hash partitions.
+        exclude: Whether to exclude invalid rows instead of raising.
+        fmt: Date format string (e.g., "%Y-%m-%d").
+        through: Observed through date (ISO format).
+        coverage_confirmed: Whether future follow-up is available.
+        drop_exact_duplicates: Whether to drop exact duplicate rows.
+        timezone: Timezone for datetime conversion.
+
+    Returns:
+        Tuple of (partition paths, end date, observation start date).
+    """
+    src = pl.scan_parquet(source)
+    schema = src.collect_schema()
+
+    if set(REQUIRED_COLS) - set(schema.names()):
+        raise ValueError(f"Missing columns: {set(REQUIRED_COLS) - set(schema.names())}")
+
+    dates_expr = _parse_dates(src, fmt, timezone)
+
+    # Include price_raw/quantity_raw in select if they exist (from dashboard canonical)
+    select_cols = REQUIRED_COLS + [c for c in ["price_raw", "quantity_raw"] if c in schema.names()]
+
+    # Preserve original source columns for exact deduplication (before normalization)
+    raw = src.select(select_cols).with_columns(
+        dates_expr.alias("date"),
+        # Keep original source columns for exact deduplication
+        pl.col(C).alias("customer_id_source"),
+        pl.col("transaction_date").alias("transaction_date_source"),
+        pl.col("transaction_id").alias("transaction_id_source"),
+        pl.col("product_id").alias("product_id_source"),
+        pl.col("product_description").alias("product_description_source"),
+        pl.col("department").alias("department_source"),
+        pl.col("category").alias("category_source"),
+        pl.col("price").alias("price_source"),
+        pl.col("quantity").alias("quantity_source"),
+    )
+
+    raw = _normalize_strings(raw)
+    raw = _handle_price_quantity(raw, mode, schema)
+
+    # Compute rejection reasons before filtering
+    raw = raw.with_columns(_rejection_reasons(raw))
+
+    good = _compute_validity_mask(raw)
+    raw = raw.with_columns(good.alias("valid"))
+
+    rejected = raw.filter(~pl.col("valid"))
+    rejected_count = rejected.select(pl.len()).collect().item()
+    valid = raw.filter(pl.col("valid"))
+
+    # Enhanced quality audit
+    observation_start = valid.select(pl.col("date").min()).collect().item()
+    audit = _compute_quality_audit(raw, valid, rejected, observation_start, CENSOR_DAYS)
 
     (root / "quality.json").write_text(json.dumps(audit, default=str, indent=2))
 
@@ -450,22 +590,25 @@ def prepare(
         raise ValueError("Empty input")
     if audit["rejected_rows"]:
         # Write rejected rows with rejection_reason and raw values for diagnostics
-        sink(rejected.drop("valid"), root / "rejected.parquet")
+        _sink(rejected.drop("valid"), root / "rejected.parquet")
         if not exclude:
             raise ValueError("Invalid rows: inspect quality.json and rejected.parquet")
-    clean = raw.filter(pl.col("valid")).drop(
-        "valid", "rejection_reason", "price_raw", "quantity_raw"
-    )
+
+    clean = valid.drop("valid", "rejection_reason", "price_raw", "quantity_raw")
+
     maximum_date = clean.select(pl.col("date").max()).collect().item()
     if maximum_date is None:
         raise ValueError("No valid records")
+
     end = date.fromisoformat(through) if through else maximum_date
     if end < maximum_date:
         raise ValueError(
-            "observed_through precedes the latest valid transaction date; explicitly truncate the source before analysis"
+            "observed_through precedes the latest valid transaction date; "
+            "explicitly truncate the source before analysis"
         )
+
     clean = clean.filter(pl.col("date") <= end).with_columns(
-        ratio(pl.col("value"), pl.col("quantity")).alias("unit_price"),
+        _safe_ratio(pl.col("value"), pl.col("quantity")).alias("unit_price"),
         pl.concat_str(
             [
                 pl.col("department").str.len_bytes().cast(pl.String),
@@ -478,8 +621,8 @@ def prepare(
         ).alias("category_key"),
         (pl.col(C).hash(seed=HASH_SEED_BUCKETING) % buckets).alias("bucket"),
     )
+
     # Drop exact duplicates if requested
-    # Exact duplicates = identical on all original 9 source columns including transaction_date timestamp
     if drop_exact_duplicates:
         exact_source_cols = [
             "customer_id_source",
@@ -493,80 +636,55 @@ def prepare(
             "quantity_source",
         ]
         clean = clean.unique(subset=exact_source_cols, maintain_order=True)
-    # Drop source columns after exact duplicate detection (no longer needed downstream)
+
+    # Drop source columns after exact duplicate detection
     source_cols_to_drop = [
-        "customer_id_source", "transaction_date_source", "transaction_id_source",
-        "product_id_source", "product_description_source", "department_source",
-        "category_source", "price_source", "quantity_source", "transaction_date"
+        "customer_id_source",
+        "transaction_date_source",
+        "transaction_id_source",
+        "product_id_source",
+        "product_description_source",
+        "department_source",
+        "category_source",
+        "price_source",
+        "quantity_source",
+        "transaction_date",
     ]
     clean = clean.drop(source_cols_to_drop)
-    sink(clean, root / "validated.parquet")
+
+    # Get schema before writing to file (for empty partition handling)
+    clean_schema = clean.collect_schema()
+
+    _sink(clean, root / "validated.parquet")
     clean = pl.scan_parquet(root / "validated.parquet")
+
     audit["observed_through"] = str(end)
     audit["coverage_confirmed"] = bool(coverage_confirmed)
     audit["coverage_interpretation"] = (
-        "Future outcomes are unavailable unless coverage_confirmed is true; a maximum observed date alone does not establish complete capture."
+        "Future outcomes are unavailable unless coverage_confirmed is true; "
+        "a maximum observed date alone does not establish complete capture."
     )
     audit["preserved_duplicate_extras"] = 0
-    paths = []
-    for b in range(buckets):
-        path = root / "partitions" / f"b{b}.parquet"
-        sink(clean.filter(pl.col("bucket") == b).drop("bucket"), path, sort_by=C)
-        part = pl.scan_parquet(path)
-        conflicts = (
-            part.group_by([C, "transaction_id"])
-            .agg(pl.col("date").n_unique().alias("dates"))
-            .filter(pl.col("dates") > 1)
-        )
-        if conflicts.select(pl.len()).collect().item():
-            sink(conflicts, root / "basket_conflicts.parquet", sort_by=[C, "transaction_id"])
-            raise ValueError("Customer/transaction key spans dates; resolve its grain")
-        audit["preserved_duplicate_extras"] += (
-            part.group_by(part.collect_schema().names())
-            .len()
-            .select((pl.col("len") - 1).sum())
-            .collect()
-            .item()
-            or 0
-        )
-        paths.append(path)
+
+    paths = _write_partitions(clean, root, buckets, audit, clean_schema)
+
     (root / "quality.json").write_text(json.dumps(audit, default=str, indent=2))
-    sink(
-        clean.group_by("product_id")
-        .agg(
+
+    _sink(
+        clean.group_by("product_id").agg(
             pl.struct(["department", "category"]).n_unique().alias("classifications"),
             pl.col("product_description").n_unique().alias("descriptions"),
-        )
-        .filter((pl.col("classifications") > 1) | (pl.col("descriptions") > 1)),
+        ).filter((pl.col("classifications") > 1) | (pl.col("descriptions") > 1)),
         root / "product_variation.parquet",
         sort_by="product_id",
     )
+
     return paths, end, observation_start
 
 
-def snapshot(path, d, end, root, coverage_confirmed=False, observation_start=None):
-    out = root / "events" / str(d) / path.stem
-    target = root / "numeric" / str(d) / path.name
-    line = pl.scan_parquet(path).filter(pl.col("date") <= d)
-
-    # Temporal boundary assertion: verify no post-cutoff dates in descriptive data
-    max_date_check = line.select(pl.col("date").max()).collect().item()
-    if max_date_check is not None and max_date_check > d:
-        raise AssertionError(
-            f"Temporal leakage: descriptive data contains date {max_date_check} > cutoff {d}"
-        )
-
-    s30 = d - timedelta(days=WINDOW_RECENT_30 - 1)  # Recent 30 days: [C-29, C]
-    s90 = d - timedelta(days=WINDOW_RECENT - 1)  # Recent 90 days: [C-89, C]
-    s365 = d - timedelta(days=WINDOW_YEAR - 1)
-    old0 = d - timedelta(days=WINDOW_PREVIOUS_START_OFFSET)
-    old1 = d - timedelta(days=WINDOW_RECENT)
-    recent, old, year = (
-        pl.col("date") >= s90,
-        pl.col("date").is_between(old0, old1),
-        pl.col("date") >= s365,
-    )
-    sink(
+def _compute_baskets(line: pl.LazyFrame, out: Path) -> pl.LazyFrame:
+    """Compute basket-level aggregations."""
+    _sink(
         line.group_by(K).agg(
             pl.col("value").sum().alias("spend"),
             pl.col("product_id").n_unique().alias("products"),
@@ -575,12 +693,23 @@ def snapshot(path, d, end, root, coverage_confirmed=False, observation_start=Non
         out / "baskets.parquet",
         sort_by=[C, "date", "transaction_id"],
     )
-    basket = pl.scan_parquet(out / "baskets.parquet")
-    totals = line.select(pl.col("value").sum()).collect().item() or 0
-    if abs((basket.select(pl.col("spend").sum()).collect().item() or 0) - totals) > 1e-7 * max(
-        1, abs(totals)
-    ):
-        raise AssertionError("Revenue reconciliation failed")
+    return pl.scan_parquet(out / "baskets.parquet")
+
+
+def _compute_base_features(
+    basket: pl.LazyFrame, d: date, end: date, observation_start: date | None
+) -> tuple[pl.LazyFrame, pl.Expr, pl.Expr, pl.Expr, date, date, date]:
+    """Compute base customer-level features from baskets."""
+    s30 = d - timedelta(days=WINDOW_RECENT_30 - 1)
+    s90 = d - timedelta(days=WINDOW_RECENT - 1)
+    s365 = d - timedelta(days=WINDOW_YEAR - 1)
+    old0 = d - timedelta(days=WINDOW_PREVIOUS_START_OFFSET)
+    old1 = d - timedelta(days=WINDOW_RECENT)
+
+    recent: pl.Expr = pl.col("date") >= s90
+    old: pl.Expr = pl.col("date").is_between(old0, old1)
+    year: pl.Expr = pl.col("date") >= s365
+
     base = basket.group_by(C).agg(
         pl.col("date").min().alias("first_purchase"),
         pl.col("date").max().alias("last_purchase"),
@@ -604,14 +733,15 @@ def snapshot(path, d, end, root, coverage_confirmed=False, observation_start=Non
         pl.col("spend").filter(old).sum().alias("spend_previous90d"),
         pl.col("spend").filter(year).mean().alias("aov_365d"),
         pl.col("spend").filter(year).median().alias("median_basket"),
-        ratio(pl.col("spend").filter(year).std(), pl.col("spend").filter(year).mean()).alias(
+        _safe_ratio(pl.col("spend").filter(year).std(), pl.col("spend").filter(year).mean()).alias(
             "basket_cv"
         ),
         pl.col("breadth").filter(year).median().alias("median_breadth"),
         pl.col("breadth").filter(recent).mean().alias("breadth_recent"),
         pl.col("breadth").filter(old).mean().alias("breadth_previous"),
     )
-    # Left-censoring flag: customer's first purchase within CENSOR_DAYS of observation_start
+
+    # Left-censoring flag
     if observation_start is not None:
         base = base.with_columns(
             (
@@ -621,11 +751,11 @@ def snapshot(path, d, end, root, coverage_confirmed=False, observation_start=Non
     else:
         base = base.with_columns(pl.lit(None).alias("left_censored"))
 
-    # Check if base has any customers before proceeding
-    base_count = base.select(pl.len()).collect()
-    if base_count.height == 0 or base_count.item() == 0:
-        # No customers with transactions before cutoff, don't write numeric file
-        return None
+    return base, recent, old, year, s30, s90, s365
+
+
+def _compute_day_features(line: pl.LazyFrame, out: Path, C: str) -> pl.LazyFrame:
+    """Compute day-level features (gaps, overlaps, spend ratios)."""
     day = line.group_by([C, "date"]).agg(
         pl.col("value").sum().alias("day_spend"),
         pl.col("product_id").unique().alias("products"),
@@ -644,9 +774,9 @@ def snapshot(path, d, end, root, coverage_confirmed=False, observation_start=Non
     )
     day = day.with_columns(
         (pl.col("date") - pl.col("prev_date")).dt.total_days().alias("gap"),
-        ratio(pl.col("day_spend"), pl.col("baseline_spend")).alias("relative_spend"),
+        _safe_ratio(pl.col("day_spend"), pl.col("baseline_spend")).alias("relative_spend"),
         *[
-            ratio(
+            _safe_ratio(
                 pl.col(x).list.set_intersection(pl.col("prev_" + x)).list.len(),
                 pl.col(x).list.set_union(pl.col("prev_" + x)).list.len(),
             ).alias(x + "_overlap")
@@ -660,35 +790,49 @@ def snapshot(path, d, end, root, coverage_confirmed=False, observation_start=Non
         .over(C, order_by="date")
         .alias("baseline_gap")
     )
-    sink(day, out / "days.parquet", sort_by=[C, "date"])
-    day = pl.scan_parquet(out / "days.parquet")
-    usable = year & (pl.col("prev_date") >= s365)
+    _sink(day, out / "days.parquet", sort_by=[C, "date"])
+    return pl.scan_parquet(out / "days.parquet")
+
+
+def _compute_rhythm_features(
+    day: pl.LazyFrame, C: str, year: pl.Expr, usable: pl.Expr, recent: pl.Expr, s30: date
+) -> pl.LazyFrame:
+    """Compute rhythm features (gaps, overlaps, reactivation)."""
     rhythm = day.group_by(C).agg(
         pl.len().alias("days_history"),
         pl.col("date").filter(year).len().alias("days_365d"),
         pl.col("gap").filter(usable).count().alias("gap_count"),
         pl.col("gap").filter(usable).median().alias("median_gap"),
-        ratio(pl.col("gap").filter(usable).std(), pl.col("gap").filter(usable).mean()).alias(
+        _safe_ratio(pl.col("gap").filter(usable).std(), pl.col("gap").filter(usable).mean()).alias(
             "gap_cv"
         ),
         pl.col("products_overlap").filter(usable).median().alias("product_overlap"),
         pl.col("categories_overlap").filter(usable).median().alias("category_overlap"),
         (pl.col("date").dt.weekday() >= 6).filter(year).mean().alias("weekend_share"),
         pl.col("relative_spend").filter(recent).median().alias("personal_spend_ratio"),
-        ((pl.col("date") >= s30) & (ratio(pl.col("gap"), pl.col("baseline_gap")) >= 2))
+        ((pl.col("date") >= s30) & (_safe_ratio(pl.col("gap"), pl.col("baseline_gap")) >= 2))
         .fill_null(False)
         .sum()
         .alias("reactivation_events"),
     )
+    return rhythm
+
+
+def _compute_weekday_entropy(day: pl.LazyFrame, C: str, year: pl.Expr) -> pl.LazyFrame:
+    """Compute weekday entropy."""
     weekdays = (
         day.filter(year)
         .group_by([C, pl.col("date").dt.weekday().alias("weekday")])
         .len()
         .with_columns((pl.col("len") / pl.col("len").sum().over(C)).alias("p"))
     )
-    weekday_stats = weekdays.group_by(C).agg(
+    return weekdays.group_by(C).agg(
         (-(pl.col("p") * pl.col("p").log())).filter(pl.col("p") > 0).sum().alias("weekday_entropy")
     )
+
+
+def _compute_breadth_last6days(line: pl.LazyFrame, day: pl.LazyFrame, C: str) -> pl.LazyFrame:
+    """Compute breadth in last 6 shopping days."""
     last6 = (
         day.with_columns(
             pl.col("date").cum_count().over(C, order_by="date", descending=True).alias("rank")
@@ -696,7 +840,7 @@ def snapshot(path, d, end, root, coverage_confirmed=False, observation_start=Non
         .filter(pl.col("rank") <= 6)
         .select(C, "date")
     )
-    breadth = (
+    return (
         line.join(last6, on=[C, "date"], how="inner", validate="m:1")
         .group_by(C)
         .agg(
@@ -704,6 +848,10 @@ def snapshot(path, d, end, root, coverage_confirmed=False, observation_start=Non
             pl.col("category_key").n_unique().alias("categories_last6days"),
         )
     )
+
+
+def _compute_product_features(line: pl.LazyFrame, out: Path, P: list[str], year: pl.Expr, d: date) -> pl.LazyFrame:
+    """Compute product-level features (trial, repeat, conversion)."""
     pd = line.group_by(P + ["date"]).agg(
         pl.col("quantity").sum().alias("qty"), pl.col("value").sum().alias("spend")
     )
@@ -718,18 +866,20 @@ def snapshot(path, d, end, root, coverage_confirmed=False, observation_start=Non
     )
     pd = pd.with_columns(
         (pl.col("next_date") - pl.col("date")).dt.total_days().alias("next_gap"),
-        ratio(pl.col("qty"), pl.col("baseline_qty")).alias("relative_qty"),
+        _safe_ratio(pl.col("qty"), pl.col("baseline_qty")).alias("relative_qty"),
     )
-    sink(pd, out / "product_days.parquet", sort_by=[C, "product_id", "date"])
+    _sink(pd, out / "product_days.parquet", sort_by=[C, "product_id", "date"])
     pd = pl.scan_parquet(out / "product_days.parquet")
+
     ph = pd.group_by(P).agg(
         pl.col("date").min().alias("trial"),
         pl.col("date").filter(pl.col("prior_days") == 1).min().alias("repeat"),
         pl.len().alias("purchase_days"),
         pl.col("spend").filter(year).sum().alias("year_spend"),
     )
-    sink(ph, out / "product_history.parquet", sort_by=P)
-    eligible = pl.col("trial").is_between(s365, d - timedelta(days=90))
+    _sink(ph, out / "product_history.parquet", sort_by=P)
+
+    eligible = pl.col("trial").is_between(d - timedelta(days=WINDOW_YEAR - 1), d - timedelta(days=90))
     success = (
         eligible
         & pl.col("repeat").is_not_null()
@@ -741,6 +891,18 @@ def snapshot(path, d, end, root, coverage_confirmed=False, observation_start=Non
         (pl.col("purchase_days") >= 3).sum().alias("core_size"),
         pl.col("year_spend").filter(pl.col("purchase_days") >= 3).sum().alias("core_spend"),
     )
+    return trials
+
+
+def _compute_habit_features(
+    line: pl.LazyFrame,
+    pd: pl.LazyFrame,
+    K: list[str],
+    P: list[str],
+    year: pl.Expr,
+    C: str,
+) -> pl.LazyFrame:
+    """Compute habit features (new/repeat/established share)."""
     product_baskets = (
         line.select(K + ["product_id"])
         .unique()
@@ -752,12 +914,16 @@ def snapshot(path, d, end, root, coverage_confirmed=False, observation_start=Non
             (pl.col("prior_days") >= 2).mean().alias("established_share"),
         )
     )
-    habits = product_baskets.group_by(C).agg(
+    return product_baskets.group_by(C).agg(
         pl.col("new_share").filter(year).mean().alias("new_share"),
         pl.col("repeat_share").filter(year).mean().alias("repeat_share"),
         pl.col("established_share").filter(year).mean().alias("established_share"),
     )
-    quantity = pd.group_by(C).agg(
+
+
+def _compute_quantity_features(pd: pl.LazyFrame, C: str, year: pl.Expr) -> pl.LazyFrame:
+    """Compute quantity-based gap features."""
+    return pd.group_by(C).agg(
         pl.col("next_gap")
         .filter(year & (pl.col("relative_qty") >= 1.5))
         .median()
@@ -771,12 +937,19 @@ def snapshot(path, d, end, root, coverage_confirmed=False, observation_start=Non
         .count()
         .alias("large_qty_gap_count"),
     )
+
+
+def _compute_category_features(
+    line: pl.LazyFrame, G: list[str], C: str, year: pl.Expr, d: date, out: Path
+) -> pl.LazyFrame:
+    """Compute category-level features (spend, gaps, overdue)."""
     cd = (
         line.group_by(G + ["date"])
         .agg(pl.col("value").sum().alias("spend"))
         .with_columns(pl.col("date").shift(1).over(G, order_by="date").alias("prev"))
     )
     cd = cd.with_columns((pl.col("date") - pl.col("prev")).dt.total_days().alias("gap"))
+
     ch = cd.group_by(G).agg(
         pl.col("spend").filter(year).sum().alias("year_spend"),
         pl.len().alias("days"),
@@ -785,10 +958,16 @@ def snapshot(path, d, end, root, coverage_confirmed=False, observation_start=Non
         pl.col("gap").median().alias("median_gap"),
     )
     ch = ch.with_columns(
-        ratio(pl.col("year_spend"), pl.col("year_spend").sum().over(C)).alias("share"),
-        ratio((pl.lit(d) - pl.col("last")).dt.total_days(), pl.col("median_gap")).alias("lateness"),
+        _safe_ratio(pl.col("year_spend"), pl.col("year_spend").sum().over(C)).alias("share"),
+        _safe_ratio((pl.lit(d) - pl.col("last")).dt.total_days(), pl.col("median_gap")).alias("lateness"),
     )
-    sink(ch, out / "category_history.parquet", sort_by=G)
+    _sink(ch, out / "category_history.parquet", sort_by=G)
+
+    return ch
+
+
+def _compute_category_aggregations(ch: pl.LazyFrame, C: str) -> tuple[pl.LazyFrame, pl.LazyFrame]:
+    """Compute category-level aggregations per customer."""
     categories = ch.group_by(C).agg(
         (pl.col("year_days") > 0).sum().alias("category_count"),
         (pl.col("share") ** 2).sum().alias("category_hhi"),
@@ -811,6 +990,13 @@ def snapshot(path, d, end, root, coverage_confirmed=False, observation_start=Non
             pl.col("category").first().alias("dominant_category"),
         )
     )
+    return categories, dominant
+
+
+def _compute_price_features(
+    line: pl.LazyFrame, root: Path, d: date, C: str, year: pl.Expr
+) -> pl.LazyFrame:
+    """Compute relative price features."""
     prices = (
         line.filter(year)
         .join(
@@ -821,46 +1007,41 @@ def snapshot(path, d, end, root, coverage_confirmed=False, observation_start=Non
         )
         .with_columns(
             pl.when(pl.col("reference_count") >= 5)
-            .then(ratio(pl.col("unit_price"), pl.col("reference_price")))
+            .then(_safe_ratio(pl.col("unit_price"), pl.col("reference_price")))
             .otherwise(None)
             .alias("relative_price")
         )
     )
-    prices = prices.group_by(C).agg(
+    return prices.group_by(C).agg(
         pl.col("relative_price").median().alias("relative_paid_price"),
         pl.col("relative_price").count().alias("comparable_price_lines"),
     )
+
+
+def _merge_features(
+    base: pl.LazyFrame,
+    *extras: pl.LazyFrame,
+) -> pl.LazyFrame:
+    """Merge all feature frames on customer_id."""
     frame = base
-    for extra in [
-        rhythm,
-        weekday_stats,
-        breadth,
-        trials,
-        habits,
-        quantity,
-        categories,
-        dominant,
-        prices,
-    ]:
+    for extra in extras:
         frame = frame.join(extra, on=C, how="left", validate="1:1")
+    return frame
 
-    # Post-join integrity check: no duplicate customers (lazy, no materialization)
-    dup_check = frame.group_by(C).len().filter(pl.col("len") > 1)
-    has_dups = dup_check.select(pl.len()).collect().item()
-    if has_dups:
-        raise ValueError("Duplicate customer_ids after feature merge")
 
+def _add_derived_features(frame: pl.LazyFrame, d: date, end: date) -> pl.LazyFrame:
+    """Add derived features: tenure, recency, AOV, changes, etc."""
     frame = frame.with_columns(
         pl.lit(d).alias("snapshot"),
         (pl.lit(d) - pl.col("first_purchase")).dt.total_days().alias("tenure"),
         (pl.lit(d) - pl.col("last_purchase")).dt.total_days().alias("recency"),
-        ratio(pl.col("spend_90d"), pl.col("purchases_90d")).alias("aov_recent"),
-        ratio(pl.col("spend_previous90d"), pl.col("purchases_previous90d")).alias("aov_previous"),
-        ratio(pl.col("repeated_trials"), pl.col("eligible_trials")).alias("trial_conversion"),
-        ratio(pl.col("core_spend"), pl.col("spend_365d")).alias("core_spend_share"),
+        _safe_ratio(pl.col("spend_90d"), pl.col("purchases_90d")).alias("aov_recent"),
+        _safe_ratio(pl.col("spend_previous90d"), pl.col("purchases_previous90d")).alias("aov_previous"),
+        _safe_ratio(pl.col("repeated_trials"), pl.col("eligible_trials")).alias("trial_conversion"),
+        _safe_ratio(pl.col("core_spend"), pl.col("spend_365d")).alias("core_spend_share"),
     )
     frame = frame.with_columns(
-        ratio(pl.col("recency"), pl.col("median_gap")).alias("lateness"),
+        _safe_ratio(pl.col("recency"), pl.col("median_gap")).alias("lateness"),
         (pl.col("tenure") >= MIN_TENURE_COMPARABLE).alias("comparable_windows"),
         (pl.col("breadth_recent") - pl.col("breadth_previous")).alias("breadth_change"),
         *[
@@ -871,7 +1052,7 @@ def snapshot(path, d, end, root, coverage_confirmed=False, observation_start=Non
     frame = frame.with_columns(
         *[
             pl.when(pl.col("comparable_windows"))
-            .then(ratio(pl.col(a), pl.col(b)) - 1)
+            .then(_safe_ratio(pl.col(a), pl.col(b)) - 1)
             .otherwise(None)
             .alias(name)
             for a, b, name in [
@@ -882,6 +1063,17 @@ def snapshot(path, d, end, root, coverage_confirmed=False, observation_start=Non
         ],
         pl.lit(VERSION).alias("version"),
     )
+    return frame
+
+
+def _add_future_outcomes(
+    frame: pl.LazyFrame,
+    path: Path,
+    d: date,
+    end: date,
+    coverage_confirmed: bool,
+) -> pl.LazyFrame:
+    """Add future outcome columns if coverage confirmed and window observed."""
     for h in [30, 90]:
         horizon_end = d + timedelta(days=h)
         followup_eligible = bool(coverage_confirmed) and horizon_end <= end
@@ -904,34 +1096,138 @@ def snapshot(path, d, end, root, coverage_confirmed=False, observation_start=Non
                 for x in [f"future_purchases_{h}d", f"future_spend_{h}d"]
             ],
         )
+    return frame
 
-    # Final temporal assertion: descriptive features must not use post-cutoff data
-    # (future columns are explicitly allowed to be post-cutoff)
-    [
-        c
-        for c in frame.collect_schema().names()
-        if not c.startswith(("future_", "eligible_followup_"))
-    ]
-    # This is implicitly enforced by the initial `line.filter(pl.col("date") <= d)`
-    # but we document the invariant here.
 
+def snapshot(
+    path: Path,
+    d: date,
+    end: date,
+    root: Path,
+    coverage_confirmed: bool = False,
+    observation_start: date | None = None,
+) -> Path | None:
+    """Generate a point-in-time snapshot of customer features.
+
+    Args:
+        path: Path to partition parquet file.
+        d: Snapshot cutoff date.
+        end: Observation end date.
+        root: Output root directory.
+        coverage_confirmed: Whether future follow-up is available.
+        observation_start: First observed transaction date.
+
+    Returns:
+        Path to numeric output file, or None if no customers.
+    """
+    out = root / "events" / str(d) / path.stem
     target = root / "numeric" / str(d) / path.name
-    sink(frame, target)
+    line = pl.scan_parquet(path).filter(pl.col("date") <= d)
+
+    # Temporal boundary assertion
+    max_date_check = line.select(pl.col("date").max()).collect().item()
+    if max_date_check is not None and max_date_check > d:
+        raise AssertionError(
+            f"Temporal leakage: descriptive data contains date {max_date_check} > cutoff {d}"
+        )
+
+    # Baskets
+    basket = _compute_baskets(line, out)
+
+    # Revenue reconciliation
+    totals = line.select(pl.col("value").sum()).collect().item() or 0
+    if abs((basket.select(pl.col("spend").sum()).collect().item() or 0) - totals) > 1e-7 * max(
+        1, abs(totals)
+    ):
+        raise AssertionError("Revenue reconciliation failed")
+
+    # Base features
+    base, recent, old, year, s30, s90, s365 = _compute_base_features(
+        basket, d, end, observation_start
+    )
+
+    # Check if base has any customers
+    base_count = base.select(pl.len()).collect()
+    if base_count.height == 0 or base_count.item() == 0:
+        return None
+
+    # Day features
+    day = _compute_day_features(line, out, C)
+
+    # Rhythm features
+    usable = year & (pl.col("prev_date") >= s365)
+    rhythm = _compute_rhythm_features(day, C, year, usable, recent, s30)
+
+    # Weekday entropy
+    weekday_stats = _compute_weekday_entropy(day, C, year)
+
+    # Breadth last 6 days
+    breadth = _compute_breadth_last6days(line, day, C)
+
+    # Product features
+    trials = _compute_product_features(line, out, P, year, d)
+
+    # Habit features
+    pd = pl.scan_parquet(out / "product_days.parquet")
+    habits = _compute_habit_features(line, pd, K, P, year, C)
+
+    # Quantity features
+    quantity = _compute_quantity_features(pd, C, year)
+
+    # Category features
+    ch = _compute_category_features(line, G, C, year, d, out)
+
+    categories, dominant = _compute_category_aggregations(ch, C)
+
+    # Price features
+    prices = _compute_price_features(line, root, d, C, year)
+
+    # Merge all features
+    frame = _merge_features(
+        base,
+        rhythm,
+        weekday_stats,
+        breadth,
+        trials,
+        habits,
+        quantity,
+        categories,
+        dominant,
+        prices,
+    )
+
+    # Post-join integrity check
+    dup_check = frame.group_by(C).len().filter(pl.col("len") > 1)
+    has_dups = dup_check.select(pl.len()).collect().item()
+    if has_dups:
+        raise ValueError("Duplicate customer_ids after feature merge")
+
+    # Derived features
+    frame = _add_derived_features(frame, d, end)
+
+    # Future outcomes
+    frame = _add_future_outcomes(frame, path, d, end, coverage_confirmed)
+
+    _sink(frame, target)
     return target
 
 
-def label(frame, thresholds, snapshot_date: date = None, reference_date: date = None):
-    """
-    Apply labels to a snapshot frame.
+def label(
+    frame: pl.LazyFrame,
+    thresholds: dict[str, Any],
+    snapshot_date: date | None = None,
+    reference_date: date | None = None,
+) -> pl.LazyFrame:
+    """Apply labels to a snapshot frame.
 
     Args:
-        frame: LazyFrame with customer features
-        thresholds: Dict of calibrated thresholds
-        snapshot_date: Date of the snapshot being labeled
-        reference_date: Date of the reference snapshot used for calibration
+        frame: LazyFrame with customer features.
+        thresholds: Dict of calibrated thresholds.
+        snapshot_date: Date of the snapshot being labeled.
+        reference_date: Date of the reference snapshot used for calibration.
 
-    If snapshot_date < reference_date, threshold-dependent classifications
-    are marked as "reference_unavailable" since the reference didn't exist yet.
+    Returns:
+        Frame with behavior, trajectory, lifecycle, evidence, and value_tier labels.
     """
     # Determine if reference thresholds are available for this snapshot
     ref_available = True
@@ -989,13 +1285,11 @@ def label(frame, thresholds, snapshot_date: date = None, reference_date: date = 
         ]
 
     # Calibrated thresholds (with fallback to constants)
-    # Only use calibrated thresholds if reference is available for this snapshot
     if ref_available:
         lateness_threshold = thresholds.get("lateness_overdue_min") or LATENESS_OVERDUE_MIN
         freq_change_threshold = thresholds.get("frequency_change_threshold") or 0.25
         basket_change_threshold = thresholds.get("basket_change_threshold") or 0.25
     else:
-        # Use fixed fallbacks when reference not available
         lateness_threshold = LATENESS_OVERDUE_MIN
         freq_change_threshold = 0.25
         basket_change_threshold = 0.25
@@ -1061,8 +1355,8 @@ def label(frame, thresholds, snapshot_date: date = None, reference_date: date = 
 
     frame = frame.with_columns(
         enough.alias("style_eligible"),
-        taglist(style).alias("behavioral_tags"),
-        taglist(trajectory_pairs).alias("trajectory_tags"),
+        _taglist(style).alias("behavioral_tags"),
+        _taglist(trajectory_pairs).alias("trajectory_tags"),
         lifecycle.alias("lifecycle"),
         evidence.alias("evidence"),
     )
@@ -1099,8 +1393,11 @@ def label(frame, thresholds, snapshot_date: date = None, reference_date: date = 
     )
 
 
-def reports(root, buckets):
+def reports(root: Path, buckets: int) -> None:
+    """Generate segment profiles, cohort profiles, and transitions."""
     allrows = pl.scan_parquet(str(root / "snapshots" / "*" / "*.parquet"))
+
+    # Segment profiles
     profile = allrows.group_by(["snapshot", "behavior"]).agg(
         pl.len().alias("customers"),
         pl.col("spend_90d").sum().alias("revenue"),
@@ -1128,12 +1425,12 @@ def reports(root, buckets):
         ],
     )
     profile = profile.with_columns(
-        ratio(pl.col("customers"), pl.col("customers").sum().over("snapshot")).alias(
+        _safe_ratio(pl.col("customers"), pl.col("customers").sum().over("snapshot")).alias(
             "customer_share"
         ),
-        ratio(pl.col("revenue"), pl.col("revenue").sum().over("snapshot")).alias("revenue_share"),
+        _safe_ratio(pl.col("revenue"), pl.col("revenue").sum().over("snapshot")).alias("revenue_share"),
     )
-    sink(profile, root / "segment_profiles.parquet", sort_by=["snapshot", "behavior"])
+    _sink(profile, root / "segment_profiles.parquet", sort_by=["snapshot", "behavior"])
 
     # Cohort profiles with exposure tracking
     cohort_data = allrows.with_columns(pl.col("first_purchase").dt.truncate("1mo").alias("cohort"))
@@ -1156,8 +1453,9 @@ def reports(root, buckets):
         pl.col("tenure").min().alias("min_tenure_days"),
         pl.col("tenure").max().alias("max_tenure_days"),
     )
-    sink(cohort_profile, root / "cohort_profiles.parquet", sort_by=["snapshot", "cohort"])
+    _sink(cohort_profile, root / "cohort_profiles.parquet", sort_by=["snapshot", "cohort"])
 
+    # Transitions
     paths = []
     for b in range(buckets):
         try:
@@ -1178,12 +1476,13 @@ def reports(root, buckets):
                 .with_columns(pl.lit(dim).alias("dimension"))
             )
             target = root / "transition_parts" / f"b{b}_{dim}.parquet"
-            sink(
+            _sink(
                 trans,
                 target,
                 sort_by=["from_date", "snapshot", "dimension", "from_label", "to_label"],
             )
             paths.append(str(target))
+
     if paths:
         trans = (
             pl.scan_parquet(paths)
@@ -1196,9 +1495,9 @@ def reports(root, buckets):
             .over(["from_date", "snapshot", "dimension", "from_label"])
             .alias("eligible_origin")
         )
-        sink(
+        _sink(
             trans.with_columns(
-                ratio(pl.col("customers"), pl.col("eligible_origin")).alias("transition_rate")
+                _safe_ratio(pl.col("customers"), pl.col("eligible_origin")).alias("transition_rate")
             ),
             root / "segment_transitions.parquet",
             sort_by=["from_date", "snapshot", "dimension", "from_label", "to_label"],
@@ -1206,39 +1505,62 @@ def reports(root, buckets):
 
 
 def run(
-    source,
-    output,
-    price_mode,
-    snapshots,
-    buckets=8,
-    exclude_invalid=False,
-    date_format=None,
-    observed_through=None,
-    coverage_confirmed=False,
-    drop_exact_duplicates=False,
-    overwrite=False,
-    timezone=None,
-    value_quantile_low=QUANTILE_VALUE_LOW,
-    value_quantile_high=QUANTILE_VALUE_HIGH,
-    style_quantile_low=QUANTILE_STYLE_LOW,
-    style_quantile_high=QUANTILE_STYLE_HIGH,
-    min_reference_population=MIN_REFERENCE_POPULATION,
-    reference_date=None,
-):
+    source: str,
+    output: str,
+    price_mode: PriceMode,
+    snapshots: list[str],
+    buckets: int = 8,
+    exclude_invalid: bool = False,
+    date_format: str | None = None,
+    observed_through: str | None = None,
+    coverage_confirmed: bool = False,
+    drop_exact_duplicates: bool = False,
+    overwrite: bool = False,
+    timezone: str | None = None,
+    value_quantile_low: float = QUANTILE_VALUE_LOW,
+    value_quantile_high: float = QUANTILE_VALUE_HIGH,
+    style_quantile_low: float = QUANTILE_STYLE_LOW,
+    style_quantile_high: float = QUANTILE_STYLE_HIGH,
+    min_reference_population: int = MIN_REFERENCE_POPULATION,
+    reference_date: str | None = None,
+) -> None:
+    """Run the complete analytics pipeline.
+
+    Args:
+        source: Path to input Parquet file.
+        output: Output directory.
+        price_mode: "unit" (price * quantity) or "line_total" (price is line total).
+        snapshots: List of cutoff dates (ISO format).
+        buckets: Number of hash partitions (1-32).
+        exclude_invalid: Exclude invalid rows instead of raising.
+        date_format: Date format string for parsing.
+        observed_through: Effective observation end date.
+        coverage_confirmed: Whether future follow-up data is complete.
+        drop_exact_duplicates: Drop exact duplicate rows.
+        overwrite: Overwrite existing output directory.
+        timezone: Timezone for datetime conversion.
+        value_quantile_low: Low quantile for value tier.
+        value_quantile_high: High quantile for value tier.
+        style_quantile_low: Low quantile for style thresholds.
+        style_quantile_high: High quantile for style thresholds.
+        min_reference_population: Minimum population for threshold calibration.
+        reference_date: Explicit reference date for threshold calibration.
+    """
     if buckets < 1 or price_mode not in ["unit", "line_total"]:
         raise ValueError("Invalid buckets or price_mode")
+
     root = Path(output)
     if root.exists() and any(root.iterdir()):
         if overwrite:
-            import shutil
-
             shutil.rmtree(root)
         else:
             raise ValueError("Output directory must be empty (use --overwrite to replace)")
+
     root.mkdir(parents=True, exist_ok=True)
     dates = sorted({date.fromisoformat(x) for x in snapshots})
     if not dates:
         raise ValueError("At least one cutoff required")
+
     (root / "configuration.json").write_text(
         json.dumps(
             dict(
@@ -1262,6 +1584,7 @@ def run(
             indent=2,
         )
     )
+
     paths, end, observation_start = prepare(
         source,
         root,
@@ -1274,14 +1597,16 @@ def run(
         drop_exact_duplicates,
         timezone,
     )
+
     if dates[-1] > end:
         raise ValueError("Cutoff exceeds observed_through")
+
     numeric = []
     for d in dates:
         past = pl.scan_parquet(root / "validated.parquet").filter(
             pl.col("date").is_between(d - timedelta(days=364), d)
         )
-        sink(
+        _sink(
             past.group_by("product_id").agg(
                 pl.col("unit_price").median().alias("reference_price"),
                 pl.len().alias("reference_count"),
@@ -1290,10 +1615,11 @@ def run(
             sort_by="product_id",
         )
         for path in paths:
-            if pl.scan_parquet(path).select(pl.len()).collect().item() > 0:
+            if pl.scan_parquet(path).filter(pl.col("date") <= d).select(pl.len()).collect().item() > 0:
                 result = snapshot(path, d, end, root, coverage_confirmed, observation_start)
                 if result is not None:
                     numeric.append(result)
+
     if not numeric:
         # No customers at any cutoff; write empty thresholds and skip labeling/reports
         thresholds = {
@@ -1303,15 +1629,16 @@ def run(
             "basket_high": None,
             "gap_low": None,
             "gap_high": None,
-            "reference_date": str(dates[0]),
+            "reference_date": None,
             "reference_population": 0,
             "value_population": 0,
             "style_population": 0,
+            "calibration_policy": asdict(default_policy()),
         }
         write_thresholds(root, thresholds)
         return
 
-    # Build policy from CLI parameters
+    # Get threshold parameters
     policy = default_policy(
         value_quantile_low=value_quantile_low,
         value_quantile_high=value_quantile_high,
@@ -1321,10 +1648,9 @@ def run(
     )
 
     # Select reference cutoff: earliest with sufficient & stable population
-    # If reference_date is provided, use that specific cutoff; otherwise auto-select
     if reference_date is not None:
-        ref_date = date.fromisoformat(reference_date)
-        ref = pl.scan_parquet([str(x) for x in numeric if x.parent.name == str(ref_date)])
+        ref_date: date | None = date.fromisoformat(reference_date)
+        ref: pl.LazyFrame | None = pl.scan_parquet([str(p) for p in numeric if p.parent.name == str(ref_date)])
         ref_info = {"selected": True, "reference_date": reference_date}
     else:
         ref_date, ref, ref_info = select_reference_cutoff(numeric, dates, root, policy)
@@ -1349,13 +1675,40 @@ def run(
         # Label all snapshots with reference_unavailable
         for path in numeric:
             snap_date = date.fromisoformat(path.parent.name)
-            sink(
-                label(pl.scan_parquet(path), thresholds, snapshot_date=snap_date, reference_date=None),
-                root / "snapshots" / path.parent.name / path.name,
-                sort_by=C,
+            frame = label(
+                pl.scan_parquet(path),
+                thresholds,
+                snapshot_date=snap_date,
+                reference_date=None,
+            ).with_columns(
+                pl.when(pl.col("spend_365d") > 0)
+                .then(pl.col("category_hhi"))
+                .otherwise(None)
+                .alias("category_hhi"),
+                pl.when(pl.col("spend_365d") > 0)
+                .then(pl.col("category_entropy"))
+                .otherwise(None)
+                .alias("category_entropy"),
             )
+            _sink(frame, root / "snapshots" / path.parent.name / path.name)
+
+        # Generate reports even without reference calibration
         reports(root, buckets)
-        print(f"Completed {len(dates)} cutoffs: {root} (no reference cutoff met criteria)")
+
+        (root / "run.json").write_text(
+            json.dumps(
+                {
+                    "snapshots": [str(x) for x in dates],
+                    "coverage_confirmed": coverage_confirmed,
+                    "observed_through": str(end),
+                    "price_mode": price_mode,
+                    "polars_version": pl.__version__,
+                    "reference_date": None,
+                },
+                indent=2,
+                default=str,
+            )
+        )
         return
 
     # Calibrate thresholds from reference frame
@@ -1370,82 +1723,88 @@ def run(
 
     write_thresholds(root, thresholds)
 
-    # Label all snapshots - pass snapshot_date and reference_date for temporal correctness
+    # Label all snapshots
     for path in numeric:
         snap_date = date.fromisoformat(path.parent.name)
-        sink(
-            label(pl.scan_parquet(path), thresholds, snapshot_date=snap_date, reference_date=ref_date),
-            root / "snapshots" / path.parent.name / path.name,
-            sort_by=C,
+        frame = label(
+            pl.scan_parquet(path), thresholds, snapshot_date=snap_date, reference_date=ref_date
+        ).with_columns(
+            pl.when(pl.col("spend_365d") > 0)
+            .then(pl.col("category_hhi"))
+            .otherwise(None)
+            .alias("category_hhi"),
+            pl.when(pl.col("spend_365d") > 0)
+            .then(pl.col("category_entropy"))
+            .otherwise(None)
+            .alias("category_entropy"),
         )
+        _sink(frame, root / "snapshots" / path.parent.name / path.name)
 
-    # Compute label shares for diagnostics (on first snapshot)
-    first_snapshot_path = root / "snapshots" / str(dates[0]) / "*.parquet"
-    try:
-        first_frame = pl.scan_parquet(str(first_snapshot_path))
-        label_shares = compute_label_shares(first_frame)
-        if label_shares:
-            thresholds["label_shares"] = label_shares
-            write_thresholds(root, thresholds)
-    except Exception:
-        pass
-
+    # Generate reports
     reports(root, buckets)
-    print(f"Completed {len(dates)} cutoffs: {root} (reference: {ref_date})")
+
+    # Write run manifest
+    (root / "run.json").write_text(
+        json.dumps(
+            {
+                "snapshots": [str(x) for x in dates],
+                "coverage_confirmed": coverage_confirmed,
+                "observed_through": str(end),
+                "price_mode": price_mode,
+                "polars_version": pl.__version__,
+                "reference_date": str(ref_date),
+            },
+            indent=2,
+            default=str,
+        )
+    )
 
 
-def main(argv=None):
+def main() -> None:
+    """CLI entry point."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", required=True, dest="source")
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--price-mode", required=True, choices=["unit", "line_total"])
-    parser.add_argument("--snapshots", nargs="+", required=True)
-    parser.add_argument("--buckets", type=int, default=8)
-    parser.add_argument("--exclude-invalid", action="store_true")
-    parser.add_argument("--date-format")
-    parser.add_argument("--observed-through")
-    parser.add_argument("--coverage-confirmed", action="store_true")
-    parser.add_argument("--drop-exact-duplicates", action="store_true")
-    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--input", required=True, help="Source Parquet file")
+    parser.add_argument("--output", required=True, help="Output directory")
     parser.add_argument(
-        "--timezone", help="Timezone for timezone-aware Datetime input (e.g., 'UTC', 'US/Eastern')"
+        "--price-mode", required=True, choices=["unit", "line_total"], help="Price interpretation"
     )
-    # Threshold parameters
-    parser.add_argument(
-        "--value-quantile-low",
-        type=float,
-        default=QUANTILE_VALUE_LOW,
-        help="Value tier low quantile (default 0.33)",
+    parser.add_argument("--snapshots", required=True, nargs="+", help="Cutoff dates (YYYY-MM-DD)")
+    parser.add_argument("--buckets", type=int, default=8, help="Hash partitions (1-32)")
+    parser.add_argument("--exclude-invalid", action="store_true", help="Exclude invalid rows")
+    parser.add_argument("--date-format", help="Date format (e.g., %%Y-%%m-%%d)")
+    parser.add_argument("--observed-through", help="Effective end date (YYYY-MM-DD)")
+    parser.add_argument("--coverage-confirmed", action="store_true", help="Future data complete")
+    parser.add_argument("--drop-exact-duplicates", action="store_true", help="Drop exact duplicates")
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite output directory")
+    parser.add_argument("--timezone", help="Timezone for datetime conversion")
+    parser.add_argument("--value-quantile-low", type=float, default=QUANTILE_VALUE_LOW)
+    parser.add_argument("--value-quantile-high", type=float, default=QUANTILE_VALUE_HIGH)
+    parser.add_argument("--style-quantile-low", type=float, default=QUANTILE_STYLE_LOW)
+    parser.add_argument("--style-quantile-high", type=float, default=QUANTILE_STYLE_HIGH)
+    parser.add_argument("--min-reference-population", type=int, default=MIN_REFERENCE_POPULATION)
+    parser.add_argument("--reference-date", help="Explicit reference date (YYYY-MM-DD)")
+
+    args = parser.parse_args()
+    run(
+        args.input,
+        args.output,
+        args.price_mode,
+        args.snapshots,
+        args.buckets,
+        args.exclude_invalid,
+        args.date_format,
+        args.observed_through,
+        args.coverage_confirmed,
+        args.drop_exact_duplicates,
+        args.overwrite,
+        args.timezone,
+        args.value_quantile_low,
+        args.value_quantile_high,
+        args.style_quantile_low,
+        args.style_quantile_high,
+        args.min_reference_population,
+        args.reference_date,
     )
-    parser.add_argument(
-        "--value-quantile-high",
-        type=float,
-        default=QUANTILE_VALUE_HIGH,
-        help="Value tier high quantile (default 0.80)",
-    )
-    parser.add_argument(
-        "--style-quantile-low",
-        type=float,
-        default=QUANTILE_STYLE_LOW,
-        help="Style tier low quantile (default 0.33)",
-    )
-    parser.add_argument(
-        "--style-quantile-high",
-        type=float,
-        default=QUANTILE_STYLE_HIGH,
-        help="Style tier high quantile (default 0.80)",
-    )
-    parser.add_argument(
-        "--min-reference-population",
-        type=int,
-        default=MIN_REFERENCE_POPULATION,
-        help="Minimum reference population for thresholds (default 100)",
-    )
-    parser.add_argument(
-        "--reference-date",
-        help="Override reference date for threshold computation (default: first snapshot)",
-    )
-    run(**vars(parser.parse_args(argv)))
 
 
 if __name__ == "__main__":
