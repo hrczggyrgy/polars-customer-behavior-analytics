@@ -1066,9 +1066,14 @@ def time_to_second_purchase(baskets, rows, cutoff, max_days=180, confidence=0.95
         return pl.DataFrame()
 
     # Find second purchase date for each customer
+    # Only customers with at least 2 unique basket dates have a second purchase
+    basket_counts = basket_data.group_by("customer_id").agg(
+        pl.col("date").n_unique().alias("n_dates")
+    )
     second_purchase = (
-        basket_data.group_by("customer_id")
-        .agg(pl.col("date").nth(1).alias("second_purchase"))
+        basket_data.join(basket_counts.filter(pl.col("n_dates") >= 2), on="customer_id", how="inner")
+        .group_by("customer_id")
+        .agg(pl.col("date").sort().head(2).last().alias("second_purchase"))
         .filter(pl.col("second_purchase").is_not_null())
     )
 
@@ -1081,13 +1086,16 @@ def time_to_second_purchase(baskets, rows, cutoff, max_days=180, confidence=0.95
         (pl.lit(cutoff) - pl.col("first_purchase")).dt.total_days().alias("censor_days"),
     ])
 
-    # Event: second purchase observed within max_days and before cutoff
-    # Censored: no second purchase observed, or first purchase too recent to observe full window
+    # Observed duration: min(event_time, censor_time), capped at max_days
+    # Event occurs if second purchase observed within max_days and before cutoff
     cust_data = cust_data.with_columns([
         pl.when(pl.col("days_to_second").is_not_null() & (pl.col("days_to_second") <= max_days) & (pl.col("days_to_second") <= pl.col("censor_days")))
         .then(1).otherwise(0).alias("event"),
-        pl.when(pl.col("days_to_second").is_null() | (pl.col("days_to_second") > max_days) | (pl.col("days_to_second") > pl.col("censor_days")))
-        .then(1).otherwise(0).alias("censored"),
+        pl.min_horizontal([
+            pl.col("days_to_second").fill_null(max_days + 1),
+            pl.col("censor_days"),
+            pl.lit(max_days)
+        ]).alias("observed_duration"),
     ])
 
     # Only include customers with first_purchase early enough to have at least 1 day of observation
@@ -1098,20 +1106,20 @@ def time_to_second_purchase(baskets, rows, cutoff, max_days=180, confidence=0.95
 
     # Kaplan-Meier estimation
     # For each day t: survival(t) = product over t' <= t of (1 - events(t') / at_risk(t'))
-    # Where at_risk(t) = number of customers with censor_days >= t
+    # Where at_risk(t) = number of customers with observed_duration >= t
 
-    max_censor = min(max_days, int(cust_data["censor_days"].max()))
+    max_censor = min(max_days, int(cust_data["observed_duration"].max()))
 
     results = []
     survival = 1.0
 
     for t in range(1, max_censor + 1):
-        at_risk = cust_data.filter(pl.col("censor_days") >= t).height
+        at_risk = cust_data.filter(pl.col("observed_duration") >= t).height
         if at_risk == 0:
             break
 
         events_t = cust_data.filter((pl.col("days_to_second") == t) & (pl.col("event") == 1)).height
-        censored_t = cust_data.filter((pl.col("censor_days") == t) & (pl.col("censored") == 1)).height
+        censored_t = cust_data.filter((pl.col("censor_days") == t) & (pl.col("event") == 0) & (pl.col("days_to_second").is_null() | (pl.col("days_to_second") > max_days) | (pl.col("days_to_second") > pl.col("censor_days")))).height
 
         if events_t > 0:
             hazard = events_t / at_risk
@@ -1128,8 +1136,15 @@ def time_to_second_purchase(baskets, rows, cutoff, max_days=180, confidence=0.95
         # Z-score for confidence level
         z = 1.96 if confidence >= 0.95 else 1.645  # 95% or 90%
         se = survival * math.sqrt(cum_var) if cum_var > 0 else 0
-        lower = max(0.0, survival - z * se)
-        upper = min(1.0, survival + z * se)
+        # Use log-log transformation for better CI bounds
+        if survival > 0 and survival < 1 and cum_var > 0:
+            log_surv = math.log(-math.log(survival))
+            log_se = math.sqrt(cum_var) / (survival * -math.log(survival)) if survival * -math.log(survival) > 0 else se
+            lower = max(0.0, math.exp(-math.exp(log_surv + z * log_se)))
+            upper = min(1.0, math.exp(-math.exp(log_surv - z * log_se)))
+        else:
+            lower = max(0.0, survival - z * se)
+            upper = min(1.0, survival + z * se)
 
         results.append({
             "days": t,
@@ -1201,8 +1216,10 @@ def cadence_return_validation(rows, coverage, max_lateness=5.0, bins=10):
     bin_edges = [i * max_lateness / bins for i in range(bins + 1)]
     bin_labels = [f"{bin_edges[i]:.1f}–{bin_edges[i+1]:.1f}" for i in range(bins)]
 
+    # Polars .cut() requires interior cut points (len(labels) == len(cut_points) + 1)
+    interior_edges = bin_edges[1:-1]
     eligible = eligible.with_columns(
-        pl.col("lateness").cut(bin_edges, labels=bin_labels).alias("lateness_bin")
+        pl.col("lateness").cut(interior_edges, labels=bin_labels).alias("lateness_bin")
     )
 
     # Compute return rates by bin for both horizons
@@ -1264,20 +1281,27 @@ def multi_horizon_cohort_repeat(baskets, rows, cutoff, coverage, horizons=[30, 6
         cutoff = date.fromisoformat(cutoff)
 
     # Get customer cohorts (first purchase month)
-    cust_cohorts = rows.select("customer_id", "first_purchase").unique().collect()
+    cust_cohorts = rows.select("customer_id", "first_purchase").unique()
     cust_cohorts = cust_cohorts.with_columns(
         pl.col("first_purchase").dt.truncate("1mo").alias("cohort")
     )
 
     # Get repeat purchases from baskets
-    cust_ids = cust_cohorts["customer_id"].to_list()
+    cust_ids = collect(cust_cohorts.select("customer_id"))["customer_id"].to_list()
+    # Join baskets to customer cohorts to get first_purchase for each customer
+    baskets_with_first = baskets.join(
+        cust_cohorts.select("customer_id", "first_purchase"),
+        on="customer_id",
+        how="inner",
+        validate="m:1"
+    )
     repeat_data = collect(
-        baskets.filter(pl.col("customer_id").is_in(cust_ids))
+        baskets_with_first.filter(pl.col("customer_id").is_in(cust_ids))
         .filter(pl.col("date") <= pl.lit(cutoff))
-        .filter(pl.col("date") > pl.col("first_purchase"))  # Need first_purchase - join below
+        .filter(pl.col("date") > pl.col("first_purchase"))
         .group_by("customer_id")
         .agg(pl.col("date").min().alias("repeat_date"))
-    )
+    ).lazy()
 
     # Merge
     cohort_data = cust_cohorts.join(repeat_data, on="customer_id", how="left")
@@ -1297,7 +1321,7 @@ def multi_horizon_cohort_repeat(baskets, rows, cutoff, coverage, horizons=[30, 6
             success.fill_null(False).sum().alias("repeat_n"),
         ).filter(pl.col("cohort_n") >= min_cohort_size)
 
-        for row in cohort_stats.to_dicts():
+        for row in cohort_stats.collect().to_dicts():
             n = row["eligible_n"]
             buyers = row["repeat_n"]
             if coverage and n >= min_cohort_size:
@@ -1361,37 +1385,41 @@ def category_opportunity_map(validated, rows, cutoff, top_categories=30):
         return pl.DataFrame()
 
     # Get category-level data in window
-    cat_data = collect(
+    # First deduplicate to customer × category × date (shopping occasions)
+    cat_occasions = collect(
         validated.filter(
             pl.col("date").is_between(window_start, cutoff) &
             pl.col("customer_id").is_in(cust_ids)
         )
+        .unique(subset=["customer_id", "department", "category", "date"])
         .group_by("department", "category", "customer_id")
         .agg(
             pl.len().alias("occasions"),
             pl.col("value").sum().alias("spend"),
         )
-        .group_by("department", "category")
-        .agg(
-            pl.len().alias("buyers"),
-            pl.col("occasions").mean().alias("occasions_per_buyer"),
-            pl.col("spend").sum().alias("total_spend"),
-            (pl.col("occasions") > 1).sum().alias("repeat_buyers"),
-        )
-        .sort("buyers", descending=True)
-        .head(top_categories)
     )
 
-    if cat_data.is_empty():
+    if cat_occasions.is_empty():
         return pl.DataFrame()
 
-    # Total spend for share calculation
-    total_spend = cat_data["total_spend"].sum()
+    # Aggregate to category level
+    cat_data = cat_occasions.group_by("department", "category").agg(
+        pl.len().alias("buyers"),
+        pl.col("occasions").mean().alias("occasions_per_buyer"),
+        pl.col("spend").sum().alias("total_spend"),
+        (pl.col("occasions") > 1).sum().alias("repeat_buyers"),
+    ).sort("buyers", descending=True)
+
+    # Total spend across ALL categories (for share denominator)
+    total_spend_all = cat_data["total_spend"].sum()
+
+    # Select top categories for display
+    cat_data = cat_data.head(top_categories)
 
     result = cat_data.with_columns([
         (pl.col("buyers") / total_customers).alias("penetration"),
         (pl.col("repeat_buyers") / pl.col("buyers")).alias("repeat_buyer_share"),
-        (pl.col("total_spend") / total_spend).alias("spend_share"),
+        (pl.col("total_spend") / total_spend_all).alias("spend_share"),
         pl.concat_str([pl.col("department"), pl.lit(" / "), pl.col("category")]).alias("label"),
     ])
 
@@ -1460,9 +1488,13 @@ def rfm_response_surface(rows, coverage, recency_bins=5, frequency_bins=5):
     rec_labels = [f"R{i+1}" for i in range(len(rec_edges) - 1)]
     freq_labels = [f"F{i+1}" for i in range(len(freq_edges) - 1)]
 
+    # Polars .cut() requires interior cut points (len(labels) == len(cut_points) + 1)
+    rec_interior = rec_edges[1:-1]
+    freq_interior = freq_edges[1:-1]
+
     eligible = eligible.with_columns([
-        pl.col("recency").cut(rec_edges, labels=rec_labels).alias("recency_bin"),
-        pl.col("purchases_90d").cut(freq_edges, labels=freq_labels).alias("frequency_bin"),
+        pl.col("recency").cut(rec_interior, labels=rec_labels).alias("recency_bin"),
+        pl.col("purchases_90d").cut(freq_interior, labels=freq_labels).alias("frequency_bin"),
     ])
 
     # Compute response surface
