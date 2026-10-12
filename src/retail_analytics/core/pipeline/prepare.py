@@ -27,6 +27,13 @@ from retail_analytics.core.pipeline.utils import (
     _safe_ratio,
     _sink,
 )
+from retail_analytics.core.pipeline.preparation import (
+    normalize_strings,
+    parse_numeric_columns,
+    validity_mask,
+    compute_quality_audit,
+    audit_duplicate_counts,
+)
 
 # Type aliases
 PriceMode = Literal["unit", "line_total"]
@@ -136,18 +143,8 @@ def _parse_dates(
 
 
 def _normalize_strings(raw: pl.LazyFrame) -> pl.LazyFrame:
-    """Normalize string columns: trim, replace empty with null/unknown."""
-    return raw.with_columns(
-        *[
-            pl.col(x).cast(pl.String).str.strip_chars().replace("", None)
-            for x in [C, "transaction_id", "product_id"]
-        ],
-        *[
-            pl.col(x).cast(pl.String).str.strip_chars().replace("", None).fill_null("__UNKNOWN__")
-            for x in ["department", "category"]
-        ],
-        pl.col("product_description").cast(pl.String).fill_null(""),
-    )
+    """Normalize string columns: trim, replace empty with null/unknown (pipeline version)."""
+    return normalize_strings(raw, unknown_dept_category=True, null_product_description=True)
 
 
 def _handle_price_quantity(
@@ -155,43 +152,13 @@ def _handle_price_quantity(
     mode: PriceMode,
     schema: dict[str, pl.DataType],
 ) -> pl.LazyFrame:
-    """Handle price/quantity parsing and value computation."""
-    # Handle price/quantity: if raw columns already exist (from dashboard canonical), use them
-    if "price_raw" in schema and "quantity_raw" in schema:
-        raw = raw.with_columns(
-            pl.col("price").cast(pl.Float64, strict=False),
-            pl.col("quantity").cast(pl.Float64, strict=False),
-        )
-    else:
-        raw = raw.with_columns(
-            # Preserve raw string values before casting to distinguish missing vs malformed
-            pl.col("price").cast(pl.String).str.strip_chars().replace("", None).alias("price_raw"),
-            pl.col("quantity")
-            .cast(pl.String)
-            .str.strip_chars()
-            .replace("", None)
-            .alias("quantity_raw"),
-            *[pl.col(x).cast(pl.Float64, strict=False) for x in ["price", "quantity"]],
-        )
-
-    raw = raw.with_columns(
-        (pl.col("price") * pl.col("quantity") if mode == "unit" else pl.col("price")).alias("value")
-    )
-    return raw
+    """Handle price/quantity parsing and value computation (pipeline version)."""
+    return parse_numeric_columns(raw, schema, decimal_comma=False, mode=mode)
 
 
 def _compute_validity_mask(raw: pl.LazyFrame) -> pl.Expr:
-    """Compute validity mask for rows."""
-    return (
-        pl.all_horizontal(
-            [pl.col(x).is_not_null() for x in [C, "transaction_id", "product_id", "date"]]
-        )
-        & pl.col("price").is_finite()
-        & (pl.col("price") >= 0)
-        & pl.col("quantity").is_finite()
-        & (pl.col("quantity") > 0)
-        & pl.col("value").is_finite()
-    ).fill_null(False)
+    """Compute validity mask for rows (pipeline version)."""
+    return validity_mask(raw)
 
 
 def _compute_quality_audit(
@@ -251,24 +218,8 @@ def _compute_quality_audit(
         "price",
         "quantity",
     ]
-    exact_dup_count = (
-        raw.group_by(exact_source_cols)
-        .len()
-        .filter(pl.col("len") > 1)
-        .select((pl.col("len") - 1).sum())
-        .collect()
-        .item()
-        or 0
-    )
-    valid_raw = raw.filter(pl.col("valid"))
-    exact_dup_value = (
-        valid_raw.group_by(exact_source_cols)
-        .agg(pl.col("value").first().alias("line_value"), pl.len().alias("dup_count"))
-        .filter(pl.col("dup_count") > 1)
-        .select((pl.col("line_value") * (pl.col("dup_count") - 1)).sum())
-        .collect()
-        .item()
-        or 0.0
+    exact_dup_count, exact_dup_value = audit_duplicate_counts(
+        raw, exact_source_cols, value_col="value", valid_frame=raw.filter(pl.col("valid"))
     )
 
     # Normalized same-day duplicate detection (for audit only)
@@ -283,23 +234,8 @@ def _compute_quality_audit(
         "price",
         "quantity",
     ]
-    norm_dup_count = (
-        raw.group_by(norm_source_cols)
-        .len()
-        .filter(pl.col("len") > 1)
-        .select((pl.col("len") - 1).sum())
-        .collect()
-        .item()
-        or 0
-    )
-    norm_dup_value = (
-        valid_raw.group_by(norm_source_cols)
-        .agg(pl.col("value").first().alias("line_value"), pl.len().alias("dup_count"))
-        .filter(pl.col("dup_count") > 1)
-        .select((pl.col("line_value") * (pl.col("dup_count") - 1)).sum())
-        .collect()
-        .item()
-        or 0.0
+    norm_dup_count, norm_dup_value = audit_duplicate_counts(
+        raw, norm_source_cols, value_col="value", valid_frame=raw.filter(pl.col("valid"))
     )
 
     # Baskets with rejected lines
@@ -493,7 +429,6 @@ def prepare(
     raw = raw.with_columns(good.alias("valid"))
 
     rejected = raw.filter(~pl.col("valid"))
-    rejected.select(pl.len()).collect().item()
     valid = raw.filter(pl.col("valid"))
 
     # Enhanced quality audit

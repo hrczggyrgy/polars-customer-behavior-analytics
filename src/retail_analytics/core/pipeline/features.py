@@ -26,7 +26,7 @@ from retail_analytics.core.constants import (
     WINDOW_RECENT_30,
     WINDOW_YEAR,
 )
-from retail_analytics.core.pipeline.utils import C, K, _sink
+from retail_analytics.core.pipeline.utils import C, K, _sink, VERSION
 from retail_analytics.core.stats import safe_ratio
 
 
@@ -53,18 +53,17 @@ def _compute_baskets(line: pl.LazyFrame, out: Path) -> pl.LazyFrame:
 
 
 def compute_base_features(
-    basket: pl.LazyFrame, d: date, end: date, observation_start: date | None
+    basket: pl.LazyFrame, d: date, observation_start: date | None
 ) -> tuple[pl.LazyFrame, pl.Expr, pl.Expr, pl.Expr, date, date, date]:
     """Compute base customer-level features from baskets.
 
     Args:
         basket: Basket-level LazyFrame.
         d: Snapshot cutoff date.
-        end: Observation end date.
         observation_start: First observed transaction date.
 
     Returns:
-        Tuple of (base features frame, recent expr, old expr, year expr,
+        Tuple of (base features frame, recent expr, year expr,
                  30-day start, 90-day start, 365-day start).
     """
     s30 = d - timedelta(days=WINDOW_RECENT_30 - 1)
@@ -541,13 +540,12 @@ def merge_features(
     return frame
 
 
-def add_derived_features(frame: pl.LazyFrame, d: date, end: date) -> pl.LazyFrame:
+def add_derived_features(frame: pl.LazyFrame, d: date) -> pl.LazyFrame:
     """Add derived features: tenure, recency, AOV, changes, etc.
 
     Args:
         frame: Merged features frame.
         d: Snapshot cutoff date.
-        end: Observation end date.
 
     Returns:
         Frame with derived features added.
@@ -584,7 +582,7 @@ def add_derived_features(frame: pl.LazyFrame, d: date, end: date) -> pl.LazyFram
                 ("spend_90d", "spend_previous90d", "spend_change"),
             ]
         ],
-        pl.lit("reconstructed-1.3").alias("version"),
+        pl.lit(VERSION).alias("version"),
     )
     return frame
 

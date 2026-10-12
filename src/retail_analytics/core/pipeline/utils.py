@@ -10,6 +10,8 @@ from pathlib import Path
 
 import polars as pl
 
+from retail_analytics.core.stats import safe_ratio
+
 # ──────────────────────────────────────────────────────────────────────
 # Version
 # ──────────────────────────────────────────────────────────────────────
@@ -93,6 +95,23 @@ def _taglist(pairs: list[tuple[str, pl.Expr]]) -> pl.Expr:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _safe_ratio(a: pl.Expr, b: pl.Expr) -> pl.Expr:
-    """Safe division: returns null when denominator is null or <= 0."""
-    return pl.when(b.is_not_null() & (b > 0)).then(a / b).otherwise(None)
+# Backward compatibility alias
+_safe_ratio = safe_ratio
+
+
+def _mask_zero_spend_cols(frame: pl.LazyFrame) -> pl.LazyFrame:
+    """Set category_hhi and category_entropy to null when spend_365d <= 0.
+    
+    This masking is applied after labeling to ensure zero-spend customers
+    don't have misleading concentration/entropy values.
+    """
+    return frame.with_columns(
+        pl.when(pl.col("spend_365d") > 0)
+        .then(pl.col("category_hhi"))
+        .otherwise(None)
+        .alias("category_hhi"),
+        pl.when(pl.col("spend_365d") > 0)
+        .then(pl.col("category_entropy"))
+        .otherwise(None)
+        .alias("category_entropy"),
+    )

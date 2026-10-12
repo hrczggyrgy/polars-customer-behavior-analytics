@@ -27,10 +27,15 @@ from retail_analytics.core.constants import (
     QUANTILE_VALUE_LOW,
 )
 from retail_analytics.core.pipeline.labeling import apply_labels
-from retail_analytics.core.pipeline.prepare import prepare
+from retail_analytics.core.pipeline.prepare import prepare, PriceMode
 from retail_analytics.core.pipeline.reporting import generate_reports
 from retail_analytics.core.pipeline.snapshot import generate_snapshot
-from retail_analytics.core.pipeline.utils import VERSION, _sink
+from retail_analytics.core.pipeline.utils import VERSION, _sink, _mask_zero_spend_cols
+from retail_analytics.core.pipeline.stages import (
+    build_price_reference,
+    build_unavailable_reference_thresholds,
+    select_reference_and_calibrate,
+)
 from retail_analytics.core.thresholds import (
     calibrate_thresholds,
     compute_data_profile,
@@ -38,8 +43,6 @@ from retail_analytics.core.thresholds import (
     select_reference_cutoff,
     write_thresholds,
 )
-
-PriceMode = str  # "unit" or "line_total"
 
 
 def run_pipeline(
@@ -146,18 +149,8 @@ def run_pipeline(
     # Step 2: Generate snapshots for each cutoff
     numeric = []
     for d in dates:
-        # Build price reference for this cutoff
-        past = pl.scan_parquet(root / "validated.parquet").filter(
-            pl.col("date").is_between(d - timedelta(days=364), d)
-        )
-        _sink(
-            past.group_by("product_id").agg(
-                pl.col("unit_price").median().alias("reference_price"),
-                pl.len().alias("reference_count"),
-            ),
-            root / "price_references" / f"{d}.parquet",
-            sort_by="product_id",
-        )
+        # Build price reference for this cutoff (CLI sorts by product_id)
+        build_price_reference(root / "validated.parquet", d, root, sort_by_product=True)
         for path in paths:
             if (
                 pl.scan_parquet(path).filter(pl.col("date") <= d).select(pl.len()).collect().item()
@@ -171,19 +164,7 @@ def run_pipeline(
 
     if not numeric:
         # No customers at any cutoff; write empty thresholds and skip labeling/reports
-        thresholds = {
-            "value_low": None,
-            "value_high": None,
-            "basket_low": None,
-            "basket_high": None,
-            "gap_low": None,
-            "gap_high": None,
-            "reference_date": None,
-            "reference_population": 0,
-            "value_population": 0,
-            "style_population": 0,
-            "calibration_policy": asdict(default_policy()),
-        }
+        thresholds = build_unavailable_reference_thresholds(default_policy(), {"selected": False})
         write_thresholds(root, thresholds)
         return
 
@@ -196,33 +177,12 @@ def run_pipeline(
         min_reference_population=min_reference_population,
     )
 
-    # Select reference cutoff: earliest with sufficient & stable population
-    if reference_date is not None:
-        ref_date: date | None = date.fromisoformat(reference_date)
-        ref: pl.LazyFrame | None = pl.scan_parquet(
-            [str(p) for p in numeric if p.parent.name == str(ref_date)]
-        )
-        ref_info = {"selected": True, "reference_date": reference_date}
-    else:
-        ref_date, ref, ref_info = select_reference_cutoff(numeric, dates, root, policy)
+    ref_date, ref, ref_info, thresholds = select_reference_and_calibrate(
+        numeric, dates, root, policy, reference_date
+    )
 
     if ref_date is None or ref is None:
-        # No cutoff met criteria - write thresholds with reference_unavailable status
-        thresholds = {
-            "value_low": None,
-            "value_high": None,
-            "basket_low": None,
-            "basket_high": None,
-            "gap_low": None,
-            "gap_high": None,
-            "reference_date": None,
-            "reference_population": 0,
-            "value_population": 0,
-            "style_population": 0,
-            "calibration_policy": asdict(policy),
-            "reference_selection": ref_info,
-        }
-        write_thresholds(root, thresholds)
+        # No cutoff met criteria - thresholds already written by select_reference_and_calibrate
         # Label all snapshots with reference_unavailable
         for path in numeric:
             snap_date = date.fromisoformat(path.parent.name)
@@ -231,16 +191,7 @@ def run_pipeline(
                 thresholds,
                 snapshot_date=snap_date,
                 reference_date=None,
-            ).with_columns(
-                pl.when(pl.col("spend_365d") > 0)
-                .then(pl.col("category_hhi"))
-                .otherwise(None)
-                .alias("category_hhi"),
-                pl.when(pl.col("spend_365d") > 0)
-                .then(pl.col("category_entropy"))
-                .otherwise(None)
-                .alias("category_entropy"),
-            )
+            ).pipe(_mask_zero_spend_cols)
             _sink(frame, root / "snapshots" / path.parent.name / path.name)
 
         # Generate reports even without reference calibration
@@ -262,14 +213,9 @@ def run_pipeline(
         )
         return
 
-    # Calibrate thresholds from reference frame
-    thresholds = calibrate_thresholds(ref, policy, ref_date)
-
-    # Compute data profile for manifest
+    # compute_data_profile requires observation_start and end - add them to thresholds
     data_profile = compute_data_profile(ref, observation_start, end)
     thresholds["data_profile"] = data_profile
-
-    # Add reference selection info
     thresholds["reference_selection"] = ref_info
 
     write_thresholds(root, thresholds)
@@ -279,16 +225,7 @@ def run_pipeline(
         snap_date = date.fromisoformat(path.parent.name)
         frame = apply_labels(
             pl.scan_parquet(path), thresholds, snapshot_date=snap_date, reference_date=ref_date
-        ).with_columns(
-            pl.when(pl.col("spend_365d") > 0)
-            .then(pl.col("category_hhi"))
-            .otherwise(None)
-            .alias("category_hhi"),
-            pl.when(pl.col("spend_365d") > 0)
-            .then(pl.col("category_entropy"))
-            .otherwise(None)
-            .alias("category_entropy"),
-        )
+        ).pipe(_mask_zero_spend_cols)
         _sink(frame, root / "snapshots" / path.parent.name / path.name)
 
     # Step 5: Generate reports

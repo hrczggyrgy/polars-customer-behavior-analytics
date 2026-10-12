@@ -200,10 +200,10 @@ def compute_item_pairs(
             }
         )
 
-    # Map items to their individual supports
-    item_supports = dict(
-        zip(frequent_items[item_col].to_list(), frequent_items["support"].to_list())
-    )
+    # Create support lookup DataFrame for native joins (replaces dict + map_elements)
+    # Select only the item column and support column
+    support_df = frequent_items.select([item_col, "support"]).rename({item_col: "item"})
+
     # Use correct total_baskets from frequent_items (which now has correct denominator)
     total_baskets = frequent_items["total_baskets"][0] if len(frequent_items) > 0 else 0
     min_cooccurrence = max(1, math.ceil(config.min_support * total_baskets))
@@ -262,127 +262,65 @@ def compute_item_pairs(
         .head(config.top_k_pairs)
     )
 
-    # Compute metrics
+    # Compute metrics using native joins instead of map_elements
+    # Join support for item_a and item_b
+    support_a = support_df.rename({"item": "item_a", "support": "support_a"})
+    support_b = support_df.rename({"item": "item_b", "support": "support_b"})
+
     return collect(
-        pair_counts.with_columns(
+        pair_counts.join(support_a, on="item_a", how="left")
+        .join(support_b, on="item_b", how="left")
+        .with_columns(
             [
                 (pl.col("cooccurrence_count") / pl.lit(total_baskets)).alias("support"),
             ]
         )
         .with_columns(
             [
-                # Confidence A -> B
-                pl.when(
-                    pl.col("item_a").map_elements(
-                        lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
-                    )
-                    > 0
-                )
-                .then(
-                    pl.col("support")
-                    / pl.col("item_a").map_elements(
-                        lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
-                    )
-                )
+                # Confidence A -> B = support(A∪B) / support(A)
+                pl.when(pl.col("support_a") > 0)
+                .then(pl.col("support") / pl.col("support_a"))
                 .otherwise(None)
                 .alias("confidence_a_to_b"),
-                # Confidence B -> A
-                pl.when(
-                    pl.col("item_b").map_elements(
-                        lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
-                    )
-                    > 0
-                )
-                .then(
-                    pl.col("support")
-                    / pl.col("item_b").map_elements(
-                        lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
-                    )
-                )
+                # Confidence B -> A = support(A∪B) / support(B)
+                pl.when(pl.col("support_b") > 0)
+                .then(pl.col("support") / pl.col("support_b"))
                 .otherwise(None)
                 .alias("confidence_b_to_a"),
             ]
         )
         .with_columns(
             [
-                # Lift
-                pl.when(
-                    (
-                        pl.col("item_a").map_elements(
-                            lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
-                        )
-                        > 0
-                    )
-                    & (
-                        pl.col("item_b").map_elements(
-                            lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
-                        )
-                        > 0
-                    )
-                )
-                .then(
-                    pl.col("support")
-                    / (
-                        pl.col("item_a").map_elements(
-                            lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
-                        )
-                        * pl.col("item_b").map_elements(
-                            lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
-                        )
-                    )
-                )
+                # Lift = support(A∪B) / (support(A) * support(B))
+                pl.when((pl.col("support_a") > 0) & (pl.col("support_b") > 0))
+                .then(pl.col("support") / (pl.col("support_a") * pl.col("support_b")))
                 .otherwise(None)
                 .alias("lift"),
             ]
         )
         .with_columns(
             [
-                # Conviction A -> B
+                # Conviction A -> B = (1 - support(B)) / (1 - confidence(A->B))
                 pl.when(
                     (pl.col("confidence_a_to_b").is_not_null())
                     & (pl.col("confidence_a_to_b") < 1.0)
-                    & (
-                        pl.col("item_b").map_elements(
-                            lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
-                        )
-                        < 1.0
-                    )
+                    & (pl.col("support_b") < 1.0)
                 )
-                .then(
-                    (
-                        1.0
-                        - pl.col("item_b").map_elements(
-                            lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
-                        )
-                    )
-                    / (1.0 - pl.col("confidence_a_to_b"))
-                )
+                .then((1.0 - pl.col("support_b")) / (1.0 - pl.col("confidence_a_to_b")))
                 .otherwise(None)
                 .alias("conviction_a_to_b"),
-                # Conviction B -> A
+                # Conviction B -> A = (1 - support(A)) / (1 - confidence(B->A))
                 pl.when(
                     (pl.col("confidence_b_to_a").is_not_null())
                     & (pl.col("confidence_b_to_a") < 1.0)
-                    & (
-                        pl.col("item_a").map_elements(
-                            lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
-                        )
-                        < 1.0
-                    )
+                    & (pl.col("support_a") < 1.0)
                 )
-                .then(
-                    (
-                        1.0
-                        - pl.col("item_a").map_elements(
-                            lambda x: item_supports.get(x, 0.0), return_dtype=pl.Float64
-                        )
-                    )
-                    / (1.0 - pl.col("confidence_b_to_a"))
-                )
+                .then((1.0 - pl.col("support_a")) / (1.0 - pl.col("confidence_b_to_a")))
                 .otherwise(None)
                 .alias("conviction_b_to_a"),
             ]
         )
+        .drop(["support_a", "support_b"])
         .filter(
             (pl.col("confidence_a_to_b") >= config.min_confidence)
             | (pl.col("confidence_b_to_a") >= config.min_confidence)
@@ -567,7 +505,7 @@ def cross_sell_recommendations(
         )
 
         all_recs = pl.concat([recs_a_to_b, recs_b_to_a])
-        return collect(
+        return (
             all_recs.filter(pl.col("confidence").is_not_null())
             .sort(["source_item", "confidence"], descending=[False, True])
             .group_by("source_item")
@@ -588,7 +526,7 @@ def new_to_repeat_pathways(
     snapshots: pl.LazyFrame,
     cutoff: str,
     min_trials: int = 5,
-) -> pl.DataFrame:
+) -> dict[str, pl.DataFrame]:
     """Analyze new-to-repeat product pathways.
 
     Identifies products that customers tend to buy AFTER their first purchase
@@ -601,7 +539,7 @@ def new_to_repeat_pathways(
         min_trials: Minimum trials for a product to be considered
 
     Returns:
-        DataFrame with pathway analysis
+        Dict with 'product_transitions' and 'category_transitions' DataFrames
     """
     cutoff_date = pl.lit(cutoff).str.to_date()
     window_start = cutoff_date - pl.duration(days=WINDOW_YEAR - 1)
@@ -613,7 +551,7 @@ def new_to_repeat_pathways(
 
     txns = validated.filter(
         pl.col("customer_id").is_in(cust_ids) & pl.col("date").is_between(window_start, cutoff_date)
-    ).select("customer_id", "date", "product_id", "category_key")
+    ).select("customer_id", "date", "transaction_id", "product_id", "category_key")
 
     # For each customer, order their transactions
     ordered = (
@@ -700,6 +638,8 @@ def basket_composition_by_segment(
             )
             .with_columns(
                 pl.col("spend").sum().over(dim).alias("segment_spend"),
+            )
+            .with_columns(
                 (pl.col("spend") / pl.col("segment_spend")).alias("spend_share"),
             )
             .sort([dim, "spend_share"], descending=[False, True])
@@ -715,6 +655,8 @@ def basket_composition_by_segment(
             )
             .with_columns(
                 pl.col("spend").sum().over(dim).alias("segment_spend"),
+            )
+            .with_columns(
                 (pl.col("spend") / pl.col("segment_spend")).alias("spend_share"),
             )
             .sort([dim, "spend_share"], descending=[False, True])

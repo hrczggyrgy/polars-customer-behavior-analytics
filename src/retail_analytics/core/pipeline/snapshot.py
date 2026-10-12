@@ -59,6 +59,9 @@ def generate_snapshot(
     line = pl.scan_parquet(path).filter(pl.col("date") <= d)
 
     # Temporal boundary assertion - prevent lookahead bias
+    # Note: This check is performed after filtering in prepare.py, but validates
+    # that no upstream leakage occurred. Could be combined with other scalar collections
+    # in a benchmarked optimization pass (see Phase 9.2 plan).
     max_date_check = line.select(pl.col("date").max()).collect().item()
     if max_date_check is not None and max_date_check > d:
         raise AssertionError(
@@ -69,6 +72,8 @@ def generate_snapshot(
     basket = _compute_baskets(line, out)
 
     # Revenue reconciliation
+    # Note: Separate scalar collection. Could be combined with other checks
+    # in a benchmarked optimization pass (see Phase 9.2 plan).
     totals = line.select(pl.col("value").sum()).collect().item() or 0
     if abs((basket.select(pl.col("spend").sum()).collect().item() or 0) - totals) > 1e-7 * max(
         1, abs(totals)
@@ -76,11 +81,13 @@ def generate_snapshot(
         raise AssertionError("Revenue reconciliation failed")
 
     # Base features
-    base, recent, old, year, s30, s90, s365 = compute_base_features(
-        basket, d, end, observation_start
+    base, recent, _, year, s30, s90, s365 = compute_base_features(
+        basket, d, observation_start
     )
 
     # Check if base has any customers
+    # Note: Separate scalar collection. Could be combined with other checks
+    # in a benchmarked optimization pass (see Phase 9.2 plan).
     base_count = base.select(pl.len()).collect()
     if base_count.height == 0 or base_count.item() == 0:
         return None
@@ -131,13 +138,15 @@ def generate_snapshot(
     )
 
     # Post-join integrity check
+    # Note: Validates 1:1 cardinality after feature merges. Could be combined
+    # with other scalar collections in a benchmarked optimization pass (see Phase 9.2 plan).
     dup_check = frame.group_by(C).len().filter(pl.col("len") > 1)
     has_dups = dup_check.select(pl.len()).collect().item()
     if has_dups:
         raise ValueError("Duplicate customer_ids after feature merge")
 
     # Derived features
-    frame = add_derived_features(frame, d, end)
+    frame = add_derived_features(frame, d)
 
     # Future outcomes
     frame = add_future_outcomes(frame, path, d, end, coverage_confirmed)

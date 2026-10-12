@@ -25,6 +25,17 @@ from retail_analytics.core.pipeline import (
     prepare,
     sink,
 )
+from retail_analytics.core.pipeline.utils import _mask_zero_spend_cols
+from retail_analytics.core.pipeline.preparation import (
+    normalize_strings,
+    parse_numeric_columns,
+    validity_mask,
+)
+from retail_analytics.core.pipeline.stages import (
+    build_price_reference,
+    build_unavailable_reference_thresholds,
+    select_reference_and_calibrate,
+)
 from retail_analytics.core.thresholds import (
     calibrate_thresholds,
     compute_data_profile,
@@ -54,9 +65,13 @@ def write_json(path: Path | str, value: Any) -> None:
     Path(path).write_text(json.dumps(value, default=str, indent=2))
 
 
-def inspect(job: dict) -> dict:
-    """Inspect source data: validate schema, count rows, compute bounds."""
-    root, source = Path(job["workspace"]), Path(job["source"])
+def _load_normalized_source(job: dict) -> tuple[pl.LazyFrame, pl.Schema]:
+    """Load source file, validate format, normalize column names.
+    
+    Returns:
+        Tuple of (LazyFrame with normalized column names, Schema after normalization)
+    """
+    source = Path(job["source"])
 
     # Load and validate file format
     if job["kind"] == "parquet":
@@ -83,6 +98,15 @@ def inspect(job: dict) -> dict:
         raise ValueError("Column names collide after trimming/case normalization")
     raw = raw.rename(names)
     schema = raw.collect_schema()
+    return raw, schema
+
+
+def inspect(job: dict) -> dict:
+    """Inspect source data: validate schema, count rows, compute bounds."""
+    root = Path(job["workspace"])
+
+    # Load and normalize source
+    raw, schema = _load_normalized_source(job)
 
     # Apply column mapping if provided
     column_mapping = job.get("column_mapping", {})
@@ -154,44 +178,20 @@ def inspect(job: dict) -> dict:
     else:
         raise ValueError("Numeric epoch dates need conversion before upload")
 
-    numeric_cols = []
-    for x in ["price", "quantity"]:
-        value = pl.col(x).cast(pl.String).str.strip_chars()
-        if job.get("decimal_comma"):
-            value = value.str.replace_all(",", ".", literal=True)
-        raw_col = value.replace("", None).alias(f"{x}_raw")
-        casted = value.cast(pl.Float64, strict=False).alias(x)
-        numeric_cols.extend([raw_col, casted])
-
+    # Parse numeric columns with dashboard-specific options (decimal comma support)
     raw = raw.select(COLS).with_columns(
         parsed.alias("date"),
         pl.col("transaction_date").alias("transaction_date_original"),
-        *numeric_cols,
-        *[
-            pl.col(x).cast(pl.String).str.strip_chars().replace("", None)
-            for x in ["customer_id", "transaction_id", "product_id"]
-        ],
-        *[
-            pl.col(x).cast(pl.String).str.strip_chars().replace("", None).fill_null("__UNKNOWN__")
-            for x in ["department", "category"]
-        ],
-        pl.col("product_description").cast(pl.String).fill_null(""),
     )
+    raw = parse_numeric_columns(
+        raw, schema, decimal_comma=job.get("decimal_comma", False), mode=job["price_mode"]
+    )
+    # Normalize strings with dashboard-specific options
+    raw = normalize_strings(raw, unknown_dept_category=True, null_product_description=True)
 
+    # Compute value expression for validity check
     value = pl.col("price") * pl.col("quantity") if job["price_mode"] == "unit" else pl.col("price")
-    valid = (
-        pl.all_horizontal(
-            [
-                pl.col(x).is_not_null()
-                for x in ["customer_id", "transaction_id", "product_id", "date"]
-            ]
-        )
-        & pl.col("price").is_finite()
-        & (pl.col("price") >= 0)
-        & pl.col("quantity").is_finite()
-        & (pl.col("quantity") > 0)
-        & value.is_finite()
-    ).fill_null(False)
+    valid = validity_mask(raw, value_expr=value)
 
     summary = (
         raw.select(
@@ -261,28 +261,10 @@ def inspect(job: dict) -> dict:
 
 def preview(job: dict) -> dict:
     """Read file schema without validation for column mapping UI."""
-    root, source = Path(job["workspace"]), Path(job["source"])
-    if job["kind"] == "parquet":
-        with source.open("rb") as handle:
-            start = handle.read(4)
-            handle.seek(-4, 2)
-            tail = handle.read(4)
-        if start != b"PAR1" or tail != b"PAR1":
-            raise ValueError("Not a supported, unencrypted Parquet file")
-        raw = pl.scan_parquet(source)
-    elif job["kind"] == "csv":
-        raw = pl.scan_csv(
-            source, separator=job.get("separator", ","), infer_schema=False, encoding="utf8"
-        )
-    else:
-        raise ValueError("Only Parquet and UTF-8 CSV are supported")
+    root = Path(job["workspace"])
 
-    schema = raw.collect_schema()
-    names = {x: x.lstrip("\ufeff").strip().lower() for x in schema.names()}
-    if len(set(names.values())) != len(names):
-        raise ValueError("Column names collide after trimming/case normalization")
-    raw = raw.rename(names)
-    schema = raw.collect_schema()
+    # Load and normalize source
+    raw, schema = _load_normalized_source(job)
 
     available = sorted(
         [c for c in schema.names() if not schema[c].is_nested() and schema[c] != pl.Binary]
@@ -335,16 +317,8 @@ def analyze(job: dict) -> None:
 
     numeric = []
     for d in dates:
-        past = pl.scan_parquet(root / "validated.parquet").filter(
-            pl.col("date").is_between(d - timedelta(days=364), d)
-        )
-        sink(
-            past.group_by("product_id").agg(
-                pl.col("unit_price").median().alias("reference_price"),
-                pl.len().alias("reference_count"),
-            ),
-            root / "price_references" / f"{d}.parquet",
-        )
+        # Build price reference (dashboard doesn't sort by product_id)
+        build_price_reference(root / "validated.parquet", d, root, sort_by_product=False)
         for path in paths:
             available = (
                 pl.scan_parquet(path).filter(pl.col("date") <= d).select(pl.len()).collect().item()
@@ -370,43 +344,17 @@ def analyze(job: dict) -> None:
         min_reference_population=min_reference_population,
     )
 
-    if reference_date is not None:
-        ref_date = date.fromisoformat(reference_date)
-        ref = pl.scan_parquet([str(p) for p in numeric if p.parent.name == str(ref_date)])
-        ref_info = {"selected": True, "reference_date": reference_date}
-    else:
-        ref_date, ref, ref_info = select_reference_cutoff(numeric, dates, root, policy)
+    ref_date, ref, ref_info, thresholds = select_reference_and_calibrate(
+        numeric, dates, root, policy, reference_date
+    )
 
     if ref_date is None or ref is None:
-        thresholds = {
-            "value_low": None,
-            "value_high": None,
-            "basket_low": None,
-            "basket_high": None,
-            "gap_low": None,
-            "gap_high": None,
-            "reference_date": None,
-            "reference_population": 0,
-            "value_population": 0,
-            "style_population": 0,
-            "calibration_policy": asdict(policy),
-            "reference_selection": ref_info,
-        }
-        write_thresholds(root, thresholds)
+        # thresholds already written by select_reference_and_calibrate
         for path in numeric:
             snap_date = date.fromisoformat(path.parent.name)
             frame = apply_labels(
                 pl.scan_parquet(path), thresholds, snapshot_date=snap_date, reference_date=None
-            ).with_columns(
-                pl.when(pl.col("spend_365d") > 0)
-                .then(pl.col("category_hhi"))
-                .otherwise(None)
-                .alias("category_hhi"),
-                pl.when(pl.col("spend_365d") > 0)
-                .then(pl.col("category_entropy"))
-                .otherwise(None)
-                .alias("category_entropy"),
-            )
+            ).pipe(_mask_zero_spend_cols)
             sink(frame, root / "snapshots" / path.parent.name / path.name)
         write_json(
             root / "run.json",
@@ -423,7 +371,7 @@ def analyze(job: dict) -> None:
         )
         return
 
-    thresholds = calibrate_thresholds(ref, policy, ref_date)
+    # compute_data_profile requires observation_start and end - add them to thresholds
     data_profile = compute_data_profile(ref, observation_start, end)
     thresholds["data_profile"] = data_profile
     thresholds["reference_selection"] = ref_info
@@ -433,16 +381,7 @@ def analyze(job: dict) -> None:
         snap_date = date.fromisoformat(path.parent.name)
         frame = apply_labels(
             pl.scan_parquet(path), thresholds, snapshot_date=snap_date, reference_date=ref_date
-        ).with_columns(
-            pl.when(pl.col("spend_365d") > 0)
-            .then(pl.col("category_hhi"))
-            .otherwise(None)
-            .alias("category_hhi"),
-            pl.when(pl.col("spend_365d") > 0)
-            .then(pl.col("category_entropy"))
-            .otherwise(None)
-            .alias("category_entropy"),
-        )
+        ).pipe(_mask_zero_spend_cols)
         sink(frame, root / "snapshots" / path.parent.name / path.name)
 
     write_json(

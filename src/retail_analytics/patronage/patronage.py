@@ -9,6 +9,7 @@ import shutil
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 
 VERSION = "patronage-0.1"
 C = "customer_id"
@@ -48,7 +49,19 @@ class Rules:
             raise ValueError("Invalid cadence, activity or overdue threshold")
 
 
-def month_bounds(first, cutoff):
+def month_bounds(first: date, cutoff: date) -> tuple[date, date, int]:
+    """Compute complete month bounds between first observation and cutoff.
+    
+    Args:
+        first: First observation date
+        cutoff: Snapshot cutoff date
+        
+    Returns:
+        Tuple of (start_month, end_month, complete_month_count)
+        where start_month is first day of month after first's month (or first's month if 1st),
+        end_month is first day of cutoff's month (if cutoff is last day) or previous month,
+        and count is number of complete months between start and end (inclusive).
+    """
     if cutoff < first:
         raise ValueError("Cutoff precedes first observation")
     start = first.replace(day=1)
@@ -61,7 +74,24 @@ def month_bounds(first, cutoff):
     return start, end, count
 
 
-def classify(row, rules=Rules(), capture_confirmed=False):
+def classify(row: dict[str, Any], rules: Rules = Rules(), capture_confirmed: bool = False) -> str:
+    """Classify a single customer's observed patronage state.
+    
+    Args:
+        row: Customer feature row with keys:
+            - days_history, tenure, recency
+            - gap_cv, median_gap, gap_count, days_365d
+            - complete_months, active_complete_months
+            - active_period_share, resume_events
+        rules: Classification thresholds
+        capture_confirmed: Whether capture period is confirmed
+        
+    Returns:
+        Patronage label: one of
+        'capture_unconfirmed', 'first_observed', 'long_observed_one_day',
+        'recent_repeat', 'insufficient_history', 'recurring_overdue',
+        'reactivated_repeat', 'established_recurring', 'established_occasional'
+    """
     if not capture_confirmed:
         return "capture_unconfirmed"
     days, tenure = row["days_history"], row["tenure"]
@@ -100,7 +130,20 @@ def classify(row, rules=Rules(), capture_confirmed=False):
     return "established_occasional"
 
 
-def label_frame(frame, rules=Rules(), capture_confirmed=False):
+def label_frame(frame: "pl.DataFrame", rules: Rules = Rules(), capture_confirmed: bool = False) -> "pl.DataFrame":
+    """Add observed_patronage column to a DataFrame using vectorized classification.
+    
+    Args:
+        frame: Polars DataFrame with customer features
+        rules: Classification thresholds
+        capture_confirmed: Whether capture period is confirmed
+        
+    Returns:
+        DataFrame with added columns:
+        - observed_patronage: patronage label
+        - patronage_cadence_eligible: boolean for cadence eligibility
+        - patronage_version: version string
+    """
     import polars as pl
 
     enough = (
@@ -148,7 +191,17 @@ def label_frame(frame, rules=Rules(), capture_confirmed=False):
     )
 
 
-def destination(root, rules, capture_confirmed):
+def destination(root: str | Path, rules: Rules, capture_confirmed: bool) -> tuple[Path, dict[str, Any]]:
+    """Compute output directory and specification manifest for patronage build.
+    
+    Args:
+        root: Pipeline output root directory
+        rules: Classification thresholds
+        capture_confirmed: Whether capture period is confirmed
+        
+    Returns:
+        Tuple of (output_directory, specification_dict)
+    """
     manifest = json.loads((Path(root) / "run.json").read_text())
     specification = dict(
         version=VERSION,
@@ -160,7 +213,17 @@ def destination(root, rules, capture_confirmed):
     return Path(root) / "patronage" / key, specification
 
 
-def build(root, rules=Rules(), capture_confirmed=False):
+def build(root: str | Path, rules: Rules = Rules(), capture_confirmed: bool = False) -> Path:
+    """Build patronage snapshots from pipeline outputs.
+    
+    Args:
+        root: Pipeline output root directory
+        rules: Classification thresholds
+        capture_confirmed: Whether capture period is confirmed
+        
+    Returns:
+        Path to patronage output directory
+    """
     import polars as pl
 
     from retail_analytics.core.retail_polars_workflow import sink

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import polars as pl
 
-from retail_analytics.core.pipeline.prepare import C, _sink
+from retail_analytics.core.pipeline.utils import C, _sink
 from retail_analytics.core.stats import safe_ratio
 
 
@@ -86,12 +86,24 @@ def generate_reports(root: Path, buckets: int) -> None:
     # Transitions
     paths = []
     for b in range(buckets):
+        snapshot_path = root / "snapshots" / "*" / f"b{b}.parquet"
         try:
-            rows = pl.scan_parquet(str(root / "snapshots" / "*" / f"b{b}.parquet"))
+            rows = pl.scan_parquet(str(snapshot_path))
             if rows.select(pl.len()).collect().item() == 0:
                 continue
-        except Exception:
+        except (FileNotFoundError, pl.exceptions.ComputeError):
+            # Expected: no snapshot data for this bucket (glob expands to empty)
             continue
+        except Exception as e:
+            # Unexpected errors (corrupt files, schema issues, computation failures)
+            # Log and re-raise to avoid silent data loss
+            import warnings
+            warnings.warn(
+                f"Transition computation failed for bucket {b}: {type(e).__name__}: {e}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            raise
         for dim in ["lifecycle", "behavior", "trajectory", "value_tier"]:
             prev = rows.with_columns(
                 pl.col(dim).shift(1).over(C, order_by="snapshot").alias("from_label"),

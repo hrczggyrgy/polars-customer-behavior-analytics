@@ -53,8 +53,9 @@ Rows failing any rule are **rejected** and written to `rejected.parquet`.
 - **Basket key**: `(customer_id, transaction_id, date)` — must be unique per basket
 - **Validation**: After cleaning, pipeline checks that each basket key maps to exactly one date
 - **Conflict**: If same `(customer_id, transaction_id)` has multiple dates → **error** (pipeline stops)
-- **Exact duplicates**: Rows identical on all columns (including `product_id`) are preserved and counted in `quality.json` as `preserved_duplicate_extras`
+- **Exact duplicates**: Rows identical on all columns (including `product_id`) are preserved by default and counted in `quality.json` as `preserved_duplicate_extras`
 - **No automatic deduplication**: User must preprocess if deduplication needed
+- **Opt-in deduplication**: The `--drop-exact-duplicates` CLI flag (or `drop_exact_duplicates=True` in API) enables removal of exact duplicate rows. When enabled, `valid_rows` in quality audit reflects pre-deduplication count; duplicates are removed after validation but before feature computation.
 
 ### Product Variation Audit
 
@@ -594,7 +595,7 @@ Pipeline run configuration.
 
 1. **Deterministic output ordering**: All outputs sorted by `customer_id` (and `snapshot` where applicable) before write
 2. **Fixed hash seed**: `hash(seed=17)` for bucketing; `hash(seed=29)` for dashboard sampling
-3. **Quantile interpolation**: Polars default (nearest) — thresholds reproducible for fixed input
+3. **Quantile interpolation**: Linear — used for distribution-free confidence intervals (see thresholds.py::_quantile_with_ci)
 4. **Version tracking**: `version` field in outputs and `configuration.json`
 5. **No random state**: No stochastic algorithms used
 
@@ -609,4 +610,4 @@ Pipeline run configuration.
 5. **Future outcomes conditional**: Require explicit `coverage_confirmed`; otherwise null.
 6. **Basket grain assumption**: `(customer_id, transaction_id, date)` = one shopping occasion.
 7. **Currency opaque**: No currency metadata; amounts in input units.
-8. **Timezone naive**: Datetimes truncated to date; no TZ conversion.
+8. **Timezone handling**: Timezone-aware Datetime input is converted to the specified `--timezone` before date extraction; naive Datetimes are used as-is.
