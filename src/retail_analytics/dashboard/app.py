@@ -2847,6 +2847,12 @@ def display_results(root, coverage):
                             continue
 
                         fig = go.Figure()
+                        # Check if CI data exists
+                        has_upper = h_data["upper_ci"].is_not_null().any()
+                        has_lower = h_data["lower_ci"].is_not_null().any()
+                        upper_diff = (h_data["upper_ci"] - h_data["purchase_rate"]).to_list() if has_upper else None
+                        lower_diff = (h_data["purchase_rate"] - h_data["lower_ci"]).to_list() if has_lower else None
+
                         fig.add_trace(
                             go.Bar(
                                 x=h_data["lateness_bin"].to_list(),
@@ -2856,17 +2862,11 @@ def display_results(root, coverage):
                                 error_y=dict(
                                     type="data",
                                     symmetric=False,
-                                    array=(h_data["upper_ci"] - h_data["purchase_rate"]).to_list()
-                                    if h_data["upper_ci"].not_null().any()
-                                    else None,
-                                    arrayminus=(
-                                        h_data["purchase_rate"] - h_data["lower_ci"]
-                                    ).to_list()
-                                    if h_data["lower_ci"].not_null().any()
-                                    else None,
+                                    array=upper_diff,
+                                    arrayminus=lower_diff,
                                     visible=True,
                                 )
-                                if h_data["upper_ci"].not_null().any()
+                                if has_upper or has_lower
                                 else None,
                                 customdata=list(
                                     zip(
@@ -3257,22 +3257,22 @@ def display_results(root, coverage):
                     pivot = heatmap_data.pivot(
                         values="activity_rate",
                         index="cohort_month",
-                        columns="age_month",
+                        on="age_month",
                     )
-                    heatmap_data.pivot(
+                    active_pivot = heatmap_data.pivot(
                         values="active_customers",
                         index="cohort_month",
-                        columns="age_month",
+                        on="age_month",
                     )
-                    heatmap_data.pivot(
+                    size_pivot = heatmap_data.pivot(
                         values="cohort_size",
                         index="cohort_month",
-                        columns="age_month",
+                        on="age_month",
                     )
-                    heatmap_data.pivot(
+                    max_obs_pivot = heatmap_data.pivot(
                         values="max_age_observed",
                         index="cohort_month",
-                        columns="age_month",
+                        on="age_month",
                     )
 
                     # Limit to last 24 cohorts/ages for display
@@ -4536,6 +4536,12 @@ def display_results(root, coverage):
                         if h_data.is_empty():
                             continue
 
+                        # Check if CI data exists
+                        has_upper = h_data["upper_ci"].is_not_null().any()
+                        has_lower = h_data["lower_ci"].is_not_null().any()
+                        upper_diff = (h_data["upper_ci"] - h_data["purchase_rate"]).to_list() if has_upper else None
+                        lower_diff = (h_data["purchase_rate"] - h_data["lower_ci"]).to_list() if has_lower else None
+
                         fig = go.Figure()
                         fig.add_trace(
                             go.Bar(
@@ -4546,20 +4552,17 @@ def display_results(root, coverage):
                                 error_y=dict(
                                     type="data",
                                     symmetric=False,
-                                    array=(h_data["upper_ci"] - h_data["purchase_rate"]).to_list()
-                                    if h_data["upper_ci"].not_null().any()
-                                    else None,
-                                    arrayminus=(
-                                        h_data["purchase_rate"] - h_data["lower_ci"]
-                                    ).to_list()
-                                    if h_data["lower_ci"].not_null().any()
-                                    else None,
+                                    array=upper_diff,
+                                    arrayminus=lower_diff,
                                     visible=True,
                                 )
-                                if h_data["upper_ci"].not_null().any()
+                                if has_upper or has_lower
                                 else None,
                                 customdata=list(
-                                    zip(h_data["eligible_n"].to_list(), h_data["buyers"].to_list())
+                                    zip(
+                                        h_data["eligible_n"].to_list(),
+                                        h_data["buyers"].to_list(),
+                                    )
                                 ),
                                 hovertemplate="Lateness bin: %{x}<br>Return rate: %{y:.1%}<br>Eligible: %{customdata[0]:,}<br>Buyers: %{customdata[1]:,}<extra></extra>",
                             )

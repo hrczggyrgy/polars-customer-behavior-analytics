@@ -225,24 +225,27 @@ def cohort_summary(baskets, rows, cutoff, coverage, minimum=20):
     ids = (
         rows.select("customer_id", "first_purchase")
         .unique()
-        .with_columns(pl.col("first_purchase").dt.truncate("1mo").alias("cohort"))
+        .with_columns(
+            pl.col("first_purchase").cast(pl.Date).dt.truncate("1mo").alias("cohort"),
+            pl.col("first_purchase").cast(pl.Date).alias("first_purchase_date"),
+        )
     )
     repeat = baskets.filter(pl.col("date") <= cutoff).join(
-        ids.select("customer_id", "first_purchase"), on="customer_id", how="inner", validate="m:1"
+        ids.select("customer_id", "first_purchase_date"), on="customer_id", how="inner", validate="m:1"
     )
     repeat = (
-        repeat.filter(pl.col("date") > pl.col("first_purchase"))
+        repeat.filter(pl.col("date") > pl.col("first_purchase_date"))
         .group_by("customer_id")
         .agg(pl.col("date").min().alias("repeat_date"))
     )
     profiles = ids.join(repeat, on="customer_id", how="left", validate="1:1")
     records = []
     for horizon in [30, 60, 90]:
-        eligible = pl.col("first_purchase") + pl.duration(days=horizon) <= pl.lit(cutoff)
+        eligible = pl.col("first_purchase_date") + pl.duration(days=horizon) <= pl.lit(cutoff)
         success = (
             eligible
             & pl.col("repeat_date").is_not_null()
-            & (pl.col("repeat_date") <= pl.col("first_purchase") + pl.duration(days=horizon))
+            & (pl.col("repeat_date") <= pl.col("first_purchase_date") + pl.duration(days=horizon))
         )
         data = collect(
             profiles.group_by("cohort").agg(
@@ -1105,13 +1108,14 @@ def future_outcome_validation(rows):
                 .mean()
                 .alias("mean_spend_buyers"),
             )
-            .rename({dim: "dim_value"})
             .with_columns(
                 (pl.col("buyers") / pl.col("eligible_n")).alias("rate"),
                 pl.lit(30).alias("horizon"),
                 pl.lit(dim).alias("dimension"),
             )
         )
+        # Keep original dimension name for dashboard compatibility
+        stats_30 = stats_30.rename({"dim_value": dim}) if "dim_value" in stats_30.columns else stats_30
         results.append(stats_30)
 
         # 90-day validation
@@ -1127,13 +1131,14 @@ def future_outcome_validation(rows):
                 .mean()
                 .alias("mean_spend_buyers"),
             )
-            .rename({dim: "dim_value"})
             .with_columns(
                 (pl.col("buyers") / pl.col("eligible_n")).alias("rate"),
                 pl.lit(90).alias("horizon"),
                 pl.lit(dim).alias("dimension"),
             )
         )
+        # Keep original dimension name for dashboard compatibility
+        stats_90 = stats_90.rename({"dim_value": dim}) if "dim_value" in stats_90.columns else stats_90
         results.append(stats_90)
 
     return pl.concat(results, how="vertical_relaxed") if results else pl.DataFrame()
@@ -1443,15 +1448,17 @@ def multi_horizon_cohort_repeat(
 
     # Get customer cohorts (first purchase month)
     cust_cohorts = rows.select("customer_id", "first_purchase").unique()
+    # Ensure first_purchase is a date type
     cust_cohorts = cust_cohorts.with_columns(
-        pl.col("first_purchase").dt.truncate("1mo").alias("cohort")
+        pl.col("first_purchase").cast(pl.Date).dt.truncate("1mo").alias("cohort"),
+        pl.col("first_purchase").cast(pl.Date).alias("first_purchase_date"),
     )
 
     # Get repeat purchases from baskets
     cust_ids = collect(cust_cohorts.select("customer_id"))["customer_id"].to_list()
     # Join baskets to customer cohorts to get first_purchase for each customer
     baskets_with_first = baskets.join(
-        cust_cohorts.select("customer_id", "first_purchase"),
+        cust_cohorts.select("customer_id", "first_purchase_date"),
         on="customer_id",
         how="inner",
         validate="m:1",
@@ -1459,21 +1466,21 @@ def multi_horizon_cohort_repeat(
     repeat_data = collect(
         baskets_with_first.filter(pl.col("customer_id").is_in(cust_ids))
         .filter(pl.col("date") <= pl.lit(cutoff))
-        .filter(pl.col("date") > pl.col("first_purchase"))
+        .filter(pl.col("date") > pl.col("first_purchase_date"))
         .group_by("customer_id")
         .agg(pl.col("date").min().alias("repeat_date"))
     ).lazy()
 
-    # Merge
+    # Merge - use first_purchase_date for date arithmetic
     cohort_data = cust_cohorts.join(repeat_data, on="customer_id", how="left")
 
     results = []
     for horizon in horizons:
-        eligible = pl.col("first_purchase") + pl.duration(days=horizon) <= pl.lit(cutoff)
+        eligible = pl.col("first_purchase_date") + pl.duration(days=horizon) <= pl.lit(cutoff)
         success = (
             eligible
             & pl.col("repeat_date").is_not_null()
-            & (pl.col("repeat_date") <= pl.col("first_purchase") + pl.duration(days=horizon))
+            & (pl.col("repeat_date") <= pl.col("first_purchase_date") + pl.duration(days=horizon))
         )
 
         cohort_stats = (
