@@ -311,6 +311,24 @@ def momentum_map(rows, sample_limit=2000):
     """
     import polars as pl
 
+    # Check required columns exist
+    schema = rows.collect_schema()
+    required_cols = ["frequency_change", "basket_change", "value_tier", "lifecycle", "evidence",
+                     "spend_90d", "purchases_90d", "purchases_previous90d", "aov_recent", "aov_previous",
+                     "customer_id"]
+    missing = [c for c in required_cols if c not in schema]
+    if missing:
+        # Return empty structure with expected schema
+        empty_sample = pl.DataFrame(schema={c: schema.get(c, pl.Float64) for c in required_cols})
+        empty_quad = pl.DataFrame(schema={"quadrant": pl.String, "customers": pl.Int64, "spend_90d": pl.Float64,
+                                           "customer_share": pl.Float64, "spend_share": pl.Float64})
+        return {
+            "sample": empty_sample,
+            "quadrant_summary": empty_quad,
+            "not_comparable_n": 0,
+            "finite_n": 0,
+        }
+
     # Filter to customers with finite frequency_change and basket_change
     finite_rows = rows.filter(
         pl.col("frequency_change").is_finite() & pl.col("basket_change").is_finite()
@@ -318,6 +336,18 @@ def momentum_map(rows, sample_limit=2000):
     total_n = collect(rows.select(pl.len())).item()
     finite_n = collect(finite_rows.select(pl.len())).item()
     not_comparable_n = total_n - finite_n
+
+    if finite_n == 0:
+        # Return empty structure with expected schema
+        empty_sample = pl.DataFrame(schema={c: schema.get(c, pl.Float64) for c in required_cols})
+        empty_quad = pl.DataFrame(schema={"quadrant": pl.String, "customers": pl.Int64, "spend_90d": pl.Float64,
+                                           "customer_share": pl.Float64, "spend_share": pl.Float64})
+        return {
+            "sample": empty_sample,
+            "quadrant_summary": empty_quad,
+            "not_comparable_n": not_comparable_n,
+            "finite_n": 0,
+        }
 
     # Sample for rendering (deterministic hash-based sampling)
     sample = collect(

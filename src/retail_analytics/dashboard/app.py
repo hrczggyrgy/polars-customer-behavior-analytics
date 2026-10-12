@@ -594,7 +594,13 @@ def display_results(root, coverage):
             "Colour: value_tier. Only customers with comparable windows (tenure ≥ 179 days) and non-zero previous purchases are shown."
         )
 
-        mom = momentum_map(rows)
+        try:
+            mom = momentum_map(rows)
+        except Exception as e:
+            st.error(f"momentum_map failed: {type(e).__name__}: {e}")
+            st.caption("This may be due to missing frequency_change/basket_change columns or no comparable customers.")
+            return
+
         sample = mom["sample"]
         quad = mom["quadrant_summary"]
         not_comp = mom["not_comparable_n"]
