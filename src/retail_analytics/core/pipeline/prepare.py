@@ -21,72 +21,18 @@ from retail_analytics.core.constants import (
     CENSOR_DAYS,
     HASH_SEED_BUCKETING,
 )
-
-# Column definitions
-REQUIRED_COLS = COLS = [
-    "customer_id",
-    "transaction_date",
-    "transaction_id",
-    "product_id",
-    "product_description",
-    "department",
-    "category",
-    "price",
-    "quantity",
-]
-
-# Key aliases for readability
-C = "customer_id"
-K = [C, "transaction_id", "date"]
-P = [C, "product_id"]
-G = [C, "department", "category"]
-
-VERSION = "reconstructed-1.3"
+from retail_analytics.core.pipeline.utils import (
+    REQUIRED_COLS,
+    C,
+    _safe_ratio,
+    _sink,
+)
 
 # Type aliases
 PriceMode = Literal["unit", "line_total"]
 
-
-def _safe_ratio(a: pl.Expr, b: pl.Expr) -> pl.Expr:
-    """Safe division: returns null when denominator is null or <= 0."""
-    return pl.when(b.is_not_null() & (b > 0)).then(a / b).otherwise(None)
-
-
 # Backward compatibility alias
 ratio = _safe_ratio
-
-
-def _sink(frame: pl.LazyFrame, path: Path, sort_by: list[str] | str | None = None) -> None:
-    """Write a LazyFrame to Parquet with ZSTD compression (internal)."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if sort_by is not None:
-        if isinstance(sort_by, str):
-            sort_by = [sort_by]
-        frame = frame.sort(sort_by)
-    # Use non-streaming engine for reliability; streaming can skip empty frames
-    frame.collect(engine="streaming").write_parquet(path, compression="zstd")
-
-
-def sink(frame: pl.LazyFrame, path: Path, sort_by: list[str] | str | None = None) -> None:
-    """Write a LazyFrame to Parquet with ZSTD compression (public API)."""
-    _sink(frame, path, sort_by)
-
-
-def _taglist(pairs: list[tuple[str, pl.Expr]]) -> pl.Expr:
-    """Create a list of tags from (name, boolean_expression) pairs.
-
-    ALL matching tags are collected in order (not first-match exclusive).
-    The resulting list preserves the order of the input pairs.
-    """
-    return pl.concat_list(
-        [
-            pl.when(test.fill_null(False))
-            .then(pl.lit(name))
-            .otherwise(pl.lit(None, dtype=pl.String))
-            for name, test in pairs
-        ]
-    ).list.drop_nulls()
 
 
 def _rejection_reasons(raw: pl.LazyFrame) -> pl.Expr:

@@ -17,6 +17,7 @@ import math
 import polars as pl
 
 from retail_analytics.core.constants import WINDOW_RECENT, WINDOW_YEAR
+from retail_analytics.core.pipeline.utils import collect
 
 
 def _support_from_counts(count: int, total_baskets: int) -> float:
@@ -761,8 +762,3 @@ def run_product_affinity_dashboard(
         "recommendations": recommendations,
         "pathways": pathways,
     }
-
-
-def collect(frame: pl.LazyFrame) -> pl.DataFrame:
-    """Collect with streaming engine."""
-    return frame.collect(engine="streaming")

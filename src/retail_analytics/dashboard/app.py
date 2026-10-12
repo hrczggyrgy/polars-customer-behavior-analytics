@@ -24,6 +24,13 @@ from retail_analytics.core.constants import (
 from retail_analytics.core.retail_polars_workflow import COLS
 from retail_analytics.core.stats import wilson
 from retail_analytics.dashboard.dashboard_backend import cutoffs
+from retail_analytics.visualization.product_affinity import (
+    ProductAffinityConfig,
+    basket_composition_by_segment,
+    cross_sell_recommendations,
+    new_to_repeat_pathways,
+    product_affinity_analysis,
+)
 from retail_analytics.visualization.visual_insights_core import (
     METRICS,
     basket_composition_slope,
@@ -54,13 +61,6 @@ from retail_analytics.visualization.visual_insights_core import (
     trial_to_repeat_map,
     value_at_risk_scatter,
     value_tier_transition_waterfall,
-)
-from retail_analytics.visualization.product_affinity import (
-    ProductAffinityConfig,
-    basket_composition_by_segment,
-    cross_sell_recommendations,
-    new_to_repeat_pathways,
-    product_affinity_analysis,
 )
 
 
@@ -3233,9 +3233,13 @@ def display_results(root, coverage):
             else:
                 validated = pl.scan_parquet(validated_path)
                 cutoff_date = date.fromisoformat(chosen)
-                min_cohort = st.number_input("Minimum cohort size", 5, 1000, 20, key="car_min_cohort")
+                min_cohort = st.number_input(
+                    "Minimum cohort size", 5, 1000, 20, key="car_min_cohort"
+                )
 
-                heatmap_data = cohort_age_retention_heatmap(validated, rows, cutoff_date, min_cohort)
+                heatmap_data = cohort_age_retention_heatmap(
+                    validated, rows, cutoff_date, min_cohort
+                )
 
                 if heatmap_data.is_empty():
                     st.info("Insufficient data for cohort-age retention heatmap.")
@@ -3255,17 +3259,17 @@ def display_results(root, coverage):
                         index="cohort_month",
                         columns="age_month",
                     )
-                    count_pivot = heatmap_data.pivot(
+                    heatmap_data.pivot(
                         values="active_customers",
                         index="cohort_month",
                         columns="age_month",
                     )
-                    size_pivot = heatmap_data.pivot(
+                    heatmap_data.pivot(
                         values="cohort_size",
                         index="cohort_month",
                         columns="age_month",
                     )
-                    max_age_pivot = heatmap_data.pivot(
+                    heatmap_data.pivot(
                         values="max_age_observed",
                         index="cohort_month",
                         columns="age_month",
@@ -3293,10 +3297,14 @@ def display_results(root, coverage):
                                 # Blank future cells
                                 if age > max_obs:
                                     z_row.append(None)
-                                    hover_row.append(f"Cohort: {cohort}<br>Age: {age}m<br>Not yet observed")
+                                    hover_row.append(
+                                        f"Cohort: {cohort}<br>Age: {age}m<br>Not yet observed"
+                                    )
                                 else:
                                     z_row.append(rate)
-                                    hover_row.append(f"Cohort: {cohort}<br>Age: {age}m<br>Active: {active}/{size} ({rate:.1%})")
+                                    hover_row.append(
+                                        f"Cohort: {cohort}<br>Age: {age}m<br>Active: {active}/{size} ({rate:.1%})"
+                                    )
                             else:
                                 z_row.append(None)
                                 hover_row.append(f"Cohort: {cohort}<br>Age: {age}m<br>No data")
@@ -3307,7 +3315,10 @@ def display_results(root, coverage):
                         go.Heatmap(
                             z=z,
                             x=[str(a) for a in age_cols],
-                            y=[c.strftime("%Y-%m") if hasattr(c, 'strftime') else str(c) for c in cohort_labels],
+                            y=[
+                                c.strftime("%Y-%m") if hasattr(c, "strftime") else str(c)
+                                for c in cohort_labels
+                            ],
                             colorscale="Blues",
                             zmin=0,
                             zmax=1,
@@ -3359,7 +3370,11 @@ def display_results(root, coverage):
                     value_facet = st.checkbox("Facet by value_tier", value=True, key="rfm_facet")
 
                 surface = rfm_response_surface(
-                    rows, coverage, recency_bins=rec_bins, frequency_bins=freq_bins, value_tier_facet=value_facet
+                    rows,
+                    coverage,
+                    recency_bins=rec_bins,
+                    frequency_bins=freq_bins,
+                    value_tier_facet=value_facet,
                 )
 
                 if "warning" in surface.columns:
@@ -3386,7 +3401,8 @@ def display_results(root, coverage):
                                     hover_row = []
                                     for f_bin in freq_bins_sorted:
                                         cell = tier_data.filter(
-                                            (pl.col("recency_bin") == r_bin) & (pl.col("frequency_bin") == f_bin)
+                                            (pl.col("recency_bin") == r_bin)
+                                            & (pl.col("frequency_bin") == f_bin)
                                         )
                                         if cell.height > 0:
                                             rate = cell["rate"][0]
@@ -3402,7 +3418,9 @@ def display_results(root, coverage):
                                             )
                                         else:
                                             z_row.append(None)
-                                            hover_row.append(f"Recency: {r_bin}<br>Freq: {f_bin}<br>No data")
+                                            hover_row.append(
+                                                f"Recency: {r_bin}<br>Freq: {f_bin}<br>No data"
+                                            )
                                     z.append(z_row)
                                     hover.append(hover_row)
 
@@ -3435,7 +3453,8 @@ def display_results(root, coverage):
                             hover_row = []
                             for f_bin in sorted(surface["frequency_bin"].unique()):
                                 cell = surface.filter(
-                                    (pl.col("recency_bin") == r_bin) & (pl.col("frequency_bin") == f_bin)
+                                    (pl.col("recency_bin") == r_bin)
+                                    & (pl.col("frequency_bin") == f_bin)
                                 )
                                 if cell.height > 0:
                                     rate = cell["rate"][0]
@@ -3451,7 +3470,9 @@ def display_results(root, coverage):
                                     )
                                 else:
                                     z_row.append(None)
-                                    hover_row.append(f"Recency: {r_bin}<br>Freq: {f_bin}<br>No data")
+                                    hover_row.append(
+                                        f"Recency: {r_bin}<br>Freq: {f_bin}<br>No data"
+                                    )
                             z.append(z_row)
                             hover.append(hover_row)
 
@@ -3507,11 +3528,19 @@ def display_results(root, coverage):
         )
 
         try:
-            lateness_thresh = st.slider("Overdue threshold (lateness)", 1.0, 5.0, 2.0, 0.25, key="var_thresh")
-            color_by = st.selectbox("Color by", ["value_tier", "trajectory", "lifecycle", "evidence"], key="var_color")
-            sample_limit = st.slider("Sample limit (scatter)", 500, 5000, 2000, 500, key="var_sample")
+            lateness_thresh = st.slider(
+                "Overdue threshold (lateness)", 1.0, 5.0, 2.0, 0.25, key="var_thresh"
+            )
+            color_by = st.selectbox(
+                "Color by", ["value_tier", "trajectory", "lifecycle", "evidence"], key="var_color"
+            )
+            sample_limit = st.slider(
+                "Sample limit (scatter)", 500, 5000, 2000, 500, key="var_sample"
+            )
 
-            var_data = value_at_risk_scatter(rows, lateness_threshold=lateness_thresh, sample_limit=sample_limit)
+            var_data = value_at_risk_scatter(
+                rows, lateness_threshold=lateness_thresh, sample_limit=sample_limit
+            )
 
             sample = var_data["sample"]
             summary = var_data["summary"]
@@ -3528,7 +3557,10 @@ def display_results(root, coverage):
                     with col2:
                         st.metric("Total 365d spend", f"{s['total_spend_365d']:,.2f}")
                     with col3:
-                        st.metric(f"Overdue (≥{lateness_thresh}×)", f"{s['overdue_customers']:,} ({s['overdue_share']:.1%})")
+                        st.metric(
+                            f"Overdue (≥{lateness_thresh}×)",
+                            f"{s['overdue_customers']:,} ({s['overdue_share']:.1%})",
+                        )
                     with col4:
                         st.metric("At-risk 365d spend", f"{s['at_risk_spend_365d']:,.2f}")
 
@@ -3546,7 +3578,10 @@ def display_results(root, coverage):
                             mode="markers",
                             name=str(name),
                             marker=dict(
-                                size=[max(6, min(40, math.sqrt(p) * 1.5)) for p in part["purchases_365d"].to_list()],
+                                size=[
+                                    max(6, min(40, math.sqrt(p) * 1.5))
+                                    for p in part["purchases_365d"].to_list()
+                                ],
                                 opacity=0.6,
                                 color=get_color(name, color_map),
                             ),
@@ -3575,15 +3610,56 @@ def display_results(root, coverage):
                     )
 
                 # Reference lines
-                max_x = max(sample["lateness"].max(), lateness_thresh * 1.5) if sample.height > 0 else 5
-                fig.add_vline(x=1.0, line_dash="dash", line_color="gray", line_width=1, annotation_text="On cadence (1×)")
-                fig.add_vline(x=2.0, line_dash="dash", line_color="red", line_width=1, annotation_text="Overdue (2×)")
-                fig.add_vline(x=lateness_thresh, line_dash="dot", line_color="orange", line_width=2, annotation_text=f"Threshold ({lateness_thresh}×)")
+                max_x = (
+                    max(sample["lateness"].max(), lateness_thresh * 1.5) if sample.height > 0 else 5
+                )
+                fig.add_vline(
+                    x=1.0,
+                    line_dash="dash",
+                    line_color="gray",
+                    line_width=1,
+                    annotation_text="On cadence (1×)",
+                )
+                fig.add_vline(
+                    x=2.0,
+                    line_dash="dash",
+                    line_color="red",
+                    line_width=1,
+                    annotation_text="Overdue (2×)",
+                )
+                fig.add_vline(
+                    x=lateness_thresh,
+                    line_dash="dot",
+                    line_color="orange",
+                    line_width=2,
+                    annotation_text=f"Threshold ({lateness_thresh}×)",
+                )
 
                 # Shaded regions
-                fig.add_vrect(x0=0, x1=1.0, fillcolor="rgba(0,158,115,0.05)", line_width=0, annotation_text="On cadence", annotation_position="top left")
-                fig.add_vrect(x0=1.0, x1=2.0, fillcolor="rgba(213,94,0,0.05)", line_width=0, annotation_text="1-2× overdue", annotation_position="top left")
-                fig.add_vrect(x0=2.0, x1=max_x, fillcolor="rgba(213,94,0,0.1)", line_width=0, annotation_text="≥2× overdue", annotation_position="top left")
+                fig.add_vrect(
+                    x0=0,
+                    x1=1.0,
+                    fillcolor="rgba(0,158,115,0.05)",
+                    line_width=0,
+                    annotation_text="On cadence",
+                    annotation_position="top left",
+                )
+                fig.add_vrect(
+                    x0=1.0,
+                    x1=2.0,
+                    fillcolor="rgba(213,94,0,0.05)",
+                    line_width=0,
+                    annotation_text="1-2× overdue",
+                    annotation_position="top left",
+                )
+                fig.add_vrect(
+                    x0=2.0,
+                    x1=max_x,
+                    fillcolor="rgba(213,94,0,0.1)",
+                    line_width=0,
+                    annotation_text="≥2× overdue",
+                    annotation_position="top left",
+                )
 
                 chart(
                     fig,
@@ -3602,8 +3678,15 @@ def display_results(root, coverage):
 
                 table(
                     sample.select(
-                        "customer_id", "lateness", "spend_365d", "spend_90d", "purchases_365d",
-                        "value_tier", "trajectory", "evidence", "lifecycle"
+                        "customer_id",
+                        "lateness",
+                        "spend_365d",
+                        "spend_90d",
+                        "purchases_365d",
+                        "value_tier",
+                        "trajectory",
+                        "evidence",
+                        "lifecycle",
                     )
                 )
 
@@ -3629,41 +3712,110 @@ def display_results(root, coverage):
                 st.write("**Calendar-period revenue trend**")
                 first_date = collect(rows.select(pl.col("first_purchase").min())).item()
                 if first_date:
-                    trend_data = calendar_period_revenue_trend(validated, rows, first_date, date.fromisoformat(chosen), months=12)
+                    trend_data = calendar_period_revenue_trend(
+                        validated, rows, first_date, date.fromisoformat(chosen), months=12
+                    )
 
                     if not trend_data.is_empty():
                         # Multi-metric chart
                         fig = go.Figure()
-                        fig.add_trace(go.Scatter(x=trend_data["month"].to_list(), y=trend_data["spend"].to_list(), mode="lines+markers", name="Monthly spend", line=dict(color="#0072B2", width=2)))
-                        fig.add_trace(go.Scatter(x=trend_data["month"].to_list(), y=trend_data["buyers"].to_list(), mode="lines+markers", name="Purchasing customers", line=dict(color="#009E73", width=2), yaxis="y2"))
-                        fig.add_trace(go.Scatter(x=trend_data["month"].to_list(), y=trend_data["aov"].to_list(), mode="lines+markers", name="AOV", line=dict(color="#E69F00", width=2), yaxis="y3"))
-                        fig.add_trace(go.Scatter(x=trend_data["month"].to_list(), y=trend_data["baskets_per_buyer"].to_list(), mode="lines+markers", name="Baskets/buyer", line=dict(color="#D55E00", width=2), yaxis="y4"))
+                        fig.add_trace(
+                            go.Scatter(
+                                x=trend_data["month"].to_list(),
+                                y=trend_data["spend"].to_list(),
+                                mode="lines+markers",
+                                name="Monthly spend",
+                                line=dict(color="#0072B2", width=2),
+                            )
+                        )
+                        fig.add_trace(
+                            go.Scatter(
+                                x=trend_data["month"].to_list(),
+                                y=trend_data["buyers"].to_list(),
+                                mode="lines+markers",
+                                name="Purchasing customers",
+                                line=dict(color="#009E73", width=2),
+                                yaxis="y2",
+                            )
+                        )
+                        fig.add_trace(
+                            go.Scatter(
+                                x=trend_data["month"].to_list(),
+                                y=trend_data["aov"].to_list(),
+                                mode="lines+markers",
+                                name="AOV",
+                                line=dict(color="#E69F00", width=2),
+                                yaxis="y3",
+                            )
+                        )
+                        fig.add_trace(
+                            go.Scatter(
+                                x=trend_data["month"].to_list(),
+                                y=trend_data["baskets_per_buyer"].to_list(),
+                                mode="lines+markers",
+                                name="Baskets/buyer",
+                                line=dict(color="#D55E00", width=2),
+                                yaxis="y4",
+                            )
+                        )
 
                         fig.update_layout(
                             xaxis=dict(title="Month"),
                             yaxis=dict(title="Spend", side="left", color="#0072B2"),
-                            yaxis2=dict(title="Buyers", side="right", overlaying="y", color="#009E73"),
-                            yaxis3=dict(title="AOV", side="right", overlaying="y", position=0.85, color="#E69F00"),
-                            yaxis4=dict(title="Baskets/buyer", side="right", overlaying="y", position=0.95, color="#D55E00"),
+                            yaxis2=dict(
+                                title="Buyers", side="right", overlaying="y", color="#009E73"
+                            ),
+                            yaxis3=dict(
+                                title="AOV",
+                                side="right",
+                                overlaying="y",
+                                position=0.85,
+                                color="#E69F00",
+                            ),
+                            yaxis4=dict(
+                                title="Baskets/buyer",
+                                side="right",
+                                overlaying="y",
+                                position=0.95,
+                                color="#D55E00",
+                            ),
                         )
-                        chart(fig, "Calendar-period revenue components (12 months)", "cal_trend", "Month", "Value")
+                        chart(
+                            fig,
+                            "Calendar-period revenue components (12 months)",
+                            "cal_trend",
+                            "Month",
+                            "Value",
+                        )
 
-                        st.caption("Non-overlapping monthly windows. Fixed population (current filtered customers). Partial months marked.")
+                        st.caption(
+                            "Non-overlapping monthly windows. Fixed population (current filtered customers). Partial months marked."
+                        )
 
                 # Revenue bridge
                 st.write("**Revenue decomposition bridge**")
                 if len(history) < 2:
                     st.info("Need at least two cutoffs for bridge comparison.")
                 else:
-                    origin = st.selectbox("Previous cutoff", history[:-1], index=len(history) - 2, key="bridge_origin")
-                    match_pop = st.checkbox("Match customers across periods", value=True, help="Use only customers present in both snapshots for frequency/AOV comparison")
+                    origin = st.selectbox(
+                        "Previous cutoff", history[:-1], index=len(history) - 2, key="bridge_origin"
+                    )
+                    match_pop = st.checkbox(
+                        "Match customers across periods",
+                        value=True,
+                        help="Use only customers present in both snapshots for frequency/AOV comparison",
+                    )
 
                     before_rows = apply_filters(
-                        pl.scan_parquet([str(p) for p in (root / "snapshots" / origin).glob("*.parquet")]),
+                        pl.scan_parquet(
+                            [str(p) for p in (root / "snapshots" / origin).glob("*.parquet")]
+                        ),
                         filters,
                     )
                     cutoff_date = date.fromisoformat(chosen)
-                    bridge = revenue_bridge(rows, before_rows, cutoff_date, match_customers=match_pop)
+                    bridge = revenue_bridge(
+                        rows, before_rows, cutoff_date, match_customers=match_pop
+                    )
 
                     if bridge.is_empty():
                         st.info("Could not compute bridge for this comparison.")
@@ -3734,16 +3886,24 @@ def display_results(root, coverage):
         )
 
         if not coverage:
-            st.warning("Coverage unconfirmed: segment-specific affinity requires confirmed follow-up.")
+            st.warning(
+                "Coverage unconfirmed: segment-specific affinity requires confirmed follow-up."
+            )
         else:
             try:
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    min_support = st.number_input("Min support", 0.0001, 0.1, 0.001, format="%.4f", key="net_support")
+                    min_support = st.number_input(
+                        "Min support", 0.0001, 0.1, 0.001, format="%.4f", key="net_support"
+                    )
                 with col2:
-                    min_conf = st.number_input("Min confidence", 0.01, 1.0, 0.15, format="%.2f", key="net_conf")
+                    min_conf = st.number_input(
+                        "Min confidence", 0.01, 1.0, 0.15, format="%.2f", key="net_conf"
+                    )
                 with col3:
-                    min_lift = st.number_input("Min lift", 0.5, 5.0, 1.2, format="%.2f", key="net_lift")
+                    min_lift = st.number_input(
+                        "Min lift", 0.5, 5.0, 1.2, format="%.2f", key="net_lift"
+                    )
 
                 top_k = st.number_input("Top-K pairs", 50, 2000, 200, step=50, key="net_topk")
 
@@ -3770,7 +3930,9 @@ def display_results(root, coverage):
                         st.info("No product pairs meet the quality thresholds.")
                     else:
                         # Build network
-                        network = product_association_network(pairs, min_lift=min_lift, min_confidence=min_conf, top_n=top_k)
+                        network = product_association_network(
+                            pairs, min_lift=min_lift, min_confidence=min_conf, top_n=top_k
+                        )
 
                         nodes = network["nodes"]
                         edges = network["edges"]
@@ -3784,9 +3946,15 @@ def display_results(root, coverage):
 
                                 G = nx.Graph()
                                 for _, node in nodes.iter_rows(named=True):
-                                    G.add_node(node["product_id"], size=node["degree"], lift=node["max_lift"])
+                                    G.add_node(
+                                        node["product_id"],
+                                        size=node["degree"],
+                                        lift=node["max_lift"],
+                                    )
                                 for _, edge in edges.iter_rows(named=True):
-                                    G.add_edge(edge["item_a"], edge["item_b"], weight=edge["lift"] or 1.0)
+                                    G.add_edge(
+                                        edge["item_a"], edge["item_b"], weight=edge["lift"] or 1.0
+                                    )
 
                                 pos = nx.spring_layout(G, k=1.5, iterations=50, seed=42)
 
@@ -3799,7 +3967,8 @@ def display_results(root, coverage):
                                     edge_y.extend([y0, y1, None])
 
                                 edge_trace = go.Scatter(
-                                    x=edge_x, y=edge_y,
+                                    x=edge_x,
+                                    y=edge_y,
                                     line=dict(width=0.5, color="#888"),
                                     hoverinfo="none",
                                     mode="lines",
@@ -3809,12 +3978,18 @@ def display_results(root, coverage):
                                 # Build node traces
                                 node_x = [pos[node][0] for node in G.nodes()]
                                 node_y = [pos[node][1] for node in G.nodes()]
-                                node_size = [max(10, min(50, G.nodes()[node].get("size", 1) * 5)) for node in G.nodes()]
-                                node_color = [G.nodes()[node].get("lift", 1.0) for node in G.nodes()]
+                                node_size = [
+                                    max(10, min(50, G.nodes()[node].get("size", 1) * 5))
+                                    for node in G.nodes()
+                                ]
+                                node_color = [
+                                    G.nodes()[node].get("lift", 1.0) for node in G.nodes()
+                                ]
                                 node_text = list(G.nodes())
 
                                 node_trace = go.Scatter(
-                                    x=node_x, y=node_y,
+                                    x=node_x,
+                                    y=node_y,
                                     mode="markers+text",
                                     text=node_text,
                                     textposition="top center",
@@ -3835,8 +4010,12 @@ def display_results(root, coverage):
                                 fig.update_layout(
                                     showlegend=False,
                                     hovermode="closest",
-                                    xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-                                    yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+                                    xaxis=dict(
+                                        showgrid=False, zeroline=False, showticklabels=False
+                                    ),
+                                    yaxis=dict(
+                                        showgrid=False, zeroline=False, showticklabels=False
+                                    ),
                                     height=600,
                                 )
                                 chart(fig, "Product association network", "prod_network", "", "")
@@ -3863,8 +4042,12 @@ def display_results(root, coverage):
         )
 
         try:
-            min_trials = st.number_input("Minimum eligible trials per product", 1, 1000, 10, key="tci_min")
-            show_category = st.checkbox("Show category-level aggregation", value=False, key="tci_cat")
+            min_trials = st.number_input(
+                "Minimum eligible trials per product", 1, 1000, 10, key="tci_min"
+            )
+            show_category = st.checkbox(
+                "Show category-level aggregation", value=False, key="tci_cat"
+            )
 
             prod_history_paths = list((root / "events" / chosen).glob("*/product_history.parquet"))
             if not prod_history_paths:
@@ -3882,10 +4065,16 @@ def display_results(root, coverage):
                         category_lookup = collect(
                             validated.select("product_id", "department", "category")
                             .unique()
-                            .with_columns(pl.concat_str([pl.col("department"), pl.lit(" / "), pl.col("category")]).alias("category_label"))
+                            .with_columns(
+                                pl.concat_str(
+                                    [pl.col("department"), pl.lit(" / "), pl.col("category")]
+                                ).alias("category_label")
+                            )
                         )
 
-                trial_data = trial_conversion_interval_plot(prod_history, rows, cutoff_date, min_trials, category_lookup)
+                trial_data = trial_conversion_interval_plot(
+                    prod_history, rows, cutoff_date, min_trials, category_lookup
+                )
 
                 if trial_data.is_empty():
                     st.info(f"No products with ≥ {min_trials} eligible trials.")
@@ -3893,7 +4082,9 @@ def display_results(root, coverage):
                     # Dot-and-interval plot
                     fig = go.Figure()
 
-                    products = trial_data.sort("trial_conversion", descending=True).head(50)  # Top 50 for readability
+                    products = trial_data.sort("trial_conversion", descending=True).head(
+                        50
+                    )  # Top 50 for readability
 
                     for _, row in products.iter_rows(named=True):
                         prod_id = row["product_id"]
@@ -3906,31 +4097,49 @@ def display_results(root, coverage):
 
                         # Determine y-position (product rank)
                         # We'll use product_id as categorical
-                        fig.add_trace(go.Scatter(
-                            x=[rate],
-                            y=[prod_id],
-                            mode="markers",
-                            marker=dict(size=max(8, min(30, math.sqrt(n) * 1.5)), color="#0072B2", opacity=0.8),
-                            name=prod_id,
-                            error_x=dict(
-                                type="data",
-                                symmetric=False,
-                                array=[hi - rate] if hi else None,
-                                arrayminus=[rate - lo] if lo else None,
-                                visible=True,
-                                color="gray",
-                                thickness=2,
-                            ) if lo is not None else None,
-                            customdata=[[n, buyers, customers]],
-                            hovertemplate=f"Product: {prod_id}<br>Conversion: {rate:.1%}<br>Trials: {n}<br>Repeats: {buyers}<br>Customers: {customers}<br>CI: [{lo:.1% if lo else 'N/A'}, {hi:.1% if hi else 'N/A'}]<extra></extra>",
-                            showlegend=False,
-                        ))
+                        fig.add_trace(
+                            go.Scatter(
+                                x=[rate],
+                                y=[prod_id],
+                                mode="markers",
+                                marker=dict(
+                                    size=max(8, min(30, math.sqrt(n) * 1.5)),
+                                    color="#0072B2",
+                                    opacity=0.8,
+                                ),
+                                name=prod_id,
+                                error_x=dict(
+                                    type="data",
+                                    symmetric=False,
+                                    array=[hi - rate] if hi else None,
+                                    arrayminus=[rate - lo] if lo else None,
+                                    visible=True,
+                                    color="gray",
+                                    thickness=2,
+                                )
+                                if lo is not None
+                                else None,
+                                customdata=[[n, buyers, customers]],
+                                hovertemplate=f"Product: {prod_id}<br>Conversion: {rate:.1%}<br>Trials: {n}<br>Repeats: {buyers}<br>Customers: {customers}<br>CI: [{lo:.1% if lo else 'N/A'}, {hi:.1% if hi else 'N/A'}]<extra></extra>",
+                                showlegend=False,
+                            )
+                        )
 
-                    fig.update_xaxes(range=[0, 1], tickformat=".0%", title="Trial conversion rate (95% Wilson CI)")
+                    fig.update_xaxes(
+                        range=[0, 1],
+                        tickformat=".0%",
+                        title="Trial conversion rate (95% Wilson CI)",
+                    )
                     fig.update_yaxes(autorange="reversed", title="Product ID")
                     fig.update_layout(height=max(400, products.height * 20))
 
-                    chart(fig, f"Trial-to-repeat conversion (min {min_trials} trials)", "trial_conv_intervals", "Trial conversion rate", "Product")
+                    chart(
+                        fig,
+                        f"Trial-to-repeat conversion (min {min_trials} trials)",
+                        "trial_conv_intervals",
+                        "Trial conversion rate",
+                        "Product",
+                    )
 
                     st.caption(
                         "Wilson 95% CI shown for products with ≥20 eligible trials. "
@@ -3938,7 +4147,15 @@ def display_results(root, coverage):
                         "Pooled conversion = total repeats / total eligible trials across customers."
                     )
 
-                    display_cols = ["product_id", "eligible_trials", "repeated_trials", "trialling_customers", "trial_conversion", "lower_ci", "upper_ci"]
+                    display_cols = [
+                        "product_id",
+                        "eligible_trials",
+                        "repeated_trials",
+                        "trialling_customers",
+                        "trial_conversion",
+                        "lower_ci",
+                        "upper_ci",
+                    ]
                     if "category_label" in trial_data.columns:
                         display_cols.insert(1, "category_label")
                     table(trial_data.select(display_cols))
@@ -3959,7 +4176,9 @@ def display_results(root, coverage):
             if len(history) < 2:
                 st.info("Need at least two cutoffs for period comparison.")
             else:
-                origin = st.selectbox("Previous cutoff", history[:-1], index=len(history) - 2, key="cpg_origin")
+                origin = st.selectbox(
+                    "Previous cutoff", history[:-1], index=len(history) - 2, key="cpg_origin"
+                )
                 top_n = st.slider("Top categories", 10, 50, 30, key="cpg_top")
 
                 validated_path = root / "validated.parquet"
@@ -3970,69 +4189,127 @@ def display_results(root, coverage):
                     current_cutoff = date.fromisoformat(chosen)
                     previous_cutoff = date.fromisoformat(origin)
 
-                    portfolio = category_penetration_growth_portfolio(validated, rows, current_cutoff, previous_cutoff, top_n)
+                    portfolio = category_penetration_growth_portfolio(
+                        validated, rows, current_cutoff, previous_cutoff, top_n
+                    )
 
                     if portfolio.is_empty():
                         st.info("No category data for this comparison.")
                     else:
                         fig = go.Figure()
-                        fig.add_trace(go.Scatter(
-                            x=portfolio["curr_penetration"].to_list(),
-                            y=portfolio["penetration_change_pp"].to_list(),
-                            mode="markers+text",
-                            text=portfolio["label"].to_list(),
-                            textposition="top center",
-                            textfont=dict(size=9),
-                            marker=dict(
-                                size=[max(10, min(80, s * 300)) for s in portfolio["spend_share"].to_list()],
-                                color=portfolio["repeat_buyer_share"].to_list(),
-                                colorscale="Viridis",
-                                showscale=True,
-                                colorbar=dict(title="Repeat buyer share", thickness=15),
-                                opacity=0.7,
-                                line=dict(width=1, color="white"),
-                            ),
-                            customdata=list(zip(
-                                portfolio["curr_buyers"].to_list(),
-                                portfolio["prev_buyers"].to_list(),
-                                portfolio["curr_spend"].to_list(),
-                                portfolio["prev_spend"].to_list(),
-                                portfolio["spend_share"].to_list(),
-                                portfolio["repeat_buyer_share"].to_list(),
-                            )),
-                            hovertemplate=(
-                                "%{text}<br>"
-                                "Current penetration: %{x:.1%}<br>"
-                                "Change (pp): %{y:.2f}<br>"
-                                "Current buyers: %{customdata[0]:,}<br>"
-                                "Previous buyers: %{customdata[1]:,}<br>"
-                                "Current spend: %{customdata[2]:,.2f}<br>"
-                                "Previous spend: %{customdata[3]:,.2f}<br>"
-                                "Spend share: %{customdata[4]:.1%}<br>"
-                                "Repeat buyer share: %{customdata[5]:.1%}<extra></extra>"
-                            ),
-                        ))
+                        fig.add_trace(
+                            go.Scatter(
+                                x=portfolio["curr_penetration"].to_list(),
+                                y=portfolio["penetration_change_pp"].to_list(),
+                                mode="markers+text",
+                                text=portfolio["label"].to_list(),
+                                textposition="top center",
+                                textfont=dict(size=9),
+                                marker=dict(
+                                    size=[
+                                        max(10, min(80, s * 300))
+                                        for s in portfolio["spend_share"].to_list()
+                                    ],
+                                    color=portfolio["repeat_buyer_share"].to_list(),
+                                    colorscale="Viridis",
+                                    showscale=True,
+                                    colorbar=dict(title="Repeat buyer share", thickness=15),
+                                    opacity=0.7,
+                                    line=dict(width=1, color="white"),
+                                ),
+                                customdata=list(
+                                    zip(
+                                        portfolio["curr_buyers"].to_list(),
+                                        portfolio["prev_buyers"].to_list(),
+                                        portfolio["curr_spend"].to_list(),
+                                        portfolio["prev_spend"].to_list(),
+                                        portfolio["spend_share"].to_list(),
+                                        portfolio["repeat_buyer_share"].to_list(),
+                                    )
+                                ),
+                                hovertemplate=(
+                                    "%{text}<br>"
+                                    "Current penetration: %{x:.1%}<br>"
+                                    "Change (pp): %{y:.2f}<br>"
+                                    "Current buyers: %{customdata[0]:,}<br>"
+                                    "Previous buyers: %{customdata[1]:,}<br>"
+                                    "Current spend: %{customdata[2]:,.2f}<br>"
+                                    "Previous spend: %{customdata[3]:,.2f}<br>"
+                                    "Spend share: %{customdata[4]:.1%}<br>"
+                                    "Repeat buyer share: %{customdata[5]:.1%}<extra></extra>"
+                                ),
+                            )
+                        )
 
                         # Add quadrant reference lines
                         fig.add_hline(y=0, line_dash="dash", line_color="gray", line_width=1)
                         median_pen = portfolio["curr_penetration"].median()
-                        fig.add_vline(x=median_pen, line_dash="dash", line_color="gray", line_width=1)
+                        fig.add_vline(
+                            x=median_pen, line_dash="dash", line_color="gray", line_width=1
+                        )
 
                         # Quadrant annotations
-                        fig.add_annotation(x=0.9, y=portfolio["penetration_change_pp"].max() * 0.8, text="High penetration<br>Growing", showarrow=False, font=dict(size=10, color="#009E73"), opacity=0.7)
-                        fig.add_annotation(x=0.1, y=portfolio["penetration_change_pp"].max() * 0.8, text="Low penetration<br>Growing", showarrow=False, font=dict(size=10, color="#56B4E9"), opacity=0.7)
-                        fig.add_annotation(x=0.9, y=portfolio["penetration_change_pp"].min() * 0.8, text="High penetration<br>Declining", showarrow=False, font=dict(size=10, color="#D55E00"), opacity=0.7)
-                        fig.add_annotation(x=0.1, y=portfolio["penetration_change_pp"].min() * 0.8, text="Low penetration<br>Declining", showarrow=False, font=dict(size=10, color="#CC79A7"), opacity=0.7)
+                        fig.add_annotation(
+                            x=0.9,
+                            y=portfolio["penetration_change_pp"].max() * 0.8,
+                            text="High penetration<br>Growing",
+                            showarrow=False,
+                            font=dict(size=10, color="#009E73"),
+                            opacity=0.7,
+                        )
+                        fig.add_annotation(
+                            x=0.1,
+                            y=portfolio["penetration_change_pp"].max() * 0.8,
+                            text="Low penetration<br>Growing",
+                            showarrow=False,
+                            font=dict(size=10, color="#56B4E9"),
+                            opacity=0.7,
+                        )
+                        fig.add_annotation(
+                            x=0.9,
+                            y=portfolio["penetration_change_pp"].min() * 0.8,
+                            text="High penetration<br>Declining",
+                            showarrow=False,
+                            font=dict(size=10, color="#D55E00"),
+                            opacity=0.7,
+                        )
+                        fig.add_annotation(
+                            x=0.1,
+                            y=portfolio["penetration_change_pp"].min() * 0.8,
+                            text="Low penetration<br>Declining",
+                            showarrow=False,
+                            font=dict(size=10, color="#CC79A7"),
+                            opacity=0.7,
+                        )
 
-                        chart(fig, "Category penetration vs growth portfolio", "cat_pen_growth", "Current penetration (customer %)", "Penetration change vs previous window (pp)")
+                        chart(
+                            fig,
+                            "Category penetration vs growth portfolio",
+                            "cat_pen_growth",
+                            "Current penetration (customer %)",
+                            "Penetration change vs previous window (pp)",
+                        )
 
-                        table(portfolio.select("label", "curr_buyers", "prev_buyers", "curr_penetration", "prev_penetration", "penetration_change_pp", "curr_spend", "prev_spend", "spend_share", "repeat_buyer_share"))
+                        table(
+                            portfolio.select(
+                                "label",
+                                "curr_buyers",
+                                "prev_buyers",
+                                "curr_penetration",
+                                "prev_penetration",
+                                "penetration_change_pp",
+                                "curr_spend",
+                                "prev_spend",
+                                "spend_share",
+                                "repeat_buyer_share",
+                            )
+                        )
 
                         st.caption(
-                            f"Fixed population (current filtered customers) for both periods. "
-                            f"Penetration = category buyers / population. Change in percentage points. "
-                            f"Category buyer populations overlap; not mutually exclusive market shares. "
-                            f"Descriptive signal, not demand forecast."
+                            "Fixed population (current filtered customers) for both periods. "
+                            "Penetration = category buyers / population. Change in percentage points. "
+                            "Category buyer populations overlap; not mutually exclusive market shares. "
+                            "Descriptive signal, not demand forecast."
                         )
 
         except Exception as e:
@@ -4050,14 +4327,26 @@ def display_results(root, coverage):
             if len(history) < 2:
                 st.info("Need at least two cutoffs for segment flow.")
             else:
-                dim = st.selectbox("Segment dimension", ["value_tier", "lifecycle", "behavior", "trajectory", "evidence"], key="saf_dim")
-                num_snapshots = st.slider("Number of snapshots", 2, min(5, len(history)), min(3, len(history)), key="saf_snaps")
+                dim = st.selectbox(
+                    "Segment dimension",
+                    ["value_tier", "lifecycle", "behavior", "trajectory", "evidence"],
+                    key="saf_dim",
+                )
+                num_snapshots = st.slider(
+                    "Number of snapshots",
+                    2,
+                    min(5, len(history)),
+                    min(3, len(history)),
+                    key="saf_snaps",
+                )
 
                 # Build history of filtered rows
                 rows_history = []
                 for d in history[-num_snapshots:]:
                     r = apply_filters(
-                        pl.scan_parquet([str(p) for p in (root / "snapshots" / d).glob("*.parquet")]),
+                        pl.scan_parquet(
+                            [str(p) for p in (root / "snapshots" / d).glob("*.parquet")]
+                        ),
                         filters,
                     )
                     rows_history.append(r)
@@ -4075,12 +4364,12 @@ def display_results(root, coverage):
                     all_sources = []
                     all_targets = []
                     all_values = []
-                    all_colors = []
 
                     # Collect all unique states with period prefix
                     for i, (from_snap, to_snap) in enumerate(snapshots):
                         period_flows = flows.filter(
-                            (pl.col("from_snapshot") == from_snap) & (pl.col("to_snapshot") == to_snap)
+                            (pl.col("from_snapshot") == from_snap)
+                            & (pl.col("to_snapshot") == to_snap)
                         )
                         if period_flows.is_empty():
                             continue
@@ -4103,28 +4392,37 @@ def display_results(root, coverage):
                     source_indices = [all_nodes.index(s) for s in all_sources]
                     target_indices = [all_nodes.index(t) for t in all_targets]
 
-                    fig = go.Figure(go.Sankey(
-                        node=dict(
-                            label=all_nodes,
-                            color=node_colors,
-                            pad=15,
-                            thickness=20,
-                        ),
-                        link=dict(
-                            source=source_indices,
-                            target=target_indices,
-                            value=all_values,
-                            color="rgba(0,114,178,0.3)",
-                        ),
-                    ))
+                    fig = go.Figure(
+                        go.Sankey(
+                            node=dict(
+                                label=all_nodes,
+                                color=node_colors,
+                                pad=15,
+                                thickness=20,
+                            ),
+                            link=dict(
+                                source=source_indices,
+                                target=target_indices,
+                                value=all_values,
+                                color="rgba(0,114,178,0.3)",
+                            ),
+                        )
+                    )
 
-                    chart(fig, f"{dim} migration across {num_snapshots} snapshots", "segment_alluvial", "", "")
+                    chart(
+                        fig,
+                        f"{dim} migration across {num_snapshots} snapshots",
+                        "segment_alluvial",
+                        "",
+                        "",
+                    )
 
                     # Show reconciliation per period
                     st.write("**Reconciliation per transition**")
                     for from_snap, to_snap in snapshots:
                         period_flows = flows.filter(
-                            (pl.col("from_snapshot") == from_snap) & (pl.col("to_snapshot") == to_snap)
+                            (pl.col("from_snapshot") == from_snap)
+                            & (pl.col("to_snapshot") == to_snap)
                         )
                         if period_flows.is_empty():
                             continue
@@ -4154,17 +4452,52 @@ def display_results(root, coverage):
             x_vals, y_vals = zip(*curve) if curve else ([], [])
 
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=x_vals, y=y_vals, mode="lines", name="Lorenz curve", line=dict(color="#0072B2", width=2), hovertemplate="Population share: %{x:.1%}<br>Spend share: %{y:.1%}<extra></extra>"))
-            fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines", name="Equality", line=dict(color="gray", dash="dash"), hoverinfo="skip"))
+            fig.add_trace(
+                go.Scatter(
+                    x=x_vals,
+                    y=y_vals,
+                    mode="lines",
+                    name="Lorenz curve",
+                    line=dict(color="#0072B2", width=2),
+                    hovertemplate="Population share: %{x:.1%}<br>Spend share: %{y:.1%}<extra></extra>",
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=[0, 1],
+                    y=[0, 1],
+                    mode="lines",
+                    name="Equality",
+                    line=dict(color="gray", dash="dash"),
+                    hoverinfo="skip",
+                )
+            )
 
             for top in conc["top"]:
-                fig.add_trace(go.Scatter(x=[top["actual_fraction"]], y=[top["spend_share"]], mode="markers", name=f"Top {top['requested_fraction']:.0%}", marker=dict(size=10, color="#D55E00"), hovertemplate=f"Top {top['requested_fraction']:.0%} customers<br>Population share: {top['actual_fraction']:.1%}<br>Spend share: {top['spend_share']:.1%}<extra></extra>"))
+                fig.add_trace(
+                    go.Scatter(
+                        x=[top["actual_fraction"]],
+                        y=[top["spend_share"]],
+                        mode="markers",
+                        name=f"Top {top['requested_fraction']:.0%}",
+                        marker=dict(size=10, color="#D55E00"),
+                        hovertemplate=f"Top {top['requested_fraction']:.0%} customers<br>Population share: {top['actual_fraction']:.1%}<br>Spend share: {top['spend_share']:.1%}<extra></extra>",
+                    )
+                )
 
             fig.update_xaxes(range=[0, 1], tickformat=".0%")
             fig.update_yaxes(range=[0, 1], tickformat=".0%")
-            chart(fig, f"Lorenz curve: concentration of 90-day spend (n={conc['n']})", "lorenz_curve", "Population share (customers)", "Spend share")
+            chart(
+                fig,
+                f"Lorenz curve: concentration of 90-day spend (n={conc['n']})",
+                "lorenz_curve",
+                "Population share (customers)",
+                "Spend share",
+            )
 
-            st.caption(f"Total spend: {conc['total']:,.2f} ({conc['positive_n']} with positive spend). Top fractions round up to whole customers.")
+            st.caption(
+                f"Total spend: {conc['total']:,.2f} ({conc['positive_n']} with positive spend). Top fractions round up to whole customers."
+            )
 
     elif view == "Cadence Validation":
         # (existing implementation - already exists)
@@ -4182,10 +4515,14 @@ def display_results(root, coverage):
             )
         else:
             try:
-                max_lateness = st.slider("Max lateness to display", 2.0, 10.0, 5.0, 0.5, key="cv_max_late")
+                max_lateness = st.slider(
+                    "Max lateness to display", 2.0, 10.0, 5.0, 0.5, key="cv_max_late"
+                )
                 bins = st.slider("Number of lateness bins", 5, 20, 10, key="cv_bins")
 
-                val = cadence_return_validation(rows, coverage, max_lateness=max_lateness, bins=bins)
+                val = cadence_return_validation(
+                    rows, coverage, max_lateness=max_lateness, bins=bins
+                )
 
                 if "warning" in val.columns:
                     st.warning(val["warning"][0])
@@ -4200,27 +4537,63 @@ def display_results(root, coverage):
                             continue
 
                         fig = go.Figure()
-                        fig.add_trace(go.Bar(
-                            x=h_data["lateness_bin"].to_list(),
-                            y=h_data["purchase_rate"].to_list(),
-                            name=f"{horizon}d return rate",
-                            marker_color="#0072B2" if horizon == 30 else "#E69F00",
-                            error_y=dict(
-                                type="data",
-                                symmetric=False,
-                                array=(h_data["upper_ci"] - h_data["purchase_rate"]).to_list() if h_data["upper_ci"].not_null().any() else None,
-                                arrayminus=(h_data["purchase_rate"] - h_data["lower_ci"]).to_list() if h_data["lower_ci"].not_null().any() else None,
-                                visible=True,
-                            ) if h_data["upper_ci"].not_null().any() else None,
-                            customdata=list(zip(h_data["eligible_n"].to_list(), h_data["buyers"].to_list())),
-                            hovertemplate="Lateness bin: %{x}<br>Return rate: %{y:.1%}<br>Eligible: %{customdata[0]:,}<br>Buyers: %{customdata[1]:,}<extra></extra>",
-                        ))
-                        fig.add_vline(x="1.5–2.0" if "1.5–2.0" in h_data["lateness_bin"].to_list() else 2.0, line_dash="dash", line_color="red", annotation_text="2× median_gap boundary", annotation_position="top")
+                        fig.add_trace(
+                            go.Bar(
+                                x=h_data["lateness_bin"].to_list(),
+                                y=h_data["purchase_rate"].to_list(),
+                                name=f"{horizon}d return rate",
+                                marker_color="#0072B2" if horizon == 30 else "#E69F00",
+                                error_y=dict(
+                                    type="data",
+                                    symmetric=False,
+                                    array=(h_data["upper_ci"] - h_data["purchase_rate"]).to_list()
+                                    if h_data["upper_ci"].not_null().any()
+                                    else None,
+                                    arrayminus=(
+                                        h_data["purchase_rate"] - h_data["lower_ci"]
+                                    ).to_list()
+                                    if h_data["lower_ci"].not_null().any()
+                                    else None,
+                                    visible=True,
+                                )
+                                if h_data["upper_ci"].not_null().any()
+                                else None,
+                                customdata=list(
+                                    zip(h_data["eligible_n"].to_list(), h_data["buyers"].to_list())
+                                ),
+                                hovertemplate="Lateness bin: %{x}<br>Return rate: %{y:.1%}<br>Eligible: %{customdata[0]:,}<br>Buyers: %{customdata[1]:,}<extra></extra>",
+                            )
+                        )
+                        fig.add_vline(
+                            x="1.5–2.0" if "1.5–2.0" in h_data["lateness_bin"].to_list() else 2.0,
+                            line_dash="dash",
+                            line_color="red",
+                            annotation_text="2× median_gap boundary",
+                            annotation_position="top",
+                        )
                         fig.update_yaxes(range=[0, 1], tickformat=".0%")
-                        chart(fig, f"{horizon}-day return rate by lateness bin", f"cadence_val_{horizon}", "Lateness (recency / median_gap)", "Future purchase rate (Wilson 95% CI)")
+                        chart(
+                            fig,
+                            f"{horizon}-day return rate by lateness bin",
+                            f"cadence_val_{horizon}",
+                            "Lateness (recency / median_gap)",
+                            "Future purchase rate (Wilson 95% CI)",
+                        )
 
-                    table(val.select("horizon", "lateness_bin", "eligible_n", "buyers", "purchase_rate", "lower_ci", "upper_ci"))
-                    st.caption("Wilson 95% CI shown for bins with ≥20 eligible customers. Lateness = recency / median_gap. Research: BG/NBD repeat-buying models.")
+                    table(
+                        val.select(
+                            "horizon",
+                            "lateness_bin",
+                            "eligible_n",
+                            "buyers",
+                            "purchase_rate",
+                            "lower_ci",
+                            "upper_ci",
+                        )
+                    )
+                    st.caption(
+                        "Wilson 95% CI shown for bins with ≥20 eligible customers. Lateness = recency / median_gap. Research: BG/NBD repeat-buying models."
+                    )
 
             except Exception as e:
                 st.error(f"Cadence validation failed: {type(e).__name__}: {e}")
@@ -4250,10 +4623,25 @@ def display_results(root, coverage):
                 st.dataframe(summary, hide_index=True, use_container_width=True)
 
                 if hist.height > 0:
-                    fig = go.Figure(go.Bar(x=hist["bin"].to_list(), y=hist["len"].to_list(), marker_color="#0072B2", opacity=0.7))
-                    chart(fig, f"Full-population histogram: {feature}", f"fpd_hist_{feature}", "Bin", "Customer count")
+                    fig = go.Figure(
+                        go.Bar(
+                            x=hist["bin"].to_list(),
+                            y=hist["len"].to_list(),
+                            marker_color="#0072B2",
+                            opacity=0.7,
+                        )
+                    )
+                    chart(
+                        fig,
+                        f"Full-population histogram: {feature}",
+                        f"fpd_hist_{feature}",
+                        "Bin",
+                        "Customer count",
+                    )
 
-                st.caption("Computed on full eligible population (finite values only). Not a 2,000-row sample.")
+                st.caption(
+                    "Computed on full eligible population (finite values only). Not a 2,000-row sample."
+                )
 
         except Exception as e:
             st.error(f"Full-population distributions failed: {type(e).__name__}: {e}")

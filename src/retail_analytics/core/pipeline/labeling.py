@@ -32,7 +32,7 @@ from retail_analytics.core.constants import (
     OVERDUE_CATEGORIES_NARROWING_MIN,
     REACTIVATION_EVENTS_MIN,
 )
-from retail_analytics.core.pipeline.prepare import _taglist
+from retail_analytics.core.pipeline.utils import _taglist
 
 
 def apply_labels(

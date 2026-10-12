@@ -7,6 +7,7 @@ This package decomposes the monolithic workflow into focused modules:
 - labeling: Behavioral and trajectory classification
 - reporting: Segment profiles, cohorts, and transition analysis
 - run: Main pipeline orchestration and CLI entry point
+- utils: Shared utilities (I/O, column keys, tag lists)
 """
 
 from retail_analytics.core.pipeline.features import (
@@ -28,13 +29,6 @@ from retail_analytics.core.pipeline.features import (
 )
 from retail_analytics.core.pipeline.labeling import apply_labels
 from retail_analytics.core.pipeline.prepare import (
-    COLS,
-    REQUIRED_COLS,
-    VERSION,
-    C,
-    G,
-    K,
-    P,
     PriceMode,
     _compute_quality_audit,
     _compute_validity_mask,
@@ -42,16 +36,26 @@ from retail_analytics.core.pipeline.prepare import (
     _normalize_strings,
     _parse_dates,
     _rejection_reasons,
-    _sink,
-    _taglist,
     _write_partitions,
     prepare,
-    sink,
     validate_input_schema,
 )
 from retail_analytics.core.pipeline.reporting import generate_reports
 from retail_analytics.core.pipeline.run import main, run_pipeline
 from retail_analytics.core.pipeline.snapshot import generate_snapshot
+from retail_analytics.core.pipeline.utils import (
+    COLS,
+    REQUIRED_COLS,
+    VERSION,
+    C,
+    G,
+    K,
+    P,
+    _sink,
+    _taglist,
+    collect,
+    sink,
+)
 from retail_analytics.core.stats import safe_ratio
 
 # Backward compatibility aliases
@@ -70,6 +74,7 @@ __all__ = [
     "PriceMode",
     "_sink",
     "sink",
+    "collect",
     "_taglist",
     "_rejection_reasons",
     "_parse_dates",

@@ -26,7 +26,7 @@ from retail_analytics.core.pipeline.features import (
     compute_weekday_entropy,
     merge_features,
 )
-from retail_analytics.core.pipeline.prepare import C, G, K, P, _sink
+from retail_analytics.core.pipeline.utils import C, G, K, P, _sink
 
 
 def generate_snapshot(

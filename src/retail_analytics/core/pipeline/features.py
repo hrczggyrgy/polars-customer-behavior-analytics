@@ -26,13 +26,8 @@ from retail_analytics.core.constants import (
     WINDOW_RECENT_30,
     WINDOW_YEAR,
 )
+from retail_analytics.core.pipeline.utils import C, K, _sink
 from retail_analytics.core.stats import safe_ratio
-
-# Key aliases
-C = "customer_id"
-K = [C, "transaction_id", "date"]
-P = [C, "product_id"]
-G = [C, "department", "category"]
 
 
 def _compute_baskets(line: pl.LazyFrame, out: Path) -> pl.LazyFrame:
@@ -55,17 +50,6 @@ def _compute_baskets(line: pl.LazyFrame, out: Path) -> pl.LazyFrame:
         sort_by=[C, "date", "transaction_id"],
     )
     return pl.scan_parquet(out / "baskets.parquet")
-
-
-def _sink(frame: pl.LazyFrame, path: Path, sort_by: list[str] | str | None = None) -> None:
-    """Write a LazyFrame to Parquet with ZSTD compression."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if sort_by is not None:
-        if isinstance(sort_by, str):
-            sort_by = [sort_by]
-        frame = frame.sort(sort_by)
-    frame.collect(engine="streaming").write_parquet(path, compression="zstd")
 
 
 def compute_base_features(

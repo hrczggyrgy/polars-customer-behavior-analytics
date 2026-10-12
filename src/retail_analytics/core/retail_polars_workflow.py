@@ -40,39 +40,28 @@ from retail_analytics.core.pipeline.prepare import (
     _normalize_strings,
     _parse_dates,
     _rejection_reasons,
-    _sink,
-    _taglist,
     _write_partitions,
     prepare,
-    sink,
     validate_input_schema,
 )
 from retail_analytics.core.pipeline.reporting import generate_reports as reports
 from retail_analytics.core.pipeline.run import main
 from retail_analytics.core.pipeline.run import run_pipeline as run
 from retail_analytics.core.pipeline.snapshot import generate_snapshot as snapshot
+from retail_analytics.core.pipeline.utils import (
+    COLS,
+    REQUIRED_COLS,
+    VERSION,
+    C,
+    G,
+    K,
+    P,
+    _sink,
+    _taglist,
+    collect,
+    sink,
+)
 from retail_analytics.core.stats import safe_ratio
-
-# Column definitions
-REQUIRED_COLS = COLS = [
-    "customer_id",
-    "transaction_date",
-    "transaction_id",
-    "product_id",
-    "product_description",
-    "department",
-    "category",
-    "price",
-    "quantity",
-]
-
-# Key aliases for readability
-C = "customer_id"
-K = [C, "transaction_id", "date"]
-P = [C, "product_id"]
-G = [C, "department", "category"]
-
-VERSION = "reconstructed-1.3"
 
 # Type aliases
 PriceMode = Literal["unit", "line_total"]
@@ -100,6 +89,7 @@ __all__ = [
     "ratio",
     "sink",
     "_sink",
+    "collect",
     "_taglist",
     "_rejection_reasons",
     "_parse_dates",

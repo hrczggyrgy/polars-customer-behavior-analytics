@@ -30,6 +30,7 @@ from retail_analytics.core.pipeline.labeling import apply_labels
 from retail_analytics.core.pipeline.prepare import prepare
 from retail_analytics.core.pipeline.reporting import generate_reports
 from retail_analytics.core.pipeline.snapshot import generate_snapshot
+from retail_analytics.core.pipeline.utils import VERSION, _sink
 from retail_analytics.core.thresholds import (
     calibrate_thresholds,
     compute_data_profile,
@@ -38,7 +39,6 @@ from retail_analytics.core.thresholds import (
     write_thresholds,
 )
 
-VERSION = "reconstructed-1.3"
 PriceMode = str  # "unit" or "line_total"
 
 
@@ -309,17 +309,6 @@ def run_pipeline(
             default=str,
         )
     )
-
-
-def _sink(frame: pl.LazyFrame, path: Path, sort_by: list[str] | str | None = None) -> None:
-    """Write a LazyFrame to Parquet with ZSTD compression."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if sort_by is not None:
-        if isinstance(sort_by, str):
-            sort_by = [sort_by]
-        frame = frame.sort(sort_by)
-    frame.collect(engine="streaming").write_parquet(path, compression="zstd")
 
 
 def main() -> None:

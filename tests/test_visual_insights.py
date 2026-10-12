@@ -27,7 +27,6 @@ if HAS_POLARS:
         revenue_waterfall,
         rfm_response_surface,
         segment_alluvial_flow,
-        time_to_second_purchase,
         transition_summary,
         trial_conversion_interval_plot,
         value_at_risk_scatter,
@@ -423,16 +422,19 @@ class Aggregates(unittest.TestCase):
 
     def test_cohort_age_retention_heatmap(self):
         """Test cohort_age_retention_heatmap returns correct structure."""
-        from datetime import date, timedelta
+        from datetime import date
 
         # Create validated transaction data
         validated = pl.DataFrame(
             {
                 "customer_id": ["A", "A", "B", "B", "C", "C"],
                 "date": [
-                    date(2024, 1, 1), date(2024, 2, 1),  # A: 2 months
-                    date(2024, 1, 15), date(2024, 3, 1), # B: 2 months
-                    date(2024, 2, 1), date(2024, 2, 15), # C: same month (no repeat)
+                    date(2024, 1, 1),
+                    date(2024, 2, 1),  # A: 2 months
+                    date(2024, 1, 15),
+                    date(2024, 3, 1),  # B: 2 months
+                    date(2024, 2, 1),
+                    date(2024, 2, 15),  # C: same month (no repeat)
                 ],
             }
         ).lazy()
@@ -462,14 +464,16 @@ class Aggregates(unittest.TestCase):
 
     def test_calendar_period_revenue_trend(self):
         """Test calendar_period_revenue_trend returns correct structure."""
-        from datetime import date, timedelta
+        from datetime import date
 
         validated = pl.DataFrame(
             {
                 "customer_id": ["A", "A", "B", "B", "C"],
                 "date": [
-                    date(2024, 1, 1), date(2024, 2, 1),
-                    date(2024, 1, 15), date(2024, 2, 15),
+                    date(2024, 1, 1),
+                    date(2024, 2, 1),
+                    date(2024, 1, 15),
+                    date(2024, 2, 15),
                     date(2024, 1, 10),
                 ],
                 "value": [100.0, 200.0, 150.0, 250.0, 300.0],
@@ -546,7 +550,10 @@ class Aggregates(unittest.TestCase):
 
         result = revenue_bridge(current, previous, date(2024, 6, 1))
         self.assertEqual(result.height, 4)
-        self.assertIn("unavailable: zero purchasing customers or baskets in current period", result["status"].to_list())
+        self.assertIn(
+            "unavailable: zero purchasing customers or baskets in current period",
+            result["status"].to_list(),
+        )
 
     def test_value_at_risk_scatter(self):
         """Test value_at_risk_scatter returns correct structure."""
@@ -607,7 +614,7 @@ class Aggregates(unittest.TestCase):
 
     def test_trial_conversion_interval_plot(self):
         """Test trial_conversion_interval_plot returns correct structure."""
-        from datetime import date, timedelta
+        from datetime import date
 
         product_history = pl.DataFrame(
             {
@@ -636,7 +643,7 @@ class Aggregates(unittest.TestCase):
 
     def test_category_penetration_growth_portfolio(self):
         """Test category_penetration_growth_portfolio returns correct structure."""
-        from datetime import date, timedelta
+        from datetime import date
 
         validated = pl.DataFrame(
             {
@@ -644,8 +651,10 @@ class Aggregates(unittest.TestCase):
                 "department": ["D1", "D1", "D1", "D2", "D1"],
                 "category": ["C1", "C1", "C1", "C2", "C1"],
                 "date": [
-                    date(2024, 6, 1), date(2024, 7, 1),
-                    date(2024, 6, 15), date(2024, 7, 15),
+                    date(2024, 6, 1),
+                    date(2024, 7, 1),
+                    date(2024, 6, 15),
+                    date(2024, 7, 15),
                     date(2024, 6, 10),
                 ],
                 "value": [100.0, 200.0, 150.0, 250.0, 300.0],
@@ -659,7 +668,9 @@ class Aggregates(unittest.TestCase):
         current_cutoff = date(2024, 7, 15)
         previous_cutoff = date(2024, 4, 15)
 
-        result = category_penetration_growth_portfolio(validated, rows, current_cutoff, previous_cutoff, top_categories=10)
+        result = category_penetration_growth_portfolio(
+            validated, rows, current_cutoff, previous_cutoff, top_categories=10
+        )
 
         self.assertEqual(result.height, 2)  # C1, C2
         self.assertIn("label", result.columns)
@@ -713,7 +724,9 @@ class Aggregates(unittest.TestCase):
             }
         ).lazy()
 
-        result = full_population_distribution(rows, features=["spend_90d", "purchases_90d", "recency"])
+        result = full_population_distribution(
+            rows, features=["spend_90d", "purchases_90d", "recency"]
+        )
 
         self.assertEqual(len(result), 3)
         for feature in ["spend_90d", "purchases_90d", "recency"]:

@@ -1,11 +1,11 @@
 """Transaction-only aggregate views. Includes lightweight product affinity analysis."""
 
 import math
-import networkx as nx
-import polars as pl
 from datetime import date, timedelta
-from typing import Optional
 
+import polars as pl
+
+from retail_analytics.core.pipeline.utils import collect
 from retail_analytics.core.stats import wilson
 
 METRICS = {
@@ -44,10 +44,6 @@ def month_windows(first, last):
         result.append(dict(month=cursor, start=lo, end=hi, partial=lo != cursor or hi != end))
         cursor = following
     return result
-
-
-def collect(frame):
-    return frame.collect(engine="streaming")
 
 
 def segment_summary(rows, dim, metric):
@@ -1630,7 +1626,7 @@ def rfm_response_surface(rows, coverage, recency_bins=5, frequency_bins=5, value
         value_tier_facet: If True, return separate surfaces per value_tier
 
     Returns:
-        DataFrame with recency_bin, frequency_bin, value_tier (if faceted), 
+        DataFrame with recency_bin, frequency_bin, value_tier (if faceted),
         eligible_n, buyers, rate, lower_ci, upper_ci
     """
     import polars as pl
@@ -1660,15 +1656,17 @@ def rfm_response_surface(rows, coverage, recency_bins=5, frequency_bins=5, value
     # If faceting by value_tier, compute quantile bins per tier
     if value_tier_facet:
         # Get value tiers present
-        tiers = collect(eligible.select("value_tier").unique().sort("value_tier"))["value_tier"].to_list()
-        
+        tiers = collect(eligible.select("value_tier").unique().sort("value_tier"))[
+            "value_tier"
+        ].to_list()
+
         all_results = []
         for tier in tiers:
             tier_data = eligible.filter(pl.col("value_tier") == tier)
-            
+
             if tier_data.select(pl.len()).collect().item() == 0:
                 continue
-            
+
             # Create quantile bins within this tier
             recency_quantiles = [i / recency_bins for i in range(recency_bins + 1)]
             freq_quantiles = [i / frequency_bins for i in range(frequency_bins + 1)]
@@ -1706,7 +1704,9 @@ def rfm_response_surface(rows, coverage, recency_bins=5, frequency_bins=5, value
             tier_binned = tier_data.with_columns(
                 [
                     pl.col("recency").cut(rec_interior, labels=rec_labels).alias("recency_bin"),
-                    pl.col("purchases_90d").cut(freq_interior, labels=freq_labels).alias("frequency_bin"),
+                    pl.col("purchases_90d")
+                    .cut(freq_interior, labels=freq_labels)
+                    .alias("frequency_bin"),
                 ]
             )
 
@@ -1810,7 +1810,9 @@ def rfm_response_surface(rows, coverage, recency_bins=5, frequency_bins=5, value
     return pl.DataFrame(results)
 
 
-def cohort_age_retention_heatmap(validated: pl.LazyFrame, rows: pl.LazyFrame, cutoff: date, min_cohort_size: int = 20):
+def cohort_age_retention_heatmap(
+    validated: pl.LazyFrame, rows: pl.LazyFrame, cutoff: date, min_cohort_size: int = 20
+):
     """Cohort-age retention heatmap: monthly activity by first-observed cohort age.
 
     Unlike calendar-time heatmaps, this aligns customers by relationship age (months since first purchase).
@@ -1843,8 +1845,7 @@ def cohort_age_retention_heatmap(validated: pl.LazyFrame, rows: pl.LazyFrame, cu
     cust_ids = cust_cohorts["customer_id"].to_list()
     purchases = collect(
         validated.filter(
-            (pl.col("customer_id").is_in(cust_ids))
-            & (pl.col("date") <= pl.lit(cutoff))
+            (pl.col("customer_id").is_in(cust_ids)) & (pl.col("date") <= pl.lit(cutoff))
         )
         .select("customer_id", "date")
         .unique(subset=["customer_id", "date"])
@@ -1854,17 +1855,21 @@ def cohort_age_retention_heatmap(validated: pl.LazyFrame, rows: pl.LazyFrame, cu
         return pl.DataFrame()
 
     # Add month truncation to purchases
-    purchases = purchases.with_columns(
-        pl.col("date").dt.truncate("1mo").alias("purchase_month")
-    )
+    purchases = purchases.with_columns(pl.col("date").dt.truncate("1mo").alias("purchase_month"))
 
     # Join with cohort info
-    purchases = purchases.join(cust_cohorts.select("customer_id", "cohort_month", "first_purchase"), on="customer_id", how="inner")
+    purchases = purchases.join(
+        cust_cohorts.select("customer_id", "cohort_month", "first_purchase"),
+        on="customer_id",
+        how="inner",
+    )
 
     # Compute age in months since first purchase
     purchases = purchases.with_columns(
-        ((pl.col("purchase_month").dt.year() - pl.col("cohort_month").dt.year()) * 12
-         + (pl.col("purchase_month").dt.month() - pl.col("cohort_month").dt.month())).alias("age_month")
+        (
+            (pl.col("purchase_month").dt.year() - pl.col("cohort_month").dt.year()) * 12
+            + (pl.col("purchase_month").dt.month() - pl.col("cohort_month").dt.month())
+        ).alias("age_month")
     )
 
     # Filter to observed months (purchase_month <= cutoff truncated to month)
@@ -1897,10 +1902,14 @@ def cohort_age_retention_heatmap(validated: pl.LazyFrame, rows: pl.LazyFrame, cu
         .sort("cohort_month", "age_month")
     )
 
-    return result.select("cohort_month", "age_month", "active_customers", "cohort_size", "activity_rate")
+    return result.select(
+        "cohort_month", "age_month", "active_customers", "cohort_size", "activity_rate"
+    )
 
 
-def calendar_period_revenue_trend(validated: pl.LazyFrame, rows: pl.LazyFrame, first_date: date, cutoff: date, months: int = 12):
+def calendar_period_revenue_trend(
+    validated: pl.LazyFrame, rows: pl.LazyFrame, first_date: date, cutoff: date, months: int = 12
+):
     """Calendar-period revenue trends with purchasing components.
 
     Shows non-overlapping monthly windows with:
@@ -1923,7 +1932,7 @@ def calendar_period_revenue_trend(validated: pl.LazyFrame, rows: pl.LazyFrame, f
     Returns:
         DataFrame with month, spend, baskets, buyers, aov, baskets_per_buyer, buying_share, population_n
     """
-    from retail_analytics.visualization.visual_insights_core import month_windows, collect
+    from retail_analytics.visualization.visual_insights_core import collect, month_windows
 
     windows = month_windows(first_date, cutoff)[-months:]
     calendar = pl.DataFrame(
@@ -2003,7 +2012,10 @@ def revenue_bridge(rows, previous_rows, cutoff, match_customers: bool = True):
     current_stats = collect(
         rows.select(
             (pl.col("purchases_90d") > 0).sum().alias("purchasing_customers"),
-            pl.col("purchases_90d").filter(pl.col("purchases_90d") > 0).sum().alias("total_baskets"),
+            pl.col("purchases_90d")
+            .filter(pl.col("purchases_90d") > 0)
+            .sum()
+            .alias("total_baskets"),
             pl.col("spend_90d").filter(pl.col("purchases_90d") > 0).sum().alias("total_spend"),
         )
     ).row(0, named=True)
@@ -2011,7 +2023,10 @@ def revenue_bridge(rows, previous_rows, cutoff, match_customers: bool = True):
     previous_stats = collect(
         previous_rows.select(
             (pl.col("purchases_90d") > 0).sum().alias("purchasing_customers"),
-            pl.col("purchases_90d").filter(pl.col("purchases_90d") > 0).sum().alias("total_baskets"),
+            pl.col("purchases_90d")
+            .filter(pl.col("purchases_90d") > 0)
+            .sum()
+            .alias("total_baskets"),
             pl.col("spend_90d").filter(pl.col("purchases_90d") > 0).sum().alias("total_spend"),
         )
     ).row(0, named=True)
@@ -2133,7 +2148,16 @@ def value_at_risk_scatter(rows, lateness_threshold: float = 2.0, sample_limit: i
 
     # Check required columns
     schema = rows.collect_schema()
-    required = ["recency", "median_gap", "spend_365d", "spend_90d", "purchases_365d", "value_tier", "trajectory", "lateness"]
+    required = [
+        "recency",
+        "median_gap",
+        "spend_365d",
+        "spend_90d",
+        "purchases_365d",
+        "value_tier",
+        "trajectory",
+        "lateness",
+    ]
     missing = [c for c in required if c not in schema]
     if missing:
         return {"sample": pl.DataFrame(), "summary": pl.DataFrame()}
@@ -2147,7 +2171,7 @@ def value_at_risk_scatter(rows, lateness_threshold: float = 2.0, sample_limit: i
         & pl.col("spend_90d").is_finite()
     )
 
-    total_n = collect(rows.select(pl.len())).item()
+    collect(rows.select(pl.len())).item()
     eligible_n = collect(eligible.select(pl.len())).item()
 
     if eligible_n == 0:
@@ -2161,9 +2185,18 @@ def value_at_risk_scatter(rows, lateness_threshold: float = 2.0, sample_limit: i
             pl.col("spend_90d").sum().alias("total_spend_90d"),
             (pl.col("lateness") >= lateness_threshold).sum().alias("overdue_customers"),
             (pl.col("lateness") >= lateness_threshold).mean().alias("overdue_share"),
-            pl.col("spend_365d").filter(pl.col("lateness") >= lateness_threshold).sum().alias("at_risk_spend_365d"),
-            pl.col("spend_90d").filter(pl.col("lateness") >= lateness_threshold).sum().alias("at_risk_spend_90d"),
-            pl.col("purchases_365d").filter(pl.col("lateness") >= lateness_threshold).sum().alias("at_risk_purchases"),
+            pl.col("spend_365d")
+            .filter(pl.col("lateness") >= lateness_threshold)
+            .sum()
+            .alias("at_risk_spend_365d"),
+            pl.col("spend_90d")
+            .filter(pl.col("lateness") >= lateness_threshold)
+            .sum()
+            .alias("at_risk_spend_90d"),
+            pl.col("purchases_365d")
+            .filter(pl.col("lateness") >= lateness_threshold)
+            .sum()
+            .alias("at_risk_purchases"),
         )
     ).row(0, named=True)
 
@@ -2192,7 +2225,12 @@ def value_at_risk_scatter(rows, lateness_threshold: float = 2.0, sample_limit: i
     return {"sample": sample, "summary": summary_df}
 
 
-def product_association_network(product_pairs: pl.DataFrame, min_lift: float = 1.2, min_confidence: float = 0.15, top_n: int = 100):
+def product_association_network(
+    product_pairs: pl.DataFrame,
+    min_lift: float = 1.2,
+    min_confidence: float = 0.15,
+    top_n: int = 100,
+):
     """Build a product association network from affinity pairs.
 
     Creates nodes and edges suitable for network visualization (Plotly or cytoscape).
@@ -2243,11 +2281,23 @@ def product_association_network(product_pairs: pl.DataFrame, min_lift: float = 1
             node_stats[item]["total_support"] += edge["support"]
             node_stats[item]["max_lift"] = max(node_stats[item]["max_lift"], edge["lift"] or 0)
 
-    nodes = nodes.with_columns([
-        pl.col("product_id").map_elements(lambda x: node_stats.get(x, {}).get("degree", 0), return_dtype=pl.Int64).alias("degree"),
-        pl.col("product_id").map_elements(lambda x: node_stats.get(x, {}).get("total_support", 0.0), return_dtype=pl.Float64).alias("total_support"),
-        pl.col("product_id").map_elements(lambda x: node_stats.get(x, {}).get("max_lift", 0.0), return_dtype=pl.Float64).alias("max_lift"),
-    ])
+    nodes = nodes.with_columns(
+        [
+            pl.col("product_id")
+            .map_elements(lambda x: node_stats.get(x, {}).get("degree", 0), return_dtype=pl.Int64)
+            .alias("degree"),
+            pl.col("product_id")
+            .map_elements(
+                lambda x: node_stats.get(x, {}).get("total_support", 0.0), return_dtype=pl.Float64
+            )
+            .alias("total_support"),
+            pl.col("product_id")
+            .map_elements(
+                lambda x: node_stats.get(x, {}).get("max_lift", 0.0), return_dtype=pl.Float64
+            )
+            .alias("max_lift"),
+        ]
+    )
 
     # Edges for visualization
     edges = filtered.select(
@@ -2265,7 +2315,13 @@ def product_association_network(product_pairs: pl.DataFrame, min_lift: float = 1
     return {"nodes": nodes, "edges": edges}
 
 
-def trial_conversion_interval_plot(product_history: pl.LazyFrame, rows: pl.LazyFrame, cutoff: date, min_trials: int = 5, category_lookup: Optional[pl.DataFrame] = None):
+def trial_conversion_interval_plot(
+    product_history: pl.LazyFrame,
+    rows: pl.LazyFrame,
+    cutoff: date,
+    min_trials: int = 5,
+    category_lookup: pl.DataFrame | None = None,
+):
     """Trial-to-repeat conversion with Wilson confidence intervals per product.
 
     Shows eligible trials, repeat conversion rate, and 95% CI for each product.
@@ -2284,8 +2340,8 @@ def trial_conversion_interval_plot(product_history: pl.LazyFrame, rows: pl.LazyF
     """
     import polars as pl
 
-    from retail_analytics.core.stats import wilson
     from retail_analytics.core.constants import WINDOW_YEAR
+    from retail_analytics.core.stats import wilson
 
     if isinstance(cutoff, str):
         cutoff = date.fromisoformat(cutoff)
@@ -2296,9 +2352,9 @@ def trial_conversion_interval_plot(product_history: pl.LazyFrame, rows: pl.LazyF
     ids = rows.select("customer_id").unique()
 
     # Filter to eligible trials
-    trials = product_history.filter(
-        pl.col("trial").is_between(trial_start, trial_end)
-    ).join(ids, on="customer_id", how="semi")
+    trials = product_history.filter(pl.col("trial").is_between(trial_start, trial_end)).join(
+        ids, on="customer_id", how="semi"
+    )
 
     # Aggregate by product
     result = collect(
@@ -2339,7 +2395,13 @@ def trial_conversion_interval_plot(product_history: pl.LazyFrame, rows: pl.LazyF
     return result_df.sort("eligible_trials", descending=True)
 
 
-def category_penetration_growth_portfolio(validated: pl.LazyFrame, rows: pl.LazyFrame, current_cutoff: date, previous_cutoff: date, top_categories: int = 30):
+def category_penetration_growth_portfolio(
+    validated: pl.LazyFrame,
+    rows: pl.LazyFrame,
+    current_cutoff: date,
+    previous_cutoff: date,
+    top_categories: int = 30,
+):
     """Category penetration vs growth portfolio.
 
     X-axis: Current category penetration (buyers / population)
@@ -2397,7 +2459,9 @@ def category_penetration_growth_portfolio(validated: pl.LazyFrame, rows: pl.Lazy
         .agg(
             pl.col("customer_id").n_unique().alias("curr_buyers"),
             pl.col("value").sum().alias("curr_spend"),
-            (pl.col("customer_id").unique().n_unique() > 1).sum().alias("curr_repeat_buyers"),  # simplified
+            (pl.col("customer_id").unique().n_unique() > 1)
+            .sum()
+            .alias("curr_repeat_buyers"),  # simplified
         )
         .with_columns(
             (pl.col("curr_buyers") / curr_n).alias("curr_penetration"),
@@ -2427,18 +2491,22 @@ def category_penetration_growth_portfolio(validated: pl.LazyFrame, rows: pl.Lazy
     # Full join
     merged = (
         curr_cats.join(prev_cats, on=["department", "category"], how="full", coalesce=True)
-        .with_columns([
-            pl.col("curr_penetration").fill_null(0),
-            pl.col("prev_penetration").fill_null(0),
-            pl.col("curr_buyers").fill_null(0),
-            pl.col("prev_buyers").fill_null(0),
-            pl.col("curr_spend").fill_null(0),
-            pl.col("prev_spend").fill_null(0),
-            pl.col("curr_repeat_buyer_share").fill_null(0),
-            pl.col("prev_repeat_buyer_share").fill_null(0),
-        ])
         .with_columns(
-            (pl.col("curr_penetration") - pl.col("prev_penetration")).alias("penetration_change_pp"),
+            [
+                pl.col("curr_penetration").fill_null(0),
+                pl.col("prev_penetration").fill_null(0),
+                pl.col("curr_buyers").fill_null(0),
+                pl.col("prev_buyers").fill_null(0),
+                pl.col("curr_spend").fill_null(0),
+                pl.col("prev_spend").fill_null(0),
+                pl.col("curr_repeat_buyer_share").fill_null(0),
+                pl.col("prev_repeat_buyer_share").fill_null(0),
+            ]
+        )
+        .with_columns(
+            (pl.col("curr_penetration") - pl.col("prev_penetration")).alias(
+                "penetration_change_pp"
+            ),
             (pl.col("curr_spend") + pl.col("prev_spend")).alias("total_spend"),
             pl.concat_str([pl.col("department"), pl.lit(" / "), pl.col("category")]).alias("label"),
         )
@@ -2447,7 +2515,9 @@ def category_penetration_growth_portfolio(validated: pl.LazyFrame, rows: pl.Lazy
     # Spend share denominator: total spend across all categories in current period
     total_curr_spend = merged["curr_spend"].sum()
     merged = merged.with_columns(
-        (pl.col("curr_spend") / total_curr_spend if total_curr_spend > 0 else 0).alias("spend_share"),
+        (pl.col("curr_spend") / total_curr_spend if total_curr_spend > 0 else 0).alias(
+            "spend_share"
+        ),
         pl.col("curr_repeat_buyer_share").alias("repeat_buyer_share"),
     )
 
@@ -2489,7 +2559,10 @@ def segment_alluvial_flow(rows_history: list, dimensions: list = None):
         snapshots.append((before_cutoff, after_cutoff))
 
         for dim in dimensions:
-            if dim not in before.collect_schema().names() or dim not in after.collect_schema().names():
+            if (
+                dim not in before.collect_schema().names()
+                or dim not in after.collect_schema().names()
+            ):
                 continue
 
             origin = before.select("customer_id", pl.col(dim).alias("from_state"))
@@ -2503,11 +2576,13 @@ def segment_alluvial_flow(rows_history: list, dimensions: list = None):
             flows = collect(
                 joined.group_by("from_state", "to_state")
                 .len()
-                .with_columns([
-                    pl.lit(before_cutoff).alias("from_snapshot"),
-                    pl.lit(after_cutoff).alias("to_snapshot"),
-                    pl.lit(dim).alias("dimension"),
-                ])
+                .with_columns(
+                    [
+                        pl.lit(before_cutoff).alias("from_snapshot"),
+                        pl.lit(after_cutoff).alias("to_snapshot"),
+                        pl.lit(dim).alias("dimension"),
+                    ]
+                )
                 .rename({"len": "customer_count"})
             )
             all_flows.append(flows)
@@ -2536,10 +2611,21 @@ def full_population_distribution(rows, features: list = None):
 
     if features is None:
         features = [
-            "spend_90d", "spend_365d", "purchases_90d", "recency",
-            "median_gap", "gap_cv", "lateness", "median_basket",
-            "new_share", "repeat_share", "established_share",
-            "category_hhi", "trial_conversion", "frequency_change", "basket_change"
+            "spend_90d",
+            "spend_365d",
+            "purchases_90d",
+            "recency",
+            "median_gap",
+            "gap_cv",
+            "lateness",
+            "median_basket",
+            "new_share",
+            "repeat_share",
+            "established_share",
+            "category_hhi",
+            "trial_conversion",
+            "frequency_change",
+            "basket_change",
         ]
 
     schema = rows.collect_schema()
@@ -2579,11 +2665,19 @@ def full_population_distribution(rows, features: list = None):
         nbins = min(50, max(10, int(math.log2(n)) + 1))
         hist = collect(
             data.select(
-                pl.col(feature).cut(
-                    [stats["min"] + (stats["max"] - stats["min"]) * i / nbins for i in range(1, nbins)],
-                    labels=[f"bin_{i}" for i in range(nbins)]
-                ).alias("bin")
-            ).group_by("bin").len().sort("bin")
+                pl.col(feature)
+                .cut(
+                    [
+                        stats["min"] + (stats["max"] - stats["min"]) * i / nbins
+                        for i in range(1, nbins)
+                    ],
+                    labels=[f"bin_{i}" for i in range(nbins)],
+                )
+                .alias("bin")
+            )
+            .group_by("bin")
+            .len()
+            .sort("bin")
         )
 
         results[feature] = {

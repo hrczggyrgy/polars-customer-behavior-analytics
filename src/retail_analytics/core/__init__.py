@@ -109,6 +109,7 @@ __all__ = [
     "ratio",
     "sink",
     "_sink",
+    "collect",
     "_taglist",
     "_rejection_reasons",
     "_parse_dates",
