@@ -264,8 +264,8 @@ def compute_item_pairs(
 
     # Compute metrics using native joins instead of map_elements
     # Join support for item_a and item_b
-    support_a = support_df.rename({"item": "item_a", "support": "support_a"})
-    support_b = support_df.rename({"item": "item_b", "support": "support_b"})
+    support_a = support_df.rename({"item": "item_a", "support": "support_a"}).lazy()
+    support_b = support_df.rename({"item": "item_b", "support": "support_b"}).lazy()
 
     return collect(
         pair_counts.join(support_a, on="item_a", how="left")

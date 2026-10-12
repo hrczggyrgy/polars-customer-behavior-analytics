@@ -154,6 +154,7 @@ def monthly_summary(baskets, rows, first, cutoff, months=12):
             pl.len().alias("baskets"),
             pl.col("customer_id").n_unique().alias("buyers"),
         )
+        .lazy()
     )
     result = (
         calendar.lazy()
@@ -1962,6 +1963,7 @@ def calendar_period_revenue_trend(
             pl.len().alias("baskets"),
             pl.col("customer_id").n_unique().alias("buyers"),
         )
+        .lazy()
     )
 
     result = (
