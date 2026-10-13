@@ -280,10 +280,17 @@ def analyze(job: dict) -> None:
         date.fromisoformat(metadata["minimum_date"]),
         date.fromisoformat(metadata["maximum_date"]),
     )
-    end = date.fromisoformat(job["observed_through"]) if job.get("coverage_confirmed") else last
+    # Use coverage_complete_through for the effective observation end when coverage is confirmed
+    # This can be later than the latest transaction date (no transactions = observable zeros if source is complete)
+    coverage_complete_through = job.get("coverage_complete_through")
+    if coverage_complete_through and job.get("coverage_confirmed"):
+        end = date.fromisoformat(coverage_complete_through)
+    else:
+        end = date.fromisoformat(job["observed_through"]) if job.get("coverage_confirmed") else last
 
-    if not dates or len(dates) > MAX_CUTOFFS or dates[0] < first or dates[-1] > end or end < last:
+    if not dates or len(dates) > MAX_CUTOFFS or dates[0] < first or dates[-1] > end:
         raise ValueError("Invalid cutoff or coverage dates")
+    # end can be >= last (complete_through can be later than latest transaction)
     if not 1 <= int(job["buckets"]) <= 32:
         raise ValueError("Bucket count must be 1..32")
 

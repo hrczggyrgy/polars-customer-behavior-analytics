@@ -9,6 +9,10 @@ def check_horizon_eligibility(
     """
     Check if a future-purchase horizon is eligible given coverage confirmation.
 
+    Uses coverage_complete_through (asserted by user) not observed_through (latest transaction date).
+    A source can be complete through a date with no transactions - the absence of transactions
+    is itself observable if the source is confirmed complete.
+
     Returns:
         (eligible: bool, reason: str)
     """
@@ -35,3 +39,11 @@ def check_horizon_eligibility(
         )
 
     return True, f"Eligible: complete-through {complete_date} covers horizon end {horizon_end}"
+
+
+def get_latest_observed_transaction_date(manifest: dict) -> date | None:
+    """Get the latest observed transaction date from the manifest."""
+    latest = manifest.get("latest_observed_transaction_date")
+    if latest:
+        return date.fromisoformat(latest)
+    return None

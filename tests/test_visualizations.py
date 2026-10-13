@@ -1,30 +1,30 @@
 """Tests for visualization functions."""
 
-from datetime import date, timedelta
+from datetime import date
+
 import polars as pl
 import pytest
 
-from retail_analytics.visualization.visual_insights_core import (
-    monthly_summary,
-    calendar_period_revenue_trend,
-    cohort_age_retention_heatmap,
-    cohort_summary,
-    multi_horizon_cohort_repeat,
-    future_outcome_validation,
-    trial_conversion_interval_plot,
-    product_association_network,
-    revenue_waterfall,
-    value_tier_transition_waterfall,
-    momentum_map,
-    behavior_trajectory_matrix,
-    cadence_return_validation,
-)
 from retail_analytics.visualization.product_affinity import (
     ProductAffinityConfig,
     compute_frequent_items,
     compute_item_pairs,
     product_affinity_analysis,
-    compute_item_pairs,
+)
+from retail_analytics.visualization.visual_insights_core import (
+    behavior_trajectory_matrix,
+    cadence_return_validation,
+    calendar_period_revenue_trend,
+    cohort_age_retention_heatmap,
+    cohort_summary,
+    future_outcome_validation,
+    momentum_map,
+    monthly_summary,
+    multi_horizon_cohort_repeat,
+    product_association_network,
+    revenue_waterfall,
+    trial_conversion_interval_plot,
+    value_tier_transition_waterfall,
 )
 
 

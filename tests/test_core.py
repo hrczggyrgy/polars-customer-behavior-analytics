@@ -1,32 +1,30 @@
 """Core unit tests for retail analytics pipeline."""
 
-from datetime import date, timedelta
+from datetime import date
+
 import polars as pl
 import pytest
 
-from retail_analytics.core.stats import wilson, safe_ratio
-from retail_analytics.core.pipeline.utils import (
-    _mask_zero_spend_cols,
-    VERSION,
-    C,
-    collect,
-)
 from retail_analytics.core.pipeline.preparation import (
+    audit_duplicate_counts,
     normalize_strings,
     parse_numeric_columns,
     validity_mask,
-    audit_duplicate_counts,
 )
 from retail_analytics.core.pipeline.stages import (
-    build_price_reference,
     build_unavailable_reference_thresholds,
-    select_reference_and_calibrate,
 )
+from retail_analytics.core.pipeline.utils import (
+    VERSION,
+    _mask_zero_spend_cols,
+    collect,
+)
+from retail_analytics.core.stats import wilson
 from retail_analytics.patronage.patronage import (
     Rules,
-    month_bounds,
     classify,
     label_frame,
+    month_bounds,
 )
 
 

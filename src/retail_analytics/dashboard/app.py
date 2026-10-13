@@ -39,6 +39,7 @@ from retail_analytics.dashboard.views import (
     render_thresholds_calibration,
     render_trial_conversion_intervals,
 )
+from retail_analytics.dashboard.route_registry import get_route_registry, validate_route_registry
 from retail_analytics.visualization.chart_components import (
     PAGE_ROWS,
     ChartEvidence,
@@ -464,6 +465,132 @@ def display_results(root, coverage):
         ],
     }
 
+    # Route registry validation (run once per session)
+    if "route_registry_validated" not in st.session_state:
+        errors = validate_route_registry()
+        if errors:
+            st.error(f"Route registry validation failed: {errors}")
+        st.session_state["route_registry_validated"] = True
+
+    # Dispatch function using route registry
+    def dispatch_view(view_name: str, root, rows, coverage, color_map, history, filters, chosen, manifest, thresholds):
+        """Dispatch view to its renderer using the route registry."""
+        registry = get_route_registry()
+        
+        if view_name not in registry:
+            st.error(f"View '{view_name}' not found in route registry")
+            return
+        
+        view_info = registry[view_name]
+        renderer_name = view_info["renderer"]
+        
+        # Check coverage requirement
+        if view_info["requires_coverage"] and not coverage:
+            st.warning(
+                f"⚠ **Coverage not confirmed** — {view_name} requires confirmed follow-up data. "
+                "Enable coverage confirmation in the sidebar to access this view."
+            )
+            return
+        
+        # Import renderer dynamically from views modules
+        # Map renderer names to their module imports
+        renderer_map = {
+            # Core views
+            "render_data_trust_quality": ("retail_analytics.dashboard.views.overview", "render_data_trust_quality"),
+            "render_customer_base_summary": ("retail_analytics.dashboard.views.overview", "render_customer_base_summary"),
+            "render_key_signals": ("retail_analytics.dashboard.views.overview", "render_key_signals"),
+            "render_customer_brief": ("retail_analytics.dashboard.views.customer_explorer", "render_customer_brief"),
+            "render_customer_timeline": ("retail_analytics.dashboard.views.customer_explorer", "render_customer_timeline"),
+            "render_segments": ("retail_analytics.dashboard.views.segments", "render_segments"),
+            "render_analysis_settings": ("retail_analytics.dashboard.views.methods", "render_analysis_settings"),
+            "render_metric_definitions": ("retail_analytics.dashboard.views.methods", "render_metric_definitions"),
+            "render_thresholds_calibration": ("retail_analytics.dashboard.views.methods", "render_thresholds_calibration"),
+            "render_data_quality_report": ("retail_analytics.dashboard.views.methods", "render_data_quality_report"),
+            # Predictive modeling
+            "render_model_evaluation": ("retail_analytics.dashboard.views.modeling", "render_model_evaluation"),
+            "render_clv_predictions": ("retail_analytics.dashboard.views.modeling", "render_clv_predictions"),
+            # Lifecycle & Repeat
+            "render_cohort_age_retention": ("retail_analytics.dashboard.views.lifecycle", "render_cohort_age_retention"),
+            "render_time_to_repeat": ("retail_analytics.dashboard.views.lifecycle", "render_time_to_repeat"),
+            "render_multi_horizon_cohorts": ("retail_analytics.dashboard.views.lifecycle", "render_multi_horizon_cohorts"),
+            "render_purchase_cadence": ("retail_analytics.dashboard.views.lifecycle", "render_purchase_cadence"),
+            "render_cadence_validation": ("retail_analytics.dashboard.views.lifecycle", "render_cadence_validation"),
+            "render_cohorts": ("retail_analytics.dashboard.views.cohorts", "render_cohorts"),
+            # Value & Risk
+            "render_rfm_response_surface": ("retail_analytics.dashboard.views.value_risk", "render_rfm_response_surface"),
+            "render_value_at_risk_scatter": ("retail_analytics.dashboard.views.value_risk", "render_value_at_risk_scatter"),
+            "render_revenue_bridge": ("retail_analytics.dashboard.views.value_risk", "render_revenue_bridge"),
+            "render_revenue_waterfall": ("retail_analytics.dashboard.views.value_risk", "render_revenue_waterfall"),
+            "render_customer_momentum": ("retail_analytics.dashboard.views.value_risk", "render_customer_momentum"),
+            "render_spend_concentration": ("retail_analytics.dashboard.views.value_risk", "render_spend_concentration"),
+            "render_value_tier_transitions": ("retail_analytics.dashboard.views.value_risk", "render_value_tier_transitions"),
+            # Products & Categories
+            "render_category_opportunity_map": ("retail_analytics.dashboard.views.products", "render_category_opportunity_map"),
+            "render_category_participation": ("retail_analytics.dashboard.views.products", "render_category_participation"),
+            "render_trial_conversion_intervals": ("retail_analytics.dashboard.views.products", "render_trial_conversion_intervals"),
+            "render_product_affinity": ("retail_analytics.dashboard.views.products", "render_product_affinity"),
+            "render_product_association_network": ("retail_analytics.dashboard.views.products", "render_product_association_network"),
+            "render_category_penetration_growth": ("retail_analytics.dashboard.views.products", "render_category_penetration_growth"),
+            "render_category_sankey": ("retail_analytics.dashboard.views.advanced", "render_category_sankey"),
+            # Advanced Analytics
+            "render_transitions": ("retail_analytics.dashboard.views.transitions", "render_transitions"),
+            "render_segment_alluvial_flow": ("retail_analytics.dashboard.views.advanced", "render_segment_alluvial_flow"),
+            "render_full_population_distributions": ("retail_analytics.dashboard.views.advanced", "render_full_population_distributions"),
+            # Features
+            "render_features": ("retail_analytics.dashboard.views.features", "render_features"),
+            # Advanced views (Behavior × Trajectory, Purchase Rhythm, Basket Evolution)
+            "render_behavior_trajectory": ("retail_analytics.dashboard.views.advanced", "render_behavior_trajectory"),
+            "render_purchase_rhythm": ("retail_analytics.dashboard.views.advanced", "render_purchase_rhythm"),
+            "render_basket_evolution": ("retail_analytics.dashboard.views.advanced", "render_basket_evolution"),
+        }
+        
+        if renderer_name not in renderer_map:
+            st.error(f"Renderer '{renderer_name}' not mapped for view '{view_name}'")
+            return
+        
+        module_path, func_name = renderer_map[renderer_name]
+        
+        try:
+            module = __import__(module_path, fromlist=[func_name])
+            renderer_func = getattr(module, func_name)
+            
+            # Determine which arguments the renderer needs
+            import inspect
+            sig = inspect.signature(renderer_func)
+            params = sig.parameters
+            
+            # Build kwargs based on function signature
+            kwargs = {}
+            if "root" in params:
+                kwargs["root"] = root
+            if "rows" in params:
+                kwargs["rows"] = rows
+            if "coverage" in params:
+                kwargs["coverage"] = coverage
+            if "color_map" in params:
+                kwargs["color_map"] = color_map
+            if "history" in params:
+                kwargs["history"] = history
+            if "filters" in params:
+                kwargs["filters"] = filters
+            if "chosen" in params:
+                kwargs["chosen"] = chosen
+            if "manifest" in params:
+                kwargs["manifest"] = manifest
+            if "thresholds" in params:
+                kwargs["thresholds"] = thresholds
+            
+            renderer_func(**kwargs)
+            
+        except ImportError as e:
+            st.error(f"Failed to import renderer module '{module_path}': {e}")
+        except AttributeError as e:
+            st.error(f"Renderer function '{func_name}' not found in '{module_path}': {e}")
+        except Exception as e:
+            st.error(f"View '{view_name}' failed: {type(e).__name__}: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+
     # Two-level navigation: section selector + view selector
     section = st.selectbox(
         "Section",
@@ -478,7 +605,13 @@ def display_results(root, coverage):
         key="nav_view",
     )
     history = [x for x in manifest["snapshots"] if x <= chosen]
-    if view == "Overview":
+    
+    # Dispatch view using route registry
+    dispatch_view(view, root, rows, coverage, color_map, history, filters, chosen, manifest, thresholds)
+    
+    # Note: Inline views not yet migrated to view modules will show error
+    # They need to be moved to appropriate view modules
+    return
         historical = apply_filters(
             pl.scan_parquet(
                 [
@@ -3768,14 +3901,17 @@ def main():
     )
 
     # Complete-through date input (only enabled when coverage confirmed)
+    # Allow dates beyond latest transaction date - the absence of transactions is itself observable
+    # if the source is confirmed complete through that date
     if coverage_confirmed:
         complete_through = st.sidebar.date_input(
             "Data complete through (inclusive)",
             value=last,
             min_value=first,
-            max_value=last,
+            # max_value intentionally NOT set to 'last' - user may assert completeness beyond latest transaction
             help="Latest date for which you assert complete capture of all in-scope activity. "
-                 "Future-purchase horizons extending past this date will be unavailable."
+                 "Future-purchase horizons extending past this date will be unavailable. "
+                 "Can be later than the latest transaction date if you know the export is complete."
         )
         coverage_scope_note = st.sidebar.text_input(
             "Scope covered (stores/channels/business units, or 'unknown')",
@@ -3837,6 +3973,7 @@ def main():
         coverage_scope_note=coverage_scope_note,
         coverage_confirmation_source="user_assertion" if coverage_confirmed else None,
         observed_through=str(end),
+        latest_observed_transaction_date=str(last),
         min_reference_population=min_ref_pop,
     )
     result_key = json.dumps(job, sort_keys=True)

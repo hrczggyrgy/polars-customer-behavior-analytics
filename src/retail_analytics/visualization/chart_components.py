@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 import polars as pl
 import streamlit as st
 
-from retail_analytics.core.coverage import check_horizon_eligibility
+from retail_analytics.core.coverage import check_horizon_eligibility, get_latest_observed_transaction_date
 from retail_analytics.io.json_files import read_json
 
 
@@ -617,7 +617,7 @@ __all__ = [
     "bootstrap_ci", "format_evidence_badge", "multiplicity_warning",
     "sampling_disclosure", "threshold_sensitivity_note",
     "build_color_map", "get_color", "format_axis_title", "OKABE_ITO", "safe_list",
-    "check_horizon_eligibility",
+    "check_horizon_eligibility", "get_latest_observed_transaction_date",
     "read_json",
     "bounded_grid",
     "collect", "table", "PAGE_ROWS",

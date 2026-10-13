@@ -84,6 +84,7 @@ class HoldoutResult:
     test_metrics: EvaluationMetrics
     baseline_comparison: dict[str, float]  # vs naive baselines
     warnings: list[str] = field(default_factory=list)
+    evaluation_status: str = "not_evaluated"  # valid, insufficient_data, fit_failed, coverage_unconfirmed, not_implemented
 
 
 # ============================================================================
@@ -600,7 +601,22 @@ def compute_evaluation_metrics(
 
     # Concordance (for repeat prediction)
     # Concordance index: proportion of concordant pairs
-    concordance = 0.5  # Placeholder
+    # For count predictions, we use a simplified concordance: proportion of pairs
+    # where predicted and actual ordering agree
+    n = len(pred)
+    if n > 1:
+        concordant = 0
+        total_pairs = 0
+        for i in range(n):
+            for j in range(i + 1, n):
+                if (pred[i] - pred[j]) * (act[i] - act[j]) > 0:
+                    concordant += 1
+                elif pred[i] != pred[j] and act[i] != act[j]:
+                    total_pairs += 1
+                total_pairs += 1
+        concordance = concordant / total_pairs if total_pairs > 0 else 0.5
+    else:
+        concordance = 0.5
 
     # Per-segment metrics
     by_segment = {}
@@ -666,37 +682,82 @@ def run_temporal_holdout_evaluation(
 
     results = {}
 
+    # Get actual future transactions for validation and test periods
+    # We need to query the transaction data for each customer in each period
+    val_actuals = _get_actual_transactions(transactions, val_rfm["customer_id"].to_list(), val_start, val_end)
+    test_actuals = _get_actual_transactions(transactions, test_rfm["customer_id"].to_list(), test_start, test_end)
+
     # Fit and evaluate BG/NBD
     bg_config = fit_bg_nbd(train_rfm)
     bg_config.train_cutoff = train_end
+
+    warnings = []
+    if not bg_config.fit_converged:
+        warnings.append("BG/NBD fit did not converge")
 
     # Validate on validation set
     val_freq = val_rfm["frequency"].to_numpy()
     val_rec = val_rfm["recency"].to_numpy()
     val_T = val_rfm["T"].to_numpy()
+    val_horizon = (val_end - val_start).days
 
-    # Actual future transactions in validation period
-    # This requires transaction data, not just RFM
-    # Placeholder: compute from validation transactions
+    if len(val_freq) > 0 and val_actuals is not None and len(val_actuals) == len(val_freq):
+        val_pred = bg_nbd_predict(bg_config.params, val_freq, val_rec, val_T, val_horizon)
+        val_metrics = compute_evaluation_metrics(val_pred, val_actuals, val_rfm, "freq_bin", horizons=[val_horizon])
+    else:
+        val_metrics = EvaluationMetrics(
+            mae=np.nan, rmse=np.nan, mape=np.nan,
+            calibration_slope=np.nan, calibration_intercept=np.nan, calibration_r2=np.nan,
+            concordance=np.nan,
+        )
+        warnings.append("Validation: insufficient data for evaluation")
 
-    # For now, return structure with placeholders
-    val_metrics = EvaluationMetrics(
-        mae=0.0, rmse=0.0, mape=0.0,
-        calibration_slope=1.0, calibration_intercept=0.0, calibration_r2=1.0,
-        concordance=0.5,
-    )
+    # Evaluate on test set
+    test_freq = test_rfm["frequency"].to_numpy()
+    test_rec = test_rfm["recency"].to_numpy()
+    test_T = test_rfm["T"].to_numpy()
+    test_horizon = (test_end - test_start).days
 
-    test_metrics = EvaluationMetrics(
-        mae=0.0, rmse=0.0, mape=0.0,
-        calibration_slope=1.0, calibration_intercept=0.0, calibration_r2=1.0,
-        concordance=0.5,
-    )
+    if len(test_freq) > 0 and test_actuals is not None and len(test_actuals) == len(test_freq):
+        test_pred = bg_nbd_predict(bg_config.params, test_freq, test_rec, test_T, test_horizon)
+        test_metrics = compute_evaluation_metrics(test_pred, test_actuals, test_rfm, "freq_bin", horizons=[test_horizon])
+    else:
+        test_metrics = EvaluationMetrics(
+            mae=np.nan, rmse=np.nan, mape=np.nan,
+            calibration_slope=np.nan, calibration_intercept=np.nan, calibration_r2=np.nan,
+            concordance=np.nan,
+        )
+        warnings.append("Test: insufficient data for evaluation")
 
-    train_metrics = EvaluationMetrics(
-        mae=0.0, rmse=0.0, mape=0.0,
-        calibration_slope=1.0, calibration_intercept=0.0, calibration_r2=1.0,
-        concordance=0.5,
-    )
+    # Training metrics (in-sample fit quality)
+    train_freq = train_rfm["frequency"].to_numpy()
+    train_rec = train_rfm["recency"].to_numpy()
+    train_T = train_rfm["T"].to_numpy()
+
+    if len(train_freq) > 0:
+        # In-sample: expected transactions in training period
+        train_pred = bg_nbd_predict(bg_config.params, train_freq, train_rec, train_T, (train_end - train_end).days)
+        # For training, we use the same period - this gives expected vs actual frequency
+        train_metrics = compute_evaluation_metrics(train_pred, train_freq.astype(float), train_rfm, "freq_bin")
+    else:
+        train_metrics = EvaluationMetrics(
+            mae=np.nan, rmse=np.nan, mape=np.nan,
+            calibration_slope=np.nan, calibration_intercept=np.nan, calibration_r2=np.nan,
+            concordance=np.nan,
+        )
+
+    # Baseline comparison
+    baseline = _compute_baseline_comparison(train_rfm, val_rfm, test_rfm, val_actuals, test_actuals, val_horizon, test_horizon)
+
+    # Determine evaluation status
+    if not bg_config.fit_converged:
+        eval_status = "fit_failed"
+    elif len(val_freq) == 0 or len(test_freq) == 0:
+        eval_status = "insufficient_data"
+    elif val_actuals is None or test_actuals is None:
+        eval_status = "coverage_unconfirmed"
+    else:
+        eval_status = "valid"
 
     results["BG_NBD"] = HoldoutResult(
         model_config=bg_config,
@@ -704,13 +765,153 @@ def run_temporal_holdout_evaluation(
         train_metrics=train_metrics,
         val_metrics=val_metrics,
         test_metrics=test_metrics,
-        baseline_comparison={"vs_naive_mae": 0.0},
+        baseline_comparison=baseline,
+        warnings=warnings,
+        evaluation_status=eval_status,
     )
 
-    # Similar for Pareto/NBD and Gamma-Gamma
-    # ... (structure same)
+    # Pareto/NBD - mark as not implemented
+    pn_config = fit_pareto_nbd(train_rfm)
+    pn_config.train_cutoff = train_end
+    placeholder_metrics = EvaluationMetrics(
+        mae=np.nan, rmse=np.nan, mape=np.nan,
+        calibration_slope=np.nan, calibration_intercept=np.nan, calibration_r2=np.nan,
+        concordance=np.nan,
+    )
+    results["Pareto_NBD"] = HoldoutResult(
+        model_config=pn_config,
+        split=split,
+        train_metrics=placeholder_metrics,
+        val_metrics=placeholder_metrics,
+        test_metrics=placeholder_metrics,
+        baseline_comparison={},
+        warnings=["Pareto/NBD evaluation not implemented"],
+        evaluation_status="not_implemented",
+    )
+
+    # Gamma-Gamma - evaluate monetary prediction on test set
+    gg_config = fit_gamma_gamma(train_rfm)
+    gg_config.train_cutoff = train_end
+
+    if not gg_config.fit_converged:
+        warnings.append("Gamma-Gamma fit did not converge")
+
+    test_mon = test_rfm["monetary_value"].to_numpy()
+    test_freq_mon = test_rfm["frequency"].to_numpy()
+    # Get actual monetary values from test period
+    test_actual_mon = _get_actual_monetary(transactions, test_rfm["customer_id"].to_list(), test_start, test_end)
+
+    if len(test_freq_mon) > 0 and test_actual_mon is not None and len(test_actual_mon) == len(test_freq_mon):
+        test_pred_mon = gamma_gamma_predict(gg_config.params, test_freq_mon, test_mon)
+        test_mon_metrics = compute_evaluation_metrics(test_pred_mon, test_actual_mon, test_rfm, "freq_bin", horizons=[test_horizon])
+    else:
+        test_mon_metrics = EvaluationMetrics(
+            mae=np.nan, rmse=np.nan, mape=np.nan,
+            calibration_slope=np.nan, calibration_intercept=np.nan, calibration_r2=np.nan,
+            concordance=np.nan,
+        )
+        warnings.append("Test: insufficient monetary data for evaluation")
+
+    results["Gamma_Gamma"] = HoldoutResult(
+        model_config=gg_config,
+        split=split,
+        train_metrics=placeholder_metrics,
+        val_metrics=placeholder_metrics,
+        test_metrics=test_mon_metrics,
+        baseline_comparison={},
+        warnings=warnings,
+        evaluation_status="not_implemented" if test_actual_mon is None else "valid",
+    )
 
     return results
+
+
+def _get_actual_transactions(
+    transactions: pl.LazyFrame,
+    customer_ids: list[str],
+    start: date,
+    end: date,
+) -> np.ndarray | None:
+    """Get actual transaction counts for customers in a date range."""
+    if not customer_ids:
+        return None
+
+    try:
+        actual_txns = collect(
+            transactions.filter(
+                (pl.col("customer_id").is_in(customer_ids)) &
+                (pl.col("date") > pl.lit(start)) &
+                (pl.col("date") <= pl.lit(end))
+            )
+        )
+
+        if actual_txns.is_empty():
+            return np.zeros(len(customer_ids))
+
+        counts = actual_txns.group_by("customer_id").len()
+        count_map = dict(zip(counts["customer_id"].to_list(), counts["len"].to_list()))
+        return np.array([count_map.get(cid, 0) for cid in customer_ids])
+    except Exception:
+        return None
+
+
+def _get_actual_monetary(
+    transactions: pl.LazyFrame,
+    customer_ids: list[str],
+    start: date,
+    end: date,
+) -> np.ndarray | None:
+    """Get actual monetary values for customers in a date range."""
+    if not customer_ids:
+        return None
+
+    try:
+        actual_txns = collect(
+            transactions.filter(
+                (pl.col("customer_id").is_in(customer_ids)) &
+                (pl.col("date") > pl.lit(start)) &
+                (pl.col("date") <= pl.lit(end))
+            )
+        )
+
+        if actual_txns.is_empty():
+            return np.zeros(len(customer_ids))
+
+        spends = actual_txns.group_by("customer_id").agg(pl.col("value").sum().alias("spend"))
+        spend_map = dict(zip(spends["customer_id"].to_list(), spends["spend"].to_list()))
+        return np.array([spend_map.get(cid, 0.0) for cid in customer_ids])
+    except Exception:
+        return None
+
+
+def _compute_baseline_comparison(
+    train_rfm: pl.DataFrame,
+    val_rfm: pl.DataFrame,
+    test_rfm: pl.DataFrame,
+    val_actuals: np.ndarray | None,
+    test_actuals: np.ndarray | None,
+    val_horizon: int,
+    test_horizon: int,
+) -> dict[str, float]:
+    """Compute baseline metrics for comparison."""
+    baseline = {}
+
+    if val_actuals is not None and len(val_actuals) > 0:
+        # Zero baseline
+        zero_pred = np.zeros_like(val_actuals, dtype=float)
+        zero_metrics = compute_evaluation_metrics(zero_pred, val_actuals)
+        baseline["zero_baseline_mae"] = float(zero_metrics.mae)
+        baseline["zero_baseline_rmse"] = float(zero_metrics.rmse)
+
+        # Frequency baseline
+        val_freq = val_rfm["frequency"].to_numpy()
+        val_T = val_rfm["T"].to_numpy()
+        freq_pred = val_freq * val_horizon / np.maximum(val_T, 1)
+        freq_metrics = compute_evaluation_metrics(freq_pred, val_actuals)
+        baseline["freq_baseline_mae"] = float(freq_metrics.mae)
+        baseline["freq_baseline_rmse"] = float(freq_metrics.rmse)
+
+    return baseline
 
 
 def save_evaluation_report(
