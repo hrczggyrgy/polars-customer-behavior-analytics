@@ -13,6 +13,7 @@ dependencies = [
     "polars>=1.31",
     "streamlit>=1.28.0",
     "plotly>=5.17.0",
+    "scipy>=1.11.0",
 ]
 optional-dependencies = { dev = ["pytest>=7.4.0", "pytest-cov>=4.1.0", "mypy>=1.5.0", "ruff>=0.1.0"], docs = ["mkdocs>=1.5.0", "mkdocs-material>=9.0.0"], viz = ["networkx>=3.0"] }
 
