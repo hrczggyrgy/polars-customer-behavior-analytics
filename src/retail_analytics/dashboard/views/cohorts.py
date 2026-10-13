@@ -1,6 +1,6 @@
 """Cohorts view module."""
 
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 import plotly.graph_objects as go
@@ -8,29 +8,21 @@ import polars as pl
 import streamlit as st
 
 from retail_analytics.visualization.chart_components import (
-    ChartEvidence,
-    ChartCard,
-    create_chart_card,
-    SupportThresholds,
-    EvidenceState,
-    evaluate_evidence,
-    build_color_map,
-    get_color,
-    safe_list,
+    apply_filters,
     bounded_grid,
-    check_horizon_eligibility,
+    collect,
+    read_json,
+    safe_list,
+    table,
 )
 from retail_analytics.visualization.visual_insights_core import (
     cohort_summary,
-    multi_horizon_cohort_repeat,
     concentration,
 )
-from retail_analytics.dashboard.app import read_json, collect, apply_filters, table, PAGE_ROWS
 
 
 def render_cohorts(root: Path, rows: pl.LazyFrame, coverage: bool, color_map: dict):
     """Cohorts view with calendar activity heatmap, age-aligned repeat, and concentration."""
-    from retail_analytics.dashboard.app import read_json, apply_filters, collect
 
     manifest = read_json(root / "run.json")
     history = [x for x in manifest["snapshots"] if x <= st.session_state.get("chosen", "")]

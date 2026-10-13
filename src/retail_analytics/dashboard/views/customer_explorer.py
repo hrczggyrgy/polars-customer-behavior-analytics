@@ -1,6 +1,5 @@
 """Customer Explorer views: Customer Brief and Customer Timeline."""
 
-from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -10,27 +9,18 @@ import streamlit as st
 
 from retail_analytics.visualization.chart_components import (
     ChartEvidence,
-    ChartSpec,
-    ChartCard,
-    create_chart_card,
-    SupportThresholds,
     EvidenceState,
+    SupportThresholds,
+    collect,
+    create_chart_card,
     evaluate_evidence,
-    build_color_map,
-    get_color,
-    safe_list,
+    table,
 )
-from retail_analytics.dashboard.app import collect, read_json, table, PAGE_ROWS
 
 
 def render_customer_brief(root: Path, rows: pl.LazyFrame, coverage: bool, color_map: dict):
     """Customer Brief - Narrative profile with evidence and limitations."""
-    from retail_analytics.visualization.chart_components import (
-        ChartEvidence,
-        ChartCard,
-        create_chart_card,
-    )
-    
+
     st.subheader("👤 Customer Brief")
     st.caption(
         "**Question:** What has actually been observed about this customer? "
@@ -66,24 +56,24 @@ def render_customer_brief(root: Path, rows: pl.LazyFrame, coverage: bool, color_
     # 1. OBSERVED RELATIONSHIP
     # ============================================================
     st.markdown("### 1. Observed Relationship")
-    
+
     first_purchase = c.get("first_purchase")
     last_purchase = c.get("last_purchase")
     tenure = c.get("tenure", 0)
     recency = c.get("recency", None)
     purchases_90d = c.get("purchases_90d", 0)
     days_365d = c.get("days_365d", 0)
-    
+
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("First Purchase", str(first_purchase) if first_purchase else "N/A")
     col2.metric("Last Purchase", str(last_purchase) if last_purchase else "N/A")
     col3.metric("Tenure (days)", f"{tenure:,}" if tenure else "N/A")
     col4.metric("Recency (days)", f"{recency:,}" if recency is not None else "N/A")
-    
+
     col1, col2 = st.columns(2)
     col1.metric("Purchase Days (90d)", f"{purchases_90d:,}")
     col2.metric("Shopping Days (365d)", f"{days_365d:,}")
-    
+
     # Evidence badge for relationship
     rel_state = evaluate_evidence(
         n=days_365d if days_365d else 0,
@@ -96,19 +86,19 @@ def render_customer_brief(root: Path, rows: pl.LazyFrame, coverage: bool, color_
     # 2. SHOPPING RHYTHM
     # ============================================================
     st.markdown("### 2. Shopping Rhythm")
-    
+
     median_gap = c.get("median_gap")
     gap_cv = c.get("gap_cv")
     gap_count = c.get("gap_count", 0)
     lateness = c.get("lateness")
-    
+
     if median_gap is not None and median_gap > 0:
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Median Gap", f"{median_gap:.1f} days")
         col2.metric("Gap CV", f"{gap_cv:.2f}" if gap_cv is not None else "N/A")
         col3.metric("Usable Gaps", f"{gap_count:,}")
         col4.metric("Lateness", f"{lateness:.2f}×" if lateness is not None else "N/A")
-        
+
         # Rhythm interpretation
         if lateness is not None:
             if lateness < 1.0:
@@ -118,7 +108,7 @@ def render_customer_brief(root: Path, rows: pl.LazyFrame, coverage: bool, color_
             else:
                 rhythm_status = "🔴 ≥2× overdue (significantly past typical interval)"
             st.caption(f"Rhythm status: **{rhythm_status}**")
-        
+
         # Eligibility for cadence metrics
         cadence_state = evaluate_evidence(
             n=gap_count,
@@ -136,18 +126,18 @@ def render_customer_brief(root: Path, rows: pl.LazyFrame, coverage: bool, color_
     # 3. BASKET / VALUE PATTERN
     # ============================================================
     st.markdown("### 3. Basket & Value Pattern (90-day window)")
-    
+
     spend_90d = c.get("spend_90d", 0)
     median_basket = c.get("median_basket")
     aov_recent = c.get("aov_recent")
     aov_previous = c.get("aov_previous")
-    
+
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total Spend", f"{spend_90d:,.2f}")
     col2.metric("Median Basket", f"{median_basket:,.2f}" if median_basket is not None else "N/A")
     col3.metric("Recent AOV", f"{aov_recent:,.2f}" if aov_recent is not None else "N/A")
     col4.metric("Previous AOV", f"{aov_previous:,.2f}" if aov_previous is not None else "N/A")
-    
+
     # Peer comparison
     peer_median_spend = collect(
         rows.select(pl.col("spend_90d").median())
@@ -155,14 +145,14 @@ def render_customer_brief(root: Path, rows: pl.LazyFrame, coverage: bool, color_
     if peer_median_spend:
         diff_pct = ((spend_90d - peer_median_spend) / peer_median_spend * 100) if peer_median_spend else 0
         st.caption(f"Peer median 90d spend: {peer_median_spend:,.2f} | This customer: {diff_pct:+.1f}% vs peer median")
-    
+
     st.caption("⚠ Monetary figures are recorded spend, not profit.")
 
     # ============================================================
     # 4. BREADTH & PREFERENCE
     # ============================================================
     st.markdown("### 4. Breadth & Preference")
-    
+
     cat_count = c.get("category_count", 0)
     cat_hhi = c.get("category_hhi")
     dom_cat = c.get("dominant_category", "N/A")
@@ -170,17 +160,17 @@ def render_customer_brief(root: Path, rows: pl.LazyFrame, coverage: bool, color_
     dominant_share = c.get("dominant_share")
     core_size = c.get("core_size", 0)
     core_spend_share = c.get("core_spend_share", 0)
-    
+
     col1, col2, col3 = st.columns(3)
     col1.metric("Categories Shopped", f"{cat_count:,}")
     col2.metric("Dominant Category", f"{dom_cat} ({dom_dept})")
     col3.metric("Dominant Share", f"{dominant_share:.1%}" if dominant_share is not None else "N/A")
-    
+
     col1, col2, col3 = st.columns(3)
     col1.metric("Category HHI", f"{cat_hhi:.3f}" if cat_hhi is not None else "N/A")
     col2.metric("Core Products", f"{core_size:,}")
     col3.metric("Core Spend Share", f"{core_spend_share:.1%}" if core_spend_share is not None else "N/A")
-    
+
     # Concentration interpretation
     if cat_hhi is not None:
         if cat_hhi > 0.5:
@@ -195,26 +185,26 @@ def render_customer_brief(root: Path, rows: pl.LazyFrame, coverage: bool, color_
     # 5. CHANGE & EVIDENCE
     # ============================================================
     st.markdown("### 5. Recent vs Previous Period (90d vs Prior 90d)")
-    
+
     if c.get("comparable_windows"):
         freq_chg = c.get("frequency_change")
         basket_chg = c.get("basket_change")
         spend_chg = c.get("spend_change")
         breadth_chg = c.get("breadth_change")
-        
+
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Frequency Δ", f"{freq_chg:+.1%}" if freq_chg is not None else "N/A")
         col2.metric("Basket Size Δ", f"{basket_chg:+.1%}" if basket_chg is not None else "N/A")
         col3.metric("Spend Δ", f"{spend_chg:+.1%}" if spend_chg is not None else "N/A")
         col4.metric("Breadth Δ", f"{breadth_chg:+.2f}" if breadth_chg is not None else "N/A")
-        
+
         # Evidence quality for change
         tenure = c.get("tenure", 0)
         st.caption(f"Comparison eligible: tenure ≥ 179d ({'✓' if tenure >= 179 else '✗'}, actual: {tenure}d)")
     else:
         tenure = c.get("tenure", 0)
         st.info(f"⚠ Insufficient tenure for period-over-period comparison (requires ≥ 179 days, current: {tenure}d).")
-    
+
     # Evidence summary
     st.markdown("### Evidence Summary")
     evidence_level = c.get("evidence", "unknown")
@@ -222,7 +212,7 @@ def render_customer_brief(root: Path, rows: pl.LazyFrame, coverage: bool, color_
     behavior = c.get("behavior", "unknown")
     trajectory = c.get("trajectory", "unknown")
     value_tier = c.get("value_tier", "unknown")
-    
+
     col1, col2 = st.columns(2)
     with col1:
         st.write(f"**Lifecycle:** {lifecycle}")
@@ -235,14 +225,14 @@ def render_customer_brief(root: Path, rows: pl.LazyFrame, coverage: bool, color_
             st.write("**Style Eligible:** ✓ (sufficient history for cadence metrics)")
         else:
             st.write("**Style Eligible:** ✗ (insufficient history for cadence metrics)")
-    
+
     # Future outcomes (if coverage confirmed)
     if coverage:
         future_30 = c.get("future_purchases_30d")
         future_90 = c.get("future_purchases_90d")
         eligible_30 = c.get("eligible_followup_30d")
         eligible_90 = c.get("eligible_followup_90d")
-        
+
         if eligible_30 or eligible_90:
             st.markdown("### Future Outcomes (Observed)")
             col1, col2 = st.columns(2)
@@ -258,12 +248,7 @@ def render_customer_brief(root: Path, rows: pl.LazyFrame, coverage: bool, color_
 
 def render_customer_timeline(root: Path, rows: pl.LazyFrame, coverage: bool, color_map: dict):
     """Customer Timeline - Narrative purchase history with rhythm and category evolution."""
-    from retail_analytics.visualization.chart_components import (
-        ChartEvidence,
-        ChartCard,
-        create_chart_card,
-    )
-    
+
     st.subheader("📅 Customer Timeline")
     st.caption(
         "**Question:** What is this customer's purchase history over time? "
@@ -310,7 +295,7 @@ def render_customer_timeline(root: Path, rows: pl.LazyFrame, coverage: bool, col
     total_days = (last_date - first_date).days + 1 if first_date and last_date else 0
     total_txns = customer_txns.height
     total_spend = customer_txns["value"].sum()
-    
+
     # Aggregate to basket level
     baskets = customer_txns.group_by(["date", "transaction_id"]).agg(
         pl.col("value").sum().alias("basket_spend"),
@@ -318,10 +303,10 @@ def render_customer_timeline(root: Path, rows: pl.LazyFrame, coverage: bool, col
         pl.col("category").unique().alias("categories"),
         pl.col("department").unique().alias("departments"),
     ).sort("date")
-    
+
     n_baskets = baskets.height
     median_basket = baskets["basket_spend"].median()
-    
+
     # Calculate gaps
     gap_days = []
     prev_date = None
@@ -329,16 +314,16 @@ def render_customer_timeline(root: Path, rows: pl.LazyFrame, coverage: bool, col
         if prev_date is not None:
             gap_days.append((d - prev_date).days)
         prev_date = d
-    
+
     median_gap = np.median(gap_days) if gap_days else None
     gap_cv = (np.std(gap_days) / np.mean(gap_days)) if gap_days and np.mean(gap_days) > 0 else None
-    
+
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("First Purchase", str(first_date))
     col2.metric("Last Purchase", str(last_date))
     col3.metric("Total Span", f"{total_days:,} days")
     col4.metric("Total Baskets", f"{n_baskets:,}")
-    
+
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total Spend", f"{total_spend:,.2f}")
     col2.metric("Median Basket", f"{median_basket:,.2f}" if median_basket is not None else "N/A")
@@ -352,7 +337,7 @@ def render_customer_timeline(root: Path, rows: pl.LazyFrame, coverage: bool, col
         if not customer_snapshot.is_empty():
             recency = customer_snapshot["recency"][0]
             lateness = recency / median_gap if recency and median_gap > 0 else None
-            
+
             if lateness is not None:
                 if lateness < 1.0:
                     rhythm_status = "🟢 On cadence"
@@ -376,7 +361,7 @@ def render_customer_timeline(root: Path, rows: pl.LazyFrame, coverage: bool, col
         hovertemplate="Date: %{x}<br>Basket spend: %{y:,.2f}<br>Products: %{customdata[0]}<extra></extra>",
         customdata=list(zip(baskets["n_products"].to_list())),
     ))
-    
+
     # Add cumulative spend line
     cum_spend = baskets["basket_spend"].cum_sum().to_list()
     fig.add_trace(go.Scatter(
@@ -388,7 +373,7 @@ def render_customer_timeline(root: Path, rows: pl.LazyFrame, coverage: bool, col
         yaxis="y2",
         hovertemplate="Date: %{x}<br>Cumulative: %{y:,.2f}<extra></extra>",
     ))
-    
+
     fig.update_layout(
         title="Purchase Timeline: Basket Spend & Cumulative",
         xaxis_title="Date",
@@ -398,7 +383,7 @@ def render_customer_timeline(root: Path, rows: pl.LazyFrame, coverage: bool, col
         template="plotly_white",
         hovermode="x unified",
     )
-    
+
     # Render with ChartCard
     card = create_chart_card(
         key="customer_timeline_spend",
@@ -463,7 +448,7 @@ def render_customer_timeline(root: Path, rows: pl.LazyFrame, coverage: bool, col
             height=350,
             template="plotly_white",
         )
-        
+
         card2 = create_chart_card(
             key="customer_timeline_category",
             title="Category Evolution",
@@ -495,7 +480,7 @@ def render_customer_timeline(root: Path, rows: pl.LazyFrame, coverage: bool, col
     # ============================================================
     if gap_days:
         st.markdown("**Purchase Rhythm Analysis**")
-        
+
         # Gap histogram
         fig3 = go.Figure()
         fig3.add_trace(go.Histogram(
@@ -506,7 +491,7 @@ def render_customer_timeline(root: Path, rows: pl.LazyFrame, coverage: bool, col
             name="Inter-purchase gaps",
         ))
         if median_gap:
-            fig3.add_vline(x=median_gap, line_dash="dash", line_color="green", 
+            fig3.add_vline(x=median_gap, line_dash="dash", line_color="green",
                           annotation_text=f"Median: {median_gap:.1f}d")
         fig3.update_layout(
             title="Inter-Purchase Gap Distribution",

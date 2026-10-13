@@ -18,7 +18,6 @@ from retail_analytics.core.pipeline.utils import _sink
 from retail_analytics.core.thresholds import (
     calibrate_thresholds,
     compute_data_profile,
-    default_policy,
     select_reference_cutoff,
     write_thresholds,
 )

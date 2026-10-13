@@ -5,23 +5,28 @@ with consistent metadata: question, takeaway, evidence, how-to-read, caveat, nex
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List
+from typing import Any
+
+import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
+
+from retail_analytics.core.coverage import check_horizon_eligibility
+from retail_analytics.io.json_files import read_json
 
 
 @dataclass
 class ChartEvidence:
     """Evidence metadata for a chart."""
-    numerator: Optional[str] = None
-    denominator: Optional[str] = None
-    population_size: Optional[int] = None
-    comparison_period: Optional[str] = None
-    confidence_interval: Optional[str] = None
-    interval_type: Optional[str] = None  # e.g., "Wilson 95%", "bootstrap"
-    eligibility_criteria: Optional[str] = None
-    sample_policy: Optional[str] = None  # e.g., "hash-sampled 2000", "full population"
-    additional: Dict[str, Any] = field(default_factory=dict)
+    numerator: str | None = None
+    denominator: str | None = None
+    population_size: int | None = None
+    comparison_period: str | None = None
+    confidence_interval: str | None = None
+    interval_type: str | None = None  # e.g., "Wilson 95%", "bootstrap"
+    eligibility_criteria: str | None = None
+    sample_policy: str | None = None  # e.g., "hash-sampled 2000", "full population"
+    additional: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -35,7 +40,7 @@ class ChartSpec:
     # Core identification
     key: str
     title: str
-    
+
     # Explanation metadata (required for primary views)
     question: str = ""           # What decision/customer question does this answer?
     takeaway: str = ""           # One concise factual sentence from displayed aggregates
@@ -43,13 +48,13 @@ class ChartSpec:
     how_to_read: str = ""        # Short interpretation of axes, bins, color, reference lines
     caveat: str = ""             # Sparse history, incomplete coverage, sampling, etc.
     next_step: str = ""          # One relevant drill-down, filter, or adjacent chart
-    
+
     # Accessibility
     alt_description: str = ""    # Screen-reader description for Plotly
-    
+
     # Chart object
-    figure: Optional[go.Figure] = None
-    
+    figure: go.Figure | None = None
+
     # Display options
     height: int = 430
     show_evidence: bool = True
@@ -67,40 +72,40 @@ class ChartCard:
     how-to-read, caveat, and next-step.
     """
     spec: ChartSpec
-    
+
     def render(self) -> None:
         """Render the chart card with standardized layout."""
         # Title and question
         st.subheader(self.spec.title)
         if self.spec.question:
             st.caption(f"**Question:** {self.spec.question}")
-        
+
         # Takeaway (prominent)
         if self.spec.takeaway:
             st.info(f"**Takeaway:** {self.spec.takeaway}")
-        
+
         # Evidence panel
         if self.spec.show_evidence and self._has_evidence():
             with st.expander("📊 Evidence & Methodology", expanded=False):
                 self._render_evidence()
-        
+
         # How to read
         if self.spec.show_how_to_read and self.spec.how_to_read:
             with st.expander("📖 How to read this chart", expanded=False):
                 st.markdown(self.spec.how_to_read)
-        
+
         # Render the Plotly chart
         if self.spec.figure is not None:
             self._render_chart()
-        
+
         # Caveat
         if self.spec.show_caveat and self.spec.caveat:
             st.warning(f"⚠ **Caveat:** {self.spec.caveat}")
-        
+
         # Next step
         if self.spec.show_next_step and self.spec.next_step:
             st.success(f"🔍 **Next step:** {self.spec.next_step}")
-    
+
     def _has_evidence(self) -> bool:
         e = self.spec.evidence
         return any([
@@ -108,58 +113,58 @@ class ChartCard:
             e.comparison_period, e.confidence_interval,
             e.interval_type, e.eligibility_criteria, e.sample_policy
         ])
-    
+
     def _render_evidence(self) -> None:
         e = self.spec.evidence
         cols = st.columns(3)
         idx = 0
-        
+
         if e.population_size is not None:
             with cols[idx % 3]:
                 st.metric("Population (n)", f"{e.population_size:,}")
             idx += 1
-        
+
         if e.numerator:
             with cols[idx % 3]:
                 st.metric("Numerator", e.numerator)
             idx += 1
-        
+
         if e.denominator:
             with cols[idx % 3]:
                 st.metric("Denominator", e.denominator)
             idx += 1
-        
+
         if e.comparison_period:
             with cols[idx % 3]:
                 st.metric("Period", e.comparison_period)
             idx += 1
-        
+
         if e.confidence_interval:
             with cols[idx % 3]:
                 st.metric("Confidence Interval", e.confidence_interval)
             idx += 1
-        
+
         if e.interval_type:
             with cols[idx % 3]:
                 st.metric("Interval Type", e.interval_type)
             idx += 1
-        
+
         if e.eligibility_criteria:
             with cols[idx % 3]:
                 st.metric("Eligibility", e.eligibility_criteria)
             idx += 1
-        
+
         if e.sample_policy:
             with cols[idx % 3]:
                 st.metric("Sample Policy", e.sample_policy)
             idx += 1
-        
+
         # Additional evidence fields
         for key, value in e.additional.items():
             with cols[idx % 3]:
                 st.metric(key.replace("_", " ").title(), str(value))
             idx += 1
-    
+
     def _render_chart(self) -> None:
         """Render the Plotly chart with accessibility."""
         try:
@@ -189,7 +194,7 @@ def create_chart_card(
     figure: go.Figure,
     question: str = "",
     takeaway: str = "",
-    evidence: Optional[ChartEvidence] = None,
+    evidence: ChartEvidence | None = None,
     how_to_read: str = "",
     caveat: str = "",
     next_step: str = "",
@@ -226,18 +231,18 @@ OKABE_ITO = [
 ]
 
 
-def build_color_map(labels) -> Dict[str, str]:
+def build_color_map(labels) -> dict[str, str]:
     """Build deterministic color map from sorted labels using Okabe-Ito palette."""
     sorted_labels = sorted(set(str(label) for label in labels))
     return {label: OKABE_ITO[i % len(OKABE_ITO)] for i, label in enumerate(sorted_labels)}
 
 
-def get_color(label: str, color_map: Dict[str, str]) -> str:
+def get_color(label: str, color_map: dict[str, str]) -> str:
     """Get color for label from color map, fallback to hash."""
     return color_map.get(str(label), "#64748b")
 
 
-def format_axis_title(metric_name: str, METRICS: Dict[str, tuple] = None) -> str:
+def format_axis_title(metric_name: str, METRICS: dict[str, tuple] = None) -> str:
     """Convert metric column name to human-readable title with units."""
     if METRICS and metric_name in METRICS:
         return f"{METRICS[metric_name][0]} ({METRICS[metric_name][1]})"
@@ -245,7 +250,7 @@ def format_axis_title(metric_name: str, METRICS: Dict[str, tuple] = None) -> str
     return metric_name.replace("_", " ").title()
 
 
-def safe_list(series) -> List:
+def safe_list(series) -> list:
     """Safely convert a Polars Series to a Python list, handling nulls and type conversion."""
     import math
     try:
@@ -261,10 +266,6 @@ def safe_list(series) -> List:
 # Sparse-Data Safeguards (Phase 3: Strengthen evidence for limited data)
 # ============================================================================
 
-from dataclasses import dataclass
-from typing import Tuple, List, Optional
-import numpy as np
-
 
 @dataclass
 class SupportThresholds:
@@ -272,28 +273,28 @@ class SupportThresholds:
     # Segment comparisons
     min_segment_size: int = 20
     min_segment_rate_denominator: int = 30
-    
+
     # Cohort analysis
     min_cohort_size: int = 30
     min_cohort_periods: int = 3
-    
+
     # Product associations
     min_basket_support: float = 0.001  # 0.1% of baskets
     min_pair_confidence: float = 0.10  # 10%
     min_pair_lift: float = 1.0
     min_pair_count: int = 5
-    
+
     # Scatter plots / sampling
     max_scatter_points: int = 2000
     min_stratified_per_segment: int = 50
-    
+
     # Bootstrap
     bootstrap_iterations: int = 500
     bootstrap_min_sample: int = 20
-    
+
     # Multiplicity
     max_exploratory_comparisons: int = 20
-    
+
     # Threshold stability
     threshold_min_population: int = 100
     threshold_max_ci_width_ratio: float = 0.5
@@ -307,7 +308,7 @@ class EvidenceState:
     n: int
     message: str
     details: dict = None
-    
+
     def __post_init__(self):
         if self.details is None:
             self.details = {}
@@ -327,7 +328,7 @@ def evaluate_evidence(
     """
     if thresholds is None:
         thresholds = SupportThresholds()
-    
+
     if n == 0:
         return EvidenceState(
             has_evidence=False,
@@ -336,7 +337,7 @@ def evaluate_evidence(
             message="No observations in this group.",
             details={"reason": "zero_count"}
         )
-    
+
     if analysis_type == "segment":
         if n < thresholds.min_segment_size:
             return EvidenceState(
@@ -361,7 +362,7 @@ def evaluate_evidence(
             message=f"Adequate evidence: {n} customers.",
             details={"reason": "adequate"}
         )
-    
+
     elif analysis_type == "cohort":
         if n < thresholds.min_cohort_size:
             return EvidenceState(
@@ -378,7 +379,7 @@ def evaluate_evidence(
             message=f"Cohort size: {n} customers.",
             details={"reason": "adequate"}
         )
-    
+
     elif analysis_type == "product_pair":
         if numerator is not None and numerator < thresholds.min_pair_count:
             return EvidenceState(
@@ -395,7 +396,7 @@ def evaluate_evidence(
             message=f"Product pair count: {numerator or n}.",
             details={"reason": "adequate"}
         )
-    
+
     # Default
     return EvidenceState(
         has_evidence=n >= 5,
@@ -412,7 +413,7 @@ def bootstrap_ci(
     n_iterations: int = 500,
     confidence: float = 0.95,
     random_seed: int = 42,
-) -> Tuple[float, float]:
+) -> tuple[float, float]:
     """
     Compute bootstrap confidence interval for a statistic.
     
@@ -428,19 +429,19 @@ def bootstrap_ci(
     """
     if len(data) < 2:
         return (np.nan, np.nan)
-    
+
     np.random.seed(random_seed)
     boot_stats = []
     n = len(data)
-    
+
     for _ in range(n_iterations):
         sample = np.random.choice(data, size=n, replace=True)
         boot_stats.append(statistic(sample))
-    
+
     alpha = (1 - confidence) / 2
     lower = np.percentile(boot_stats, alpha * 100)
     upper = np.percentile(boot_stats, (1 - alpha) * 100)
-    
+
     return (float(lower), float(upper))
 
 
@@ -470,7 +471,7 @@ def sampling_disclosure(
     population_n: int,
     method: str = "deterministic hash",
     stratified: bool = False,
-    strata: List[str] = None,
+    strata: list[str] = None,
 ) -> str:
     """Generate sampling disclosure text."""
     pct = (sampled_n / population_n * 100) if population_n > 0 else 0
@@ -493,9 +494,9 @@ def threshold_sensitivity_note(
     """Generate threshold stability note."""
     if reference_population == 0 or current_population == 0:
         return ""
-    
+
     change_pct = (current_population - reference_population) / reference_population * 100
-    
+
     return (
         f"📌 **Threshold stability:** Quantile thresholds calibrated on "
         f"{reference_date} (n={reference_population:,}). "
@@ -503,3 +504,44 @@ def threshold_sensitivity_note(
         f"({change_pct:+.1f}%). "
         f"Labels are relative to reference population, not absolute benchmarks."
     )
+
+
+def bounded_grid(records, row, column, value, limit=24):
+    """Create a bounded grid for heatmap visualization."""
+    if not 1 <= limit <= 36:
+        raise ValueError("Grid limit must be 1..36")
+    ys = sorted({str(r[row]) for r in records})[-limit:]
+    xs = sorted({str(r[column]) for r in records})[-limit:]
+    lookup = {(str(r[row]), str(r[column])): r[value] for r in records}
+    return xs, ys, [[lookup.get((y, x)) for x in xs] for y in ys]
+
+
+PAGE_ROWS = 2000
+
+def collect(frame):
+    """Collect a LazyFrame using the streaming engine."""
+    return frame.collect(engine="streaming")
+
+def table(frame):
+    """Display a Polars DataFrame or LazyFrame as a Streamlit table."""
+    import streamlit as st
+    data = (
+        collect(frame.limit(PAGE_ROWS))
+        if hasattr(frame, "collect")
+        else frame.head(PAGE_ROWS)
+    )
+    st.dataframe(data, hide_index=True, use_container_width=True)
+    st.caption(f"Tables display at most {PAGE_ROWS:,} rows.")
+
+
+__all__ = [
+    "ChartSpec", "ChartEvidence", "ChartCard", "create_chart_card",
+    "SupportThresholds", "EvidenceState", "evaluate_evidence",
+    "bootstrap_ci", "format_evidence_badge", "multiplicity_warning",
+    "sampling_disclosure", "threshold_sensitivity_note",
+    "build_color_map", "get_color", "format_axis_title", "OKABE_ITO", "safe_list",
+    "check_horizon_eligibility",
+    "read_json",
+    "bounded_grid",
+    "collect", "table", "PAGE_ROWS",
+]

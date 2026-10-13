@@ -14,8 +14,9 @@ dependencies = [
     "streamlit>=1.28.0",
     "plotly>=5.17.0",
     "scipy>=1.11.0",
+    "networkx>=3.0",
 ]
-optional-dependencies = { dev = ["pytest>=7.4.0", "pytest-cov>=4.1.0", "mypy>=1.5.0", "ruff>=0.1.0"], docs = ["mkdocs>=1.5.0", "mkdocs-material>=9.0.0"], viz = ["networkx>=3.0"] }
+optional-dependencies = { dev = ["pytest>=7.4.0", "pytest-cov>=4.1.0", "mypy>=1.5.0", "ruff>=0.1.0", "import-linter>=2.0"], docs = ["mkdocs>=1.5.0", "mkdocs-material>=9.0.0"], viz = ["networkx>=3.0"] }
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -32,8 +33,7 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
-addopts = "-v --tb=short"
-pythonpath = ["src"]
+addopts = "-v --tb=short --import-mode=importlib"
 
 [tool.ruff]
 line-length = 100
@@ -49,3 +49,18 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
 ignore_missing_imports = true
+
+[tool.importlinter]
+root_package = "retail_analytics"
+
+[tool.importlinter.contracts.no-view-imports-from-app]
+name = "Views must not import application entry points"
+type = "forbidden"
+source_modules = ["retail_analytics.dashboard.views"]
+forbidden_modules = ["retail_analytics.dashboard.app", "retail_analytics.dashboard.loyalty_app"]
+
+[tool.importlinter.contracts.core-independent-of-dashboard]
+name = "Core must not depend on dashboard"
+type = "forbidden"
+source_modules = ["retail_analytics.core"]
+forbidden_modules = ["retail_analytics.dashboard"]

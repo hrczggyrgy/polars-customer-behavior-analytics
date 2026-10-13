@@ -26,7 +26,7 @@ from retail_analytics.core.constants import (
     WINDOW_RECENT_30,
     WINDOW_YEAR,
 )
-from retail_analytics.core.pipeline.utils import C, K, _sink, VERSION
+from retail_analytics.core.pipeline.utils import VERSION, C, K, _sink
 from retail_analytics.core.stats import safe_ratio
 
 

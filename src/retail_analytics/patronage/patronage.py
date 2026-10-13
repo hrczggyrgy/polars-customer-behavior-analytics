@@ -11,6 +11,8 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+import polars as pl
+
 VERSION = "patronage-0.1"
 C = "customer_id"
 

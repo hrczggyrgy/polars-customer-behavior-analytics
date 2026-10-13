@@ -9,27 +9,24 @@ import streamlit as st
 
 from retail_analytics.visualization.chart_components import (
     ChartEvidence,
-    ChartSpec,
-    ChartCard,
-    create_chart_card,
-    SupportThresholds,
-    EvidenceState,
-    evaluate_evidence,
     build_color_map,
-    get_color,
-    safe_list,
     check_horizon_eligibility,
+    collect,
+    create_chart_card,
+    get_color,
+    read_json,
+    table,
 )
 from retail_analytics.visualization.visual_insights_core import (
-    rfm_response_surface,
-    value_at_risk_scatter,
+    concentration,
+    momentum_map,
     revenue_bridge,
     revenue_waterfall,
-    momentum_map,
-    concentration,
-    behavior_trajectory_matrix,
+    rfm_response_surface,
+    transition_summary,
+    value_at_risk_scatter,
+    value_tier_transition_waterfall,
 )
-from retail_analytics.dashboard.app import read_json
 
 
 def render_rfm_response_surface(root: Path, rows: pl.LazyFrame, coverage: bool, color_map: dict):
@@ -37,7 +34,7 @@ def render_rfm_response_surface(root: Path, rows: pl.LazyFrame, coverage: bool, 
     manifest = read_json(root / "run.json")
     chosen_date = date.fromisoformat(st.session_state.get("chosen", str(date.today())))
     eligible, reason = check_horizon_eligibility(manifest, 30, chosen_date)
-    
+
     if not coverage:
         st.warning(
             "⚠ **Coverage not confirmed** — Future outcome validation is unavailable.\n\n"
@@ -48,17 +45,17 @@ def render_rfm_response_surface(root: Path, rows: pl.LazyFrame, coverage: bool, 
     elif not eligible:
         st.error(f"❌ **30-day horizon ineligible:** {reason}")
         return
-    
+
     st.success(f"✅ **30-day horizon:** {reason}")
-    
+
     try:
         rec_bins = st.slider("Recency quantile bins", 3, 10, 5)
         freq_bins = st.slider("Frequency quantile bins", 3, 10, 5)
-        
+
         surface = rfm_response_surface(
             rows, coverage, recency_bins=rec_bins, frequency_bins=freq_bins
         )
-        
+
         if "warning" in surface.columns:
             st.warning(surface["warning"][0])
         elif "error" in surface.columns:
@@ -103,7 +100,7 @@ def render_rfm_response_surface(root: Path, rows: pl.LazyFrame, coverage: bool, 
                         hover_row.append(f"Recency: {r_bin}<br>Freq: {f_bin}<br>No data")
                 z.append(z_row)
                 hover.append(hover_row)
-            
+
             fig = go.Figure(
                 go.Heatmap(
                     z=z,
@@ -117,7 +114,7 @@ def render_rfm_response_surface(root: Path, rows: pl.LazyFrame, coverage: bool, 
                     hoverinfo="text",
                 )
             )
-            
+
             card = create_chart_card(
                 key="rfm_surface_card",
                 title="RFM Response Surface: 30-Day Repeat Probability",
@@ -149,7 +146,7 @@ def render_rfm_response_surface(root: Path, rows: pl.LazyFrame, coverage: bool, 
                 alt_description="Heatmap showing 30-day repeat probability across recency and frequency quantile bins with Wilson confidence intervals.",
             )
             card.render()
-            
+
             table(
                 surface.select(
                     "recency_bin",
@@ -161,7 +158,7 @@ def render_rfm_response_surface(root: Path, rows: pl.LazyFrame, coverage: bool, 
                     "upper_ci",
                 )
             )
-            
+
     except Exception as e:
         st.error(f"RFM response surface failed: {type(e).__name__}: {e}")
 
@@ -175,7 +172,7 @@ def render_value_at_risk_scatter(root: Path, rows: pl.LazyFrame, coverage: bool,
         "Bubble size: purchases_365d. Color: value_tier or trajectory. "
         "Reference lines at 1× and 2× median gap. Identifies commercially important customers whose purchasing rhythm has deteriorated."
     )
-    
+
     try:
         lateness_thresh = st.slider(
             "Overdue threshold (lateness)", 1.0, 5.0, 2.0, 0.25, key="var_thresh"
@@ -186,18 +183,18 @@ def render_value_at_risk_scatter(root: Path, rows: pl.LazyFrame, coverage: bool,
         sample_limit = st.slider(
             "Sample limit (scatter)", 500, 5000, 2000, 500, key="var_sample"
         )
-        
+
         var_data = value_at_risk_scatter(
             rows, lateness_threshold=lateness_thresh, sample_limit=sample_limit
         )
-        
+
         sample = var_data["sample"]
         summary = var_data["summary"]
-        
+
         if sample.is_empty():
             st.info("No customers with finite cadence metrics in this population.")
             return
-        
+
         # Summary metrics
         if not summary.is_empty():
             s = summary.row(0, named=True)
@@ -213,12 +210,12 @@ def render_value_at_risk_scatter(root: Path, rows: pl.LazyFrame, coverage: bool,
                 )
             with col4:
                 st.metric("At-risk 365d spend", f"{s['at_risk_spend_365d']:,.2f}")
-        
+
         # Scatter plot
         fig = go.Figure()
-        
+
         color_map_local = build_color_map(sample[color_by].unique().to_list())
-        
+
         for name in sorted(sample[color_by].unique().to_list()):
             part = sample.filter(pl.col(color_by) == name)
             fig.add_trace(
@@ -258,7 +255,7 @@ def render_value_at_risk_scatter(root: Path, rows: pl.LazyFrame, coverage: bool,
                     ),
                 )
             )
-        
+
         # Reference lines
         max_x = (
             max(sample["lateness"].max(), lateness_thresh * 1.5) if sample.height > 0 else 5
@@ -284,7 +281,7 @@ def render_value_at_risk_scatter(root: Path, rows: pl.LazyFrame, coverage: bool,
             line_width=2,
             annotation_text=f"Threshold ({lateness_thresh}×)",
         )
-        
+
         # Shaded regions
         fig.add_vrect(
             x0=0,
@@ -310,7 +307,7 @@ def render_value_at_risk_scatter(root: Path, rows: pl.LazyFrame, coverage: bool,
             annotation_text="≥2× overdue",
             annotation_position="top left",
         )
-        
+
         card = create_chart_card(
             key="var_scatter",
             title=f"Value-at-Risk: Lateness vs 365d Spend (n={sample.height:,} sampled)",
@@ -341,14 +338,14 @@ def render_value_at_risk_scatter(root: Path, rows: pl.LazyFrame, coverage: bool,
             alt_description="Scatter plot showing lateness (recency/median_gap) vs 365-day spend, bubble size by purchase count, colored regions for cadence status.",
         )
         card.render()
-        
+
         st.caption(
             f"Shows up to {sample_limit:,} hash-sampled customers with finite median_gap > 0 and recency. "
             f"Full population: {summary['eligible_customers'][0] if not summary.is_empty() else 0:,} eligible, "
             f"{summary['overdue_customers'][0] if not summary.is_empty() else 0:,} overdue (≥{lateness_thresh}×). "
             f"Not a churn prediction; describes observed inactivity relative to historical cadence."
         )
-        
+
         table(
             sample.select(
                 "customer_id",
@@ -362,7 +359,7 @@ def render_value_at_risk_scatter(root: Path, rows: pl.LazyFrame, coverage: bool,
                 "lifecycle",
             )
         )
-        
+
     except Exception as e:
         st.error(f"Value-at-risk scatter failed: {type(e).__name__}: {e}")
 
@@ -375,25 +372,27 @@ def render_revenue_bridge(root: Path, rows: pl.LazyFrame, coverage: bool, color_
         "Decomposes spend change into: purchasing customers, baskets per customer, spend per basket (AOV). "
         "Also shows calendar-period trend with independent monthly windows."
     )
-    
+
     try:
         validated_path = root / "validated.parquet"
         if not validated_path.exists():
             st.info("No validated data available for calendar-period trend.")
             return
-        
+
         validated = pl.scan_parquet(validated_path)
-        
+
         # Calendar-period trend
         st.write("**Calendar-Period Revenue Trend**")
         first_date = collect(rows.select(pl.col("first_purchase").min())).item()
         if first_date:
-            from retail_analytics.visualization.visual_insights_core import calendar_period_revenue_trend
-            
+            from retail_analytics.visualization.visual_insights_core import (
+                calendar_period_revenue_trend,
+            )
+
             trend_data = calendar_period_revenue_trend(
                 validated, rows, first_date, date.fromisoformat(st.session_state.get("chosen", str(date.today()))), months=12
             )
-            
+
             if not trend_data.is_empty():
                 fig = go.Figure()
                 fig.add_trace(
@@ -435,7 +434,7 @@ def render_revenue_bridge(root: Path, rows: pl.LazyFrame, coverage: bool, color_
                         yaxis="y4",
                     )
                 )
-                
+
                 fig.update_layout(
                     xaxis=dict(title="Month"),
                     yaxis=dict(title="Spend", side="left", color="#0072B2"),
@@ -457,7 +456,7 @@ def render_revenue_bridge(root: Path, rows: pl.LazyFrame, coverage: bool, color_
                         color="#D55E00",
                     ),
                 )
-                
+
                 card = create_chart_card(
                     key="cal_trend",
                     title="Calendar-Period Revenue Components (12 months)",
@@ -486,19 +485,17 @@ def render_revenue_bridge(root: Path, rows: pl.LazyFrame, coverage: bool, color_
                     alt_description="Multi-axis line chart showing monthly spend, buyers, AOV, and baskets per buyer over 12 calendar months.",
                 )
                 card.render()
-                
+
                 st.caption(
                     "Non-overlapping monthly windows. Fixed population (current filtered customers). Partial months marked."
                 )
-        
+
         # Revenue bridge
         st.write("**Revenue Decomposition Bridge**")
-        
-        from retail_analytics.dashboard.app import apply_filters
-        
+
         manifest = read_json(root / "run.json")
         history = [x for x in manifest["snapshots"] if x <= st.session_state.get("chosen", "")]
-        
+
         if len(history) < 2:
             st.info("Need at least two cutoffs for bridge comparison.")
         else:
@@ -510,7 +507,7 @@ def render_revenue_bridge(root: Path, rows: pl.LazyFrame, coverage: bool, color_
                 value=True,
                 help="Use only customers present in both snapshots for frequency/AOV comparison",
             )
-            
+
             before_rows = apply_filters(
                 pl.scan_parquet(
                     [str(p) for p in (root / "snapshots" / origin).glob("*.parquet")]
@@ -521,7 +518,7 @@ def render_revenue_bridge(root: Path, rows: pl.LazyFrame, coverage: bool, color_
             bridge = revenue_bridge(
                 rows, before_rows, cutoff_date, match_customers=match_pop
             )
-            
+
             if bridge.is_empty():
                 st.info("Could not compute bridge for this comparison.")
             else:
@@ -531,12 +528,12 @@ def render_revenue_bridge(root: Path, rows: pl.LazyFrame, coverage: bool, color_
                 values = bridge["value"].to_list()
                 desc = bridge["description"].to_list()
                 pop_types = bridge["population_type"].to_list()
-                
+
                 cumulative = [values[0]]
                 for i in range(1, len(values) - 1):
                     cumulative.append(cumulative[-1] + values[i])
                 cumulative.append(values[-1])
-                
+
                 colors = []
                 for i, v in enumerate(values):
                     if i == 0 or i == len(values) - 1:
@@ -545,7 +542,7 @@ def render_revenue_bridge(root: Path, rows: pl.LazyFrame, coverage: bool, color_
                         colors.append("#009E73")
                     else:
                         colors.append("#D55E00")
-                
+
                 fig = go.Figure()
                 fig.add_trace(
                     go.Waterfall(
@@ -564,7 +561,7 @@ def render_revenue_bridge(root: Path, rows: pl.LazyFrame, coverage: bool, color_
                         hovertemplate="%{x}<br>Value: %{y:,.2f}<br>%{customdata[0]}<br>Population: %{customdata[1]}<extra></extra>",
                     )
                 )
-                
+
                 card = create_chart_card(
                     key="revenue_bridge",
                     title=f"Revenue Bridge: {origin} to {st.session_state.get('chosen')} ({'matched' if match_pop else 'unmatched'} population)",
@@ -596,13 +593,13 @@ def render_revenue_bridge(root: Path, rows: pl.LazyFrame, coverage: bool, color_
                     alt_description="Waterfall chart decomposing spend change into customer count, frequency, AOV, and residual components.",
                 )
                 card.render()
-                
+
                 table(bridge)
                 st.caption(
                     f"Fixed-order bridge: customers → frequency → AOV. {'Matched population' if match_pop else 'Full snapshot populations'}. "
                     f"Residual captures interaction effects. Order-dependent; not causal attribution."
                 )
-        
+
     except Exception as e:
         st.error(f"Revenue bridge failed: {type(e).__name__}: {e}")
 
@@ -615,7 +612,7 @@ def render_customer_momentum(root: Path, rows: pl.LazyFrame, coverage: bool, col
         "Y-axis: basket_change (recent 90d vs previous 90d AOV). "
         "Colour: value_tier. Only customers with comparable windows (tenure ≥ 179 days) and non-zero previous purchases are shown."
     )
-    
+
     try:
         mom = momentum_map(rows)
     except Exception as e:
@@ -624,16 +621,16 @@ def render_customer_momentum(root: Path, rows: pl.LazyFrame, coverage: bool, col
             "This may be due to missing frequency_change/basket_change columns or no comparable customers."
         )
         return
-    
+
     sample = mom["sample"]
     quad = mom["quadrant_summary"]
     not_comp = mom["not_comparable_n"]
     finite_n = mom["finite_n"]
-    
+
     if sample.is_empty():
         st.info("No customers with comparable frequency and basket changes in this population.")
         return
-    
+
     # Quadrant summary
     st.write("**Quadrant Summary (all comparable customers)**")
     if not quad.is_empty():
@@ -649,10 +646,10 @@ def render_customer_momentum(root: Path, rows: pl.LazyFrame, coverage: bool, col
     st.caption(
         f"Customers with comparable changes: {finite_n:,}. Not comparable (missing changes): {not_comp:,}. Not comparable customers are excluded from the scatter and quadrant counts; they are not placed at zero."
     )
-    
+
     # Scatter plot
     fig = go.Figure()
-    
+
     for name in sorted(sample["value_tier"].unique().to_list()):
         part = sample.filter(pl.col("value_tier") == name)
         fig.add_trace(
@@ -687,11 +684,11 @@ def render_customer_momentum(root: Path, rows: pl.LazyFrame, coverage: bool, col
                 ),
             )
         )
-    
+
     # Add zero reference lines
     fig.add_vline(x=0, line_dash="dash", line_color="gray", line_width=1)
     fig.add_hline(y=0, line_dash="dash", line_color="gray", line_width=1)
-    
+
     # Add quadrant annotations
     fig.add_annotation(
         x=0.5,
@@ -733,7 +730,7 @@ def render_customer_momentum(root: Path, rows: pl.LazyFrame, coverage: bool, col
         font=dict(size=10, color="#D55E00"),
         opacity=0.5,
     )
-    
+
     card = create_chart_card(
         key="momentum_scatter",
         title="Customer Momentum Map",
@@ -765,13 +762,13 @@ def render_customer_momentum(root: Path, rows: pl.LazyFrame, coverage: bool, col
         alt_description="Scatter plot showing frequency change vs basket change by value tier, with quadrant annotations and zero reference lines.",
     )
     card.render()
-    
+
     st.caption(
         f"Scatter shows up to 2,000 hash-sampled customers with finite changes. "
         f"Zero reference lines and quadrant labels are visual guides only. "
         f"Missing changes (not comparable) are not shown at zero; count: {not_comp:,}."
     )
-    
+
     table(
         sample.select(
             "customer_id",
@@ -808,8 +805,6 @@ def render_value_tier_transitions(root: Path, rows: pl.LazyFrame, coverage: bool
     origin = st.selectbox("Previous cutoff", history[:-1], index=len(history) - 2, key="vt_origin")
     dim = "value_tier"
     st.info("Showing value_tier transitions (waterfall). For other dimensions, use the Transitions view.")
-
-    from retail_analytics.dashboard.app import apply_filters
 
     before = apply_filters(
         pl.scan_parquet([str(p) for p in (root / "snapshots" / origin).glob("*.parquet")]),
@@ -925,13 +920,13 @@ def render_spend_concentration(root: Path, rows: pl.LazyFrame, coverage: bool, c
         "plus equality reference line and top-share summaries. "
         "Shows how concentrated recorded spending is among customers."
     )
-    
+
     conc = concentration(rows)
     if conc["n"] > 0:
         # Plot Lorenz curve
         curve = conc["curve"]
         x_vals, y_vals = zip(*curve) if curve else ([], [])
-        
+
         fig = go.Figure()
         fig.add_trace(
             go.Scatter(
@@ -968,7 +963,7 @@ def render_spend_concentration(root: Path, rows: pl.LazyFrame, coverage: bool, c
             )
         fig.update_xaxes(range=[0, 1], tickformat=".0%")
         fig.update_yaxes(range=[0, 1], tickformat=".0%")
-        
+
         card = create_chart_card(
             key="lorenz_curve",
             title=f"Lorenz Curve: Concentration of 90-Day Spend (n={conc['n']})",
@@ -999,7 +994,7 @@ def render_spend_concentration(root: Path, rows: pl.LazyFrame, coverage: bool, c
             alt_description="Lorenz curve showing cumulative spend share vs cumulative customer share with equality reference line and top fraction markers.",
         )
         card.render()
-        
+
         st.caption(
             f"Total spend: {conc['total']:,.2f} ({conc['positive_n']} with positive spend). Top fractions round up to whole customers."
         )
@@ -1023,8 +1018,6 @@ def render_revenue_waterfall(root: Path, rows: pl.LazyFrame, coverage: bool, col
             "Need at least two cutoffs for waterfall. Select an earlier snapshot in the sidebar."
         )
         return
-
-    from retail_analytics.dashboard.app import apply_filters
 
     origin = st.selectbox("Previous cutoff", history[:-1], index=len(history) - 2)
     before_rows = apply_filters(
@@ -1080,7 +1073,7 @@ def render_revenue_waterfall(root: Path, rows: pl.LazyFrame, coverage: bool, col
         title=f"Revenue waterfall: {origin} to {st.session_state.get('chosen')}",
         figure=fig,
         question="How much of observed spend change comes from customers active in both periods vs entering/leaving?",
-        takeaway=f"Spend change decomposed into customers, frequency, AOV, and residual",
+        takeaway="Spend change decomposed into customers, frequency, AOV, and residual",
         evidence=ChartEvidence(
             numerator="Component contributions to spend change",
             denominator="Previous period spend",

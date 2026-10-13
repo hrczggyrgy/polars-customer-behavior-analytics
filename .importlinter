@@ -1,0 +1,16 @@
+[importlinter]
+root_package = retail_analytics
+
+[importlinter:contract:no-view-imports-from-app]
+name = Views must not import application entry points
+type = forbidden
+source_modules = retail_analytics.dashboard.views
+forbidden_modules =
+    retail_analytics.dashboard.app
+    retail_analytics.dashboard.loyalty_app
+
+[importlinter:contract:core-independent-of-dashboard]
+name = Core must not depend on dashboard
+type = forbidden
+source_modules = retail_analytics.core
+forbidden_modules = retail_analytics.dashboard

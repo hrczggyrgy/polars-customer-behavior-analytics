@@ -1,8 +1,8 @@
 """Advanced Analytics views: Behavior×Trajectory, Purchase Rhythm, Basket Evolution, Category Sankey, Transitions, Quality, Customer."""
 
+import math
 from datetime import date
 from pathlib import Path
-import math
 
 import plotly.graph_objects as go
 import polars as pl
@@ -10,22 +10,18 @@ import streamlit as st
 
 from retail_analytics.visualization.chart_components import (
     ChartEvidence,
-    ChartCard,
+    apply_filters,
+    collect,
     create_chart_card,
-    build_color_map,
     get_color,
-    safe_list,
+    read_json,
+    table,
 )
 from retail_analytics.visualization.visual_insights_core import (
+    basket_composition_slope,
     behavior_trajectory_matrix,
     purchase_rhythm_panel,
-    basket_composition_slope,
-    segment_alluvial_flow,
-    transition_summary,
-    concentration,
-    full_population_distribution,
 )
-from retail_analytics.dashboard.app import read_json, table, apply_filters, PAGE_ROWS
 
 
 def render_behavior_trajectory(root: Path, rows: pl.LazyFrame, coverage: bool, color_map: dict):
@@ -126,7 +122,6 @@ def render_behavior_trajectory(root: Path, rows: pl.LazyFrame, coverage: bool, c
     card.render()
 
     # Summary table with future outcome rates
-    from retail_analytics.dashboard.app import table
     table(
         plot_data.select(
             "behavior",
@@ -156,7 +151,6 @@ def render_purchase_rhythm(root: Path, rows: pl.LazyFrame, coverage: bool, color
         "Regular shoppers: low gap_cv, low lateness. Episodic: high median_gap, variable gap_cv."
     )
 
-    from retail_analytics.visualization.visual_insights_core import purchase_rhythm_panel
 
     rhythm = purchase_rhythm_panel(rows)
 
@@ -246,7 +240,6 @@ def render_basket_evolution(root: Path, rows: pl.LazyFrame, coverage: bool, colo
         "Only customers with finite recent and previous metrics are included."
     )
 
-    from retail_analytics.visualization.visual_insights_core import basket_composition_slope
 
     basket = basket_composition_slope(rows)
 
@@ -414,8 +407,6 @@ def render_basket_evolution(root: Path, rows: pl.LazyFrame, coverage: bool, colo
 
 def render_category_sankey(root: Path, rows: pl.LazyFrame, coverage: bool, color_map: dict):
     """Category Sankey - Category Participation Comparison."""
-    from retail_analytics.visualization.visual_insights_core import category_participation_comparison
-    from retail_analytics.dashboard.app import read_json, apply_filters, collect
 
     st.subheader("Category Participation Comparison")
     st.caption(

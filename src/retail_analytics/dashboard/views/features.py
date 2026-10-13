@@ -7,14 +7,12 @@ import polars as pl
 import streamlit as st
 
 from retail_analytics.visualization.chart_components import (
-    build_color_map,
+    PAGE_ROWS,
+    collect,
     get_color,
-    safe_list,
     sampling_disclosure,
-    format_axis_title,
+    table,
 )
-from retail_analytics.visualization.visual_insights_core import METRICS
-from retail_analytics.dashboard.app import collect, table, PAGE_ROWS
 
 
 def render_features(root: Path, rows: pl.LazyFrame, coverage: bool, color_map: dict):
@@ -50,7 +48,6 @@ def render_features(root: Path, rows: pl.LazyFrame, coverage: bool, color_map: d
         ]
     )
 
-    from retail_analytics.dashboard.app import bars
     bars(
         diagnostic,
         "feature",

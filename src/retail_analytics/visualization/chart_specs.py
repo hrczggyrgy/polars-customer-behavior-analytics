@@ -4,25 +4,34 @@ This module provides typed specifications (ChartSpec) for all primary views,
 ensuring consistent question/takeaway/evidence/caveat/next-step metadata.
 """
 
-from typing import Optional, Dict, Any, List
-from dataclasses import dataclass, field
 import plotly.graph_objects as go
 
 from retail_analytics.visualization.chart_components import (
-    ChartSpec, ChartEvidence, ChartCard, create_chart_card,
-    SupportThresholds, EvidenceState, evaluate_evidence,
-    bootstrap_ci, format_evidence_badge, multiplicity_warning,
-    sampling_disclosure, threshold_sensitivity_note,
-    build_color_map, get_color, format_axis_title, OKABE_ITO, safe_list
+    OKABE_ITO,
+    ChartCard,
+    ChartEvidence,
+    ChartSpec,
+    EvidenceState,
+    SupportThresholds,
+    bootstrap_ci,
+    build_color_map,
+    create_chart_card,
+    evaluate_evidence,
+    format_axis_title,
+    format_evidence_badge,
+    get_color,
+    multiplicity_warning,
+    safe_list,
+    sampling_disclosure,
+    threshold_sensitivity_note,
 )
-
 
 # ============================================================================
 # Primary View Chart Specifications
 # ============================================================================
 
 def get_cohort_age_retention_spec(figure: go.Figure, manifest: dict, chosen: str,
-                                  total_cohorts: int, total_customers: int, 
+                                  total_cohorts: int, total_customers: int,
                                   observed_cells: int, min_cohort: int) -> ChartSpec:
     """Cohort-Age Retention Heatmap specification."""
     cutoff_date = chosen
@@ -126,7 +135,7 @@ def get_cadence_validation_spec(figure: go.Figure, horizon: int, max_lateness: f
     )
 
 
-def get_multi_horizon_cohorts_spec(figure: go.Figure, horizons: List[int], 
+def get_multi_horizon_cohorts_spec(figure: go.Figure, horizons: list[int],
                                     cohort_data, colors: dict) -> ChartSpec:
     """Multi-Horizon Cohorts specification."""
     return ChartSpec(
@@ -159,7 +168,7 @@ def get_multi_horizon_cohorts_spec(figure: go.Figure, horizons: List[int],
     )
 
 
-def get_future_validation_spec(figure: go.Figure, horizon: int, dim: str, 
+def get_future_validation_spec(figure: go.Figure, horizon: int, dim: str,
                                 plot_data, total_eligible: int) -> ChartSpec:
     """Future Validation specification."""
     return ChartSpec(
@@ -190,7 +199,7 @@ def get_future_validation_spec(figure: go.Figure, horizon: int, dim: str,
     )
 
 
-def get_time_to_repeat_spec(figure: go.Figure, km_data, total_at_risk: int, 
+def get_time_to_repeat_spec(figure: go.Figure, km_data, total_at_risk: int,
                             total_events: int, median_day: int, pct_30: float) -> ChartSpec:
     """Time to Repeat (Kaplan-Meier) specification."""
     return ChartSpec(
@@ -257,7 +266,7 @@ def get_category_opportunity_map_spec(figure: go.Figure, opp_map, top_categories
     )
 
 
-def get_category_penetration_growth_spec(figure: go.Figure, portfolio, top_n: int, 
+def get_category_penetration_growth_spec(figure: go.Figure, portfolio, top_n: int,
                                           current_cutoff: str, previous_cutoff: str) -> ChartSpec:
     """Category Penetration × Growth Portfolio specification."""
     return ChartSpec(
@@ -291,7 +300,7 @@ def get_category_penetration_growth_spec(figure: go.Figure, portfolio, top_n: in
     )
 
 
-def get_value_at_risk_spec(figure: go.Figure, summary, lateness_thresh: float, 
+def get_value_at_risk_spec(figure: go.Figure, summary, lateness_thresh: float,
                            eligible_n: int, overdue_n: int) -> ChartSpec:
     """Value-at-Risk Scatter specification."""
     return ChartSpec(
@@ -325,7 +334,7 @@ def get_value_at_risk_spec(figure: go.Figure, summary, lateness_thresh: float,
     )
 
 
-def get_product_affinity_spec(figure: go.Figure, min_support: float, min_conf: float, 
+def get_product_affinity_spec(figure: go.Figure, min_support: float, min_conf: float,
                               min_lift: float, total_baskets: int, total_pairs: int) -> ChartSpec:
     """Product Affinity specification."""
     return ChartSpec(
@@ -397,7 +406,7 @@ def get_trial_conversion_spec(figure: go.Figure, min_trials: int, trial_data) ->
     )
 
 
-def get_segment_summary_spec(figure: go.Figure, dim: str, horizon: int, 
+def get_segment_summary_spec(figure: go.Figure, dim: str, horizon: int,
                              records: list, valid_count: int) -> ChartSpec:
     """Segment Summary specification."""
     return ChartSpec(
@@ -421,7 +430,7 @@ def get_segment_summary_spec(figure: go.Figure, dim: str, horizon: int,
         ),
         caveat=(
             "Intervals assume independent customers at one cutoff, not causal effects. "
-            f"Up to 20 exploratory comparisons shown; not multiplicity-adjusted. "
+            "Up to 20 exploratory comparisons shown; not multiplicity-adjusted. "
             "First observed purchase ≠ true acquisition."
         ),
         next_step="Check 'RFM Response Surface' for recency×frequency breakdown.",
@@ -430,7 +439,7 @@ def get_segment_summary_spec(figure: go.Figure, dim: str, horizon: int,
     )
 
 
-def get_revenue_bridge_spec(figure: go.Figure, origin: str, chosen: str, 
+def get_revenue_bridge_spec(figure: go.Figure, origin: str, chosen: str,
                             bridge_data, match_pop: bool) -> ChartSpec:
     """Revenue Bridge specification."""
     return ChartSpec(
@@ -465,8 +474,8 @@ def get_revenue_bridge_spec(figure: go.Figure, origin: str, chosen: str,
     )
 
 
-def get_product_association_network_spec(figure: go.Figure, min_lift: float, 
-                                          min_conf: float, top_n: int, 
+def get_product_association_network_spec(figure: go.Figure, min_lift: float,
+                                          min_conf: float, top_n: int,
                                           nodes_count: int, edges_count: int) -> ChartSpec:
     """Product Association Network specification."""
     return ChartSpec(
@@ -506,7 +515,7 @@ def get_revenue_waterfall_spec(figure: go.Figure, first_date: str, cutoff: str, 
         key="revenue_waterfall_calendar",
         title="Calendar-Period Revenue Components",
         question="How do monthly spend, buyers, AOV, and baskets/buyer trend over non-overlapping calendar periods?",
-        takeaway=f"12-month calendar trend (non-overlapping windows, fixed population)",
+        takeaway="12-month calendar trend (non-overlapping windows, fixed population)",
         evidence=ChartEvidence(
             numerator="Monthly metrics",
             denominator="Population customers",
@@ -564,7 +573,7 @@ def get_cohort_summary_spec(figure: go.Figure, horizon: int, horizon_data, first
     )
 
 
-def get_customer_momentum_spec(figure: go.Figure, mom_data, finite_n: int, 
+def get_customer_momentum_spec(figure: go.Figure, mom_data, finite_n: int,
                                not_comp_n: int, quad_data) -> ChartSpec:
     """Customer Momentum Map specification."""
     return ChartSpec(
@@ -634,7 +643,7 @@ def get_purchase_cadence_spec(figure: go.Figure, cad_data, eligible_n: int, tota
     )
 
 
-def get_category_participation_spec(figure: go.Figure, part_data, population_n: int, 
+def get_category_participation_spec(figure: go.Figure, part_data, population_n: int,
                                      chosen: str, origin: str, top_n: int) -> ChartSpec:
     """Category Participation specification."""
     return ChartSpec(
@@ -662,7 +671,7 @@ def get_category_participation_spec(figure: go.Figure, part_data, population_n: 
             "For fixed-population comparison, use this view; for changing populations, use 'Category Sankey'."
         ),
         next_step="Check 'Category Opportunity Map' for penetration×intensity.",
-        alt_description=f"Paired horizontal bar chart showing category participation in recent vs previous 90-day windows.",
+        alt_description="Paired horizontal bar chart showing category participation in recent vs previous 90-day windows.",
         figure=figure,
     )
 

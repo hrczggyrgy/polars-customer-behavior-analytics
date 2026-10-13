@@ -1,6 +1,6 @@
 """Lifecycle & Repeat views: Cohort-Age Retention, Time to Repeat, Multi-Horizon Cohorts, Purchase Cadence, Cadence Validation."""
 
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 import plotly.graph_objects as go
@@ -9,26 +9,21 @@ import streamlit as st
 
 from retail_analytics.visualization.chart_components import (
     ChartEvidence,
-    ChartSpec,
-    ChartCard,
-    create_chart_card,
-    SupportThresholds,
-    EvidenceState,
-    evaluate_evidence,
-    build_color_map,
-    get_color,
-    safe_list,
-    format_axis_title,
     check_horizon_eligibility,
+    collect,
+    create_chart_card,
+    get_color,
+    read_json,
+    safe_list,
+    table,
 )
 from retail_analytics.visualization.visual_insights_core import (
-    cohort_age_retention_heatmap,
-    time_to_second_purchase,
-    multi_horizon_cohort_repeat,
     cadence_map,
     cadence_return_validation,
+    cohort_age_retention_heatmap,
+    multi_horizon_cohort_repeat,
+    time_to_second_purchase,
 )
-from retail_analytics.dashboard.app import read_json
 
 
 def render_cohort_age_retention(root: Path, rows: pl.LazyFrame, coverage: bool, color_map: dict):
@@ -40,26 +35,26 @@ def render_cohort_age_retention(root: Path, rows: pl.LazyFrame, coverage: bool, 
         "Age-0 is the cohort month (baseline). Blank cells = not yet observed (cohort too young). "
         "Consistent 0-100% color scale across all cohorts for comparability."
     )
-    
+
     min_cohort = st.number_input("Minimum cohort size", 5, 1000, 20, key="car_min_cohort")
-    
+
     validated_path = root / "validated.parquet"
     if not validated_path.exists():
         st.info("No validated data available for cohort-age retention.")
         return
-    
+
     validated = pl.scan_parquet(validated_path)
     cutoff_date = date.fromisoformat(st.session_state.get("chosen", str(date.today())))
-    
+
     try:
         heatmap_data = cohort_age_retention_heatmap(
             validated, rows, cutoff_date, min_cohort
         )
-        
+
         if heatmap_data.is_empty():
             st.info("Insufficient data for cohort-age retention heatmap.")
             return
-        
+
         # Determine max observed age per cohort for censoring
         cutoff_month = date(cutoff_date.year, cutoff_date.month, 1)
         heatmap_data = heatmap_data.with_columns(
@@ -68,7 +63,7 @@ def render_cohort_age_retention(root: Path, rows: pl.LazyFrame, coverage: bool, 
                 + (pl.lit(cutoff_month).dt.month() - pl.col("cohort_month").dt.month())
             ).alias("max_age_observed")
         )
-        
+
         # Pivot for heatmap
         pivot = heatmap_data.pivot(
             values="activity_rate",
@@ -90,18 +85,18 @@ def render_cohort_age_retention(root: Path, rows: pl.LazyFrame, coverage: bool, 
             index="cohort_month",
             on="age_month",
         )
-        
+
         # Limit to last 24 cohorts/ages for display
         cohort_labels = sorted(pivot["cohort_month"].to_list())[-24:]
         age_cols = [c for c in pivot.columns if c != "cohort_month"]
         age_cols = sorted([c for c in age_cols if isinstance(c, int)])[-24:]
-        
+
         z = []
         hover = []
         total_cohorts = 0
         total_customers = 0
         observed_cells = 0
-        
+
         for cohort in cohort_labels:
             z_row = []
             hover_row = []
@@ -133,7 +128,7 @@ def render_cohort_age_retention(root: Path, rows: pl.LazyFrame, coverage: bool, 
                     hover_row.append(f"Cohort: {cohort}<br>Age: {age}m<br>No data")
             z.append(z_row)
             hover.append(hover_row)
-        
+
         fig = go.Figure(
             go.Heatmap(
                 z=z,
@@ -151,7 +146,7 @@ def render_cohort_age_retention(root: Path, rows: pl.LazyFrame, coverage: bool, 
                 hoverongaps=False,
             )
         )
-        
+
         card = create_chart_card(
             key="cohort_age_retention_card",
             title="Cohort-Age Retention Heatmap",
@@ -183,9 +178,9 @@ def render_cohort_age_retention(root: Path, rows: pl.LazyFrame, coverage: bool, 
             alt_description="Heatmap showing cohort-age retention with cohorts as rows and months since first purchase as columns, color-coded by activity rate.",
         )
         card.render()
-        
+
         table(heatmap_data.sort("cohort_month", "age_month"))
-        
+
     except Exception as e:
         st.error(f"Cohort-age retention failed: {type(e).__name__}: {e}")
 
@@ -199,21 +194,21 @@ def render_time_to_repeat(root: Path, rows: pl.LazyFrame, coverage: bool, color_
         "Customers without a second purchase by cutoff are right-censored. "
         "Shaded bands: 95% Greenwood confidence intervals."
     )
-    
+
     try:
         baskets_paths = list((root / "events" / st.session_state.get("chosen", "")).glob("*/baskets.parquet"))
         if not baskets_paths:
             st.info("No basket data available for this cutoff.")
             return
-        
+
         baskets = pl.scan_parquet(baskets_paths)
         cutoff_date = date.fromisoformat(st.session_state.get("chosen", str(date.today())))
         km = time_to_second_purchase(baskets, rows, cutoff_date, max_days=180)
-        
+
         if km.is_empty():
             st.info("Insufficient data for survival curve.")
             return
-        
+
         fig = go.Figure()
         fig.add_trace(
             go.Scatter(
@@ -250,7 +245,7 @@ def render_time_to_repeat(root: Path, rows: pl.LazyFrame, coverage: bool, color_
                 hoverinfo="skip",
             )
         )
-        
+
         for pct in [0.25, 0.5, 0.75]:
             idx = (km["cum_repeat_prob"] - pct).abs().arg_min()
             day = km["days"][idx]
@@ -262,9 +257,9 @@ def render_time_to_repeat(root: Path, rows: pl.LazyFrame, coverage: bool, color_
                 annotation_text=f"P{pct:.0%}={day}d",
                 annotation_position="top",
             )
-        
+
         fig.update_yaxes(range=[0, 1], tickformat=".0%")
-        
+
         card = create_chart_card(
             key="km_survival",
             title="Time to Second Observed Shopping Day (Kaplan–Meier)",
@@ -294,7 +289,7 @@ def render_time_to_repeat(root: Path, rows: pl.LazyFrame, coverage: bool, color_
             alt_description="Kaplan-Meier survival curve showing cumulative repeat probability over days since first observed purchase with 95% confidence bands.",
         )
         card.render()
-        
+
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             total = km["at_risk"][0] if km.height > 0 else 0
@@ -314,7 +309,7 @@ def render_time_to_repeat(root: Path, rows: pl.LazyFrame, coverage: bool, color_
                 "Repeat within 30 days",
                 f"{pct_30:.1%}" if pct_30 is not None else "N/A",
             )
-        
+
         table(
             km.select(
                 "days",
@@ -326,7 +321,7 @@ def render_time_to_repeat(root: Path, rows: pl.LazyFrame, coverage: bool, color_
                 "upper_ci",
             )
         )
-        
+
     except Exception as e:
         st.error(f"Time-to-repeat analysis failed: {type(e).__name__}: {e}")
 
@@ -335,13 +330,13 @@ def render_multi_horizon_cohorts(root: Path, rows: pl.LazyFrame, coverage: bool,
     """Multi-Horizon Cohorts."""
     manifest = read_json(root / "run.json")
     chosen_date = date.fromisoformat(st.session_state.get("chosen", str(date.today())))
-    
+
     horizon_options = [30, 60, 90]
     horizon_eligibility = {}
     for h in horizon_options:
         eligible, reason = check_horizon_eligibility(manifest, h, chosen_date)
         horizon_eligibility[h] = (eligible, reason)
-    
+
     if not coverage:
         st.warning(
             "⚠ **Coverage not confirmed** — Future outcome validation is unavailable.\n\n"
@@ -349,7 +344,7 @@ def render_multi_horizon_cohorts(root: Path, rows: pl.LazyFrame, coverage: bool,
             "and a complete-through date."
         )
         return
-    
+
     # Show eligibility for each horizon
     for h in horizon_options:
         eligible, reason = horizon_eligibility[h]
@@ -357,38 +352,38 @@ def render_multi_horizon_cohorts(root: Path, rows: pl.LazyFrame, coverage: bool,
             st.success(f"✅ **{h}-day horizon:** {reason}")
         else:
             st.error(f"❌ **{h}-day horizon:** {reason}")
-    
+
     eligible_horizons = [h for h in horizon_options if horizon_eligibility[h][0]]
     if not eligible_horizons:
         st.info("No horizons are eligible for multi-horizon cohort analysis with the current coverage settings.")
         return
-    
+
     try:
         min_cohort = st.number_input("Minimum cohort size", 5, 1000, 20)
-        
+
         baskets_paths = list((root / "events" / st.session_state.get("chosen", "")).glob("*/baskets.parquet"))
         if not baskets_paths:
             st.info("No basket data available for this cutoff.")
             return
-        
+
         baskets = pl.scan_parquet(baskets_paths)
         cutoff_date = date.fromisoformat(st.session_state.get("chosen", str(date.today())))
         cohort_data = multi_horizon_cohort_repeat(
             baskets, rows, cutoff_date, coverage, eligible_horizons, min_cohort
         )
-        
+
         if cohort_data.is_empty():
             st.info("No eligible cohorts.")
             return
-        
+
         fig = go.Figure()
         colors = {30: "#0072B2", 60: "#009E73", 90: "#E69F00"}
-        
+
         for horizon in eligible_horizons:
             h_data = cohort_data.filter(pl.col("horizon") == horizon).sort("cohort")
             if h_data.is_empty():
                 continue
-            
+
             eligible = h_data.filter(pl.col("status") == "eligible")
             if not eligible.is_empty():
                 fig.add_trace(
@@ -419,7 +414,7 @@ def render_multi_horizon_cohorts(root: Path, rows: pl.LazyFrame, coverage: bool,
                         hovertemplate="Cohort: %{x}<br>Rate: %{y:.1%}<br>Eligible: %{customdata[0]:,}<br>Repeats: %{customdata[1]:,}<extra></extra>",
                     )
                 )
-            
+
             ineligible = h_data.filter(pl.col("status") != "eligible")
             if not ineligible.is_empty():
                 fig.add_trace(
@@ -432,7 +427,7 @@ def render_multi_horizon_cohorts(root: Path, rows: pl.LazyFrame, coverage: bool,
                         showlegend=True,
                     )
                 )
-        
+
         first_cohort = cohort_data["cohort"].min()
         if first_cohort is not None:
             fig.add_vline(
@@ -442,10 +437,10 @@ def render_multi_horizon_cohorts(root: Path, rows: pl.LazyFrame, coverage: bool,
                 annotation_text="First cohort (left-censored)",
                 annotation_position="top left",
             )
-        
+
         fig.update_xaxes(tickformat="%Y-%m")
         fig.update_yaxes(range=[0, 1], tickformat=".0%")
-        
+
         card = create_chart_card(
             key="multi_horizon_cohorts",
             title="Age-Aligned Repeat Purchase Rates by Cohort (30/60/90d)",
@@ -475,9 +470,9 @@ def render_multi_horizon_cohorts(root: Path, rows: pl.LazyFrame, coverage: bool,
             alt_description="Line chart showing age-aligned repeat purchase rates by cohort month for 30, 60, and 90-day horizons with Wilson confidence intervals.",
         )
         card.render()
-        
+
         table(cohort_data.sort("cohort", "horizon"))
-        
+
     except Exception as e:
         st.error(f"Multi-horizon cohort analysis failed: {type(e).__name__}: {e}")
 
@@ -491,7 +486,7 @@ def render_purchase_cadence(root: Path, rows: pl.LazyFrame, coverage: bool, colo
         "Reference lines: recency = median_gap (on cadence) and recency = 2 × median_gap (overdue). "
         "This visualises the lateness = recency / median_gap metric."
     )
-    
+
     # Filters
     col1, col2 = st.columns(2)
     with col1:
@@ -506,20 +501,20 @@ def render_purchase_cadence(root: Path, rows: pl.LazyFrame, coverage: bool, colo
             "value_tier"
         ].to_list()
         vt_filter = st.multiselect("Value tier", vt_options, key="cadence_vt")
-    
+
     cad = cadence_map(
         rows, evidence_filter=evidence_filter or None, value_tier_filter=vt_filter or None
     )
     sample = cad["sample"]
     eligible_n = cad["eligible_n"]
     total_n = cad["total_n"]
-    
+
     if sample.is_empty():
         st.info("No customers with finite median_gap and recency in this population.")
         return
-    
+
     st.write(f"**Eligible customers (style_eligible): {eligible_n:,} of {total_n:,}**")
-    
+
     fig = go.Figure()
     for name in sorted(sample["value_tier"].unique().to_list()):
         part = sample.filter(pl.col("value_tier") == name)
@@ -551,7 +546,7 @@ def render_purchase_cadence(root: Path, rows: pl.LazyFrame, coverage: bool, colo
                 ),
             )
         )
-    
+
     # Reference lines
     max_gap = (
         max(sample["median_gap"].max(), sample["recency"].max())
@@ -581,7 +576,7 @@ def render_purchase_cadence(root: Path, rows: pl.LazyFrame, coverage: bool, colo
             showlegend=True,
         )
     )
-    
+
     # Highlight regions
     fig.add_vrect(
         x0=0,
@@ -619,7 +614,7 @@ def render_purchase_cadence(root: Path, rows: pl.LazyFrame, coverage: bool, colo
         annotation_font_size=10,
         annotation_font_color="#D55E00",
     )
-    
+
     card = create_chart_card(
         key="cadence_scatter",
         title="Purchase Cadence Map",
@@ -653,7 +648,7 @@ def render_purchase_cadence(root: Path, rows: pl.LazyFrame, coverage: bool, colo
         alt_description="Scatter plot showing recency vs median gap with cadence reference lines and overdue regions.",
     )
     card.render()
-    
+
     table(
         sample.select(
             "customer_id",
@@ -673,13 +668,13 @@ def render_cadence_validation(root: Path, rows: pl.LazyFrame, coverage: bool, co
     """Cadence Validation."""
     manifest = read_json(root / "run.json")
     chosen_date = date.fromisoformat(st.session_state.get("chosen", str(date.today())))
-    
+
     horizon_options = [30, 90]
     horizon_eligibility = {}
     for h in horizon_options:
         eligible, reason = check_horizon_eligibility(manifest, h, chosen_date)
         horizon_eligibility[h] = (eligible, reason)
-    
+
     if not coverage:
         st.warning(
             "⚠ **Coverage not confirmed** — Future outcome validation is unavailable.\n\n"
@@ -687,27 +682,27 @@ def render_cadence_validation(root: Path, rows: pl.LazyFrame, coverage: bool, co
             "and a complete-through date."
         )
         return
-    
+
     for h in horizon_options:
         eligible, reason = horizon_eligibility[h]
         if eligible:
             st.success(f"✅ **{h}-day horizon:** {reason}")
         else:
             st.error(f"❌ **{h}-day horizon:** {reason}")
-    
+
     eligible_horizons = [h for h in horizon_options if horizon_eligibility[h][0]]
     if not eligible_horizons:
         st.info("No horizons are eligible for cadence validation with the current coverage settings.")
         return
-    
+
     try:
         max_lateness = st.slider("Max lateness to display", 2.0, 10.0, 5.0, 0.5)
         bins = st.slider("Number of lateness bins", 5, 20, 10)
-        
+
         val = cadence_return_validation(
             rows, coverage, max_lateness=max_lateness, bins=bins
         )
-        
+
         if "warning" in val.columns:
             st.warning(val["warning"][0])
         elif "error" in val.columns:
@@ -719,13 +714,13 @@ def render_cadence_validation(root: Path, rows: pl.LazyFrame, coverage: bool, co
                 h_data = val.filter(pl.col("horizon") == horizon)
                 if h_data.is_empty():
                     continue
-                
+
                 fig = go.Figure()
                 has_upper = h_data["upper_ci"].is_not_null().any()
                 has_lower = h_data["lower_ci"].is_not_null().any()
                 upper_diff = (h_data["upper_ci"] - h_data["purchase_rate"]).to_list() if has_upper else None
                 lower_diff = (h_data["purchase_rate"] - h_data["lower_ci"]).to_list() if has_lower else None
-                
+
                 fig.add_trace(
                     go.Bar(
                         x=h_data["lateness_bin"].to_list(),
@@ -757,9 +752,9 @@ def render_cadence_validation(root: Path, rows: pl.LazyFrame, coverage: bool, co
                     annotation_text="2× median_gap boundary",
                     annotation_position="top",
                 )
-                
+
                 fig.update_yaxes(range=[0, 1], tickformat=".0%")
-                
+
                 card = create_chart_card(
                     key=f"cadence_val_{horizon}",
                     title=f"{horizon}-Day Return Rate by Lateness Bin",
@@ -789,7 +784,7 @@ def render_cadence_validation(root: Path, rows: pl.LazyFrame, coverage: bool, co
                     alt_description=f"Bar chart showing {horizon}-day return rate by lateness bin with Wilson confidence intervals.",
                 )
                 card.render()
-            
+
             table(
                 val.select(
                     "horizon",
@@ -805,6 +800,6 @@ def render_cadence_validation(root: Path, rows: pl.LazyFrame, coverage: bool, co
                 "Wilson 95% CI shown for bins with ≥20 eligible customers. "
                 "Lateness = recency / median_gap. Research: BG/NBD repeat-buying models."
             )
-            
+
     except Exception as e:
         st.error(f"Cadence validation failed: {type(e).__name__}: {e}")

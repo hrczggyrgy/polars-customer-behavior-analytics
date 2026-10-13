@@ -1,6 +1,6 @@
 """Products & Categories views: Category Penetration×Growth, Category Opportunity Map, Category Participation, Product Association Network, Trial Conversion Intervals, Product Affinity."""
 
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 import plotly.graph_objects as go
@@ -9,22 +9,12 @@ import streamlit as st
 
 from retail_analytics.visualization.chart_components import (
     ChartEvidence,
-    ChartSpec,
-    ChartCard,
+    bars,
+    collect,
     create_chart_card,
-    SupportThresholds,
-    EvidenceState,
-    evaluate_evidence,
-    build_color_map,
-    get_color,
+    read_json,
     safe_list,
-)
-from retail_analytics.visualization.visual_insights_core import (
-    category_opportunity_map,
-    category_participation_comparison,
-    category_penetration_growth_portfolio,
-    product_association_network,
-    trial_conversion_interval_plot,
+    table,
 )
 from retail_analytics.visualization.product_affinity import (
     ProductAffinityConfig,
@@ -33,7 +23,10 @@ from retail_analytics.visualization.product_affinity import (
     new_to_repeat_pathways,
     product_affinity_analysis,
 )
-from retail_analytics.dashboard.app import read_json
+from retail_analytics.visualization.visual_insights_core import (
+    category_opportunity_map,
+    product_association_network,
+)
 
 
 def render_category_penetration_growth(root: Path, rows: pl.LazyFrame, coverage: bool, color_map: dict):
@@ -45,11 +38,11 @@ def render_category_penetration_growth(root: Path, rows: pl.LazyFrame, coverage:
         "Bubble size: Category spend share. Color: Repeat buyer share. "
         "Identifies expanding/declining categories and their commercial weight."
     )
-    
+
     try:
         manifest = read_json(root / "run.json")
         history = [x for x in manifest["snapshots"] if x <= st.session_state.get("chosen", "")]
-        
+
         if len(history) < 2:
             st.info("Need at least two cutoffs for period comparison.")
         else:
@@ -57,7 +50,7 @@ def render_category_penetration_growth(root: Path, rows: pl.LazyFrame, coverage:
                 "Previous cutoff", history[:-1], index=len(history) - 2, key="cpg_origin"
             )
             top_n = st.slider("Top categories", 10, 50, 30, key="cpg_top")
-            
+
             validated_path = root / "validated.parquet"
             if not validated_path.exists():
                 st.info("No validated data available.")
@@ -65,13 +58,15 @@ def render_category_penetration_growth(root: Path, rows: pl.LazyFrame, coverage:
                 validated = pl.scan_parquet(validated_path)
                 current_cutoff = date.fromisoformat(st.session_state.get("chosen", str(date.today())))
                 previous_cutoff = date.fromisoformat(origin)
-                
-                from retail_analytics.visualization.visual_insights_core import category_penetration_growth_portfolio
-                
+
+                from retail_analytics.visualization.visual_insights_core import (
+                    category_penetration_growth_portfolio,
+                )
+
                 portfolio = category_penetration_growth_portfolio(
                     validated, rows, current_cutoff, previous_cutoff, top_n
                 )
-                
+
                 if portfolio.is_empty():
                     st.info("No category data for this comparison.")
                 else:
@@ -124,7 +119,7 @@ def render_category_penetration_growth(root: Path, rows: pl.LazyFrame, coverage:
                     fig.add_vline(x=portfolio["curr_penetration"].median(), line_dash="dash", line_color="gray", line_width=1)
                     fig.update_xaxes(tickformat=".0%", title="Current Penetration (% of customers)")
                     fig.update_yaxes(tickformat=".1f", title="Penetration Change (percentage points)")
-                    
+
                     card = create_chart_card(
                         key="cat_penetration_growth",
                         title="Category Penetration × Growth Portfolio",
@@ -152,10 +147,10 @@ def render_category_penetration_growth(root: Path, rows: pl.LazyFrame, coverage:
                             "Change in percentage points, not relative change."
                         ),
                         next_step="Check 'Category Opportunity Map' for penetration×intensity analysis.",
-                        alt_description=f"Scatter plot showing category penetration vs penetration change with bubble size by spend share and color by repeat buyer share.",
+                        alt_description="Scatter plot showing category penetration vs penetration change with bubble size by spend share and color by repeat buyer share.",
                     )
                     card.render()
-                    
+
                     display_cols = [
                         "label",
                         "curr_penetration",
@@ -169,7 +164,7 @@ def render_category_penetration_growth(root: Path, rows: pl.LazyFrame, coverage:
                         "repeat_buyer_share",
                     ]
                     table(portfolio.select(display_cols))
-                    
+
     except Exception as e:
         st.error(f"Category Penetration × Growth failed: {type(e).__name__}: {e}")
 
@@ -182,7 +177,7 @@ def render_category_opportunity_map(root: Path, rows: pl.LazyFrame, coverage: bo
         "Bubble: Category spend share. Color: Repeat buyer share. "
         "Research basis: Dirichlet model for repeat buying (Ehrenberg, 1988)."
     )
-    
+
     try:
         validated_path = root / "validated.parquet"
         if not validated_path.exists():
@@ -191,9 +186,9 @@ def render_category_opportunity_map(root: Path, rows: pl.LazyFrame, coverage: bo
             validated = pl.scan_parquet(validated_path)
             cutoff_date = date.fromisoformat(st.session_state.get("chosen", str(date.today())))
             top_categories = st.slider("Top categories to show", 10, 50, 30)
-            
+
             opp_map = category_opportunity_map(validated, rows, cutoff_date, top_categories=top_categories)
-            
+
             if opp_map.is_empty():
                 st.info("No category data for this population.")
             else:
@@ -235,7 +230,7 @@ def render_category_opportunity_map(root: Path, rows: pl.LazyFrame, coverage: bo
                         ),
                     )
                 )
-                
+
                 card = create_chart_card(
                     key="cat_opp_map",
                     title="Category Opportunity Map",
@@ -269,7 +264,7 @@ def render_category_opportunity_map(root: Path, rows: pl.LazyFrame, coverage: bo
                     alt_description="Scatter plot showing category penetration vs purchase occasions per buyer, bubble size by spend share, color by repeat buyer share.",
                 )
                 card.render()
-                
+
                 table(
                     opp_map.select(
                         "label",
@@ -281,7 +276,7 @@ def render_category_opportunity_map(root: Path, rows: pl.LazyFrame, coverage: bo
                         "total_spend",
                     )
                 )
-                
+
     except Exception as e:
         st.error(f"Category opportunity map failed: {type(e).__name__}: {e}")
 
@@ -294,11 +289,11 @@ def render_category_participation(root: Path, rows: pl.LazyFrame, coverage: bool
         "Recent 90d: [C-89, C]. Previous 90d: [C-179, C-90]. "
         "Same population denominator for both periods. Change in percentage points shown."
     )
-    
+
     try:
         manifest = read_json(root / "run.json")
         history = [x for x in manifest["snapshots"] if x <= st.session_state.get("chosen", "")]
-        
+
         if len(history) < 2:
             st.info("Need at least two cutoffs for category participation comparison.")
         else:
@@ -306,23 +301,25 @@ def render_category_participation(root: Path, rows: pl.LazyFrame, coverage: bool
                 "Previous cutoff", history[:-1], index=len(history) - 2, key="cat_part_origin"
             )
             top_n = st.slider("Top N categories to show", 5, 50, 20)
-            
+
             validated_path = root / "validated.parquet"
             if not validated_path.exists():
                 st.info("No validated data available for this analysis.")
             else:
                 validated = pl.scan_parquet(validated_path)
-                from retail_analytics.visualization.visual_insights_core import category_participation_comparison
-                
+                from retail_analytics.visualization.visual_insights_core import (
+                    category_participation_comparison,
+                )
+
                 part = category_participation_comparison(validated, rows)
-                
+
                 if part.is_empty():
                     st.info(
                         "No category participation data for this population. This may be due to filters removing all customers, or no transactions in the comparison windows."
                     )
                 else:
                     display = part.head(top_n)
-                    
+
                     fig = go.Figure()
                     fig.add_trace(
                         go.Bar(
@@ -380,7 +377,7 @@ def render_category_participation(root: Path, rows: pl.LazyFrame, coverage: bool
                         )
                     )
                     fig.update_layout(barmode="group")
-                    
+
                     card = create_chart_card(
                         key="cat_participation_bars",
                         title=f"Category Participation (top {top_n})",
@@ -407,10 +404,10 @@ def render_category_participation(root: Path, rows: pl.LazyFrame, coverage: bool
                             "For fixed-population comparison, use this view; for changing populations, use 'Category Sankey'."
                         ),
                         next_step="Check 'Category Opportunity Map' for penetration×intensity analysis.",
-                        alt_description=f"Paired horizontal bar chart showing category participation in recent vs previous 90-day windows.",
+                        alt_description="Paired horizontal bar chart showing category participation in recent vs previous 90-day windows.",
                     )
                     card.render()
-                    
+
                     table(
                         display.select(
                             "label",
@@ -425,13 +422,13 @@ def render_category_participation(root: Path, rows: pl.LazyFrame, coverage: bool
                             "previous_spend",
                         )
                     )
-                    
+
                     st.caption(
                         f"Population (denominator): {part['population_n'][0] if part.height > 0 else 0:,} customers (fixed for both periods). "
                         f"Participation is share of this population. Change in percentage points = recent - previous. "
                         f"Categories with zero buyers in a period show 0% participation, not missing."
                     )
-                    
+
     except Exception as e:
         st.error(f"Category participation analysis failed: {type(e).__name__}: {e}")
 
@@ -445,7 +442,7 @@ def render_product_association_network(root: Path, rows: pl.LazyFrame, coverage:
         "Node size = degree (connections), color = max lift. "
         "Association ≠ causation; does not imply incremental cross-sell lift."
     )
-    
+
     if not coverage:
         st.warning(
             "Coverage unconfirmed: segment-specific affinity requires confirmed follow-up."
@@ -465,16 +462,16 @@ def render_product_association_network(root: Path, rows: pl.LazyFrame, coverage:
                 min_lift = st.number_input(
                     "Min lift", 0.5, 5.0, 1.2, format="%.2f", key="net_lift"
                 )
-            
+
             top_k = st.number_input("Top-K pairs", 50, 2000, 200, step=50, key="net_topk")
-            
+
             validated_path = root / "validated.parquet"
             if not validated_path.exists():
                 st.info("No validated data available.")
             else:
                 validated = pl.scan_parquet(validated_path)
                 chosen = st.session_state.get("chosen", str(date.today()))
-                
+
                 with st.spinner("Computing product affinities..."):
                     config = ProductAffinityConfig(
                         min_support=min_support,
@@ -486,7 +483,7 @@ def render_product_association_network(root: Path, rows: pl.LazyFrame, coverage:
                         category_level=False,
                     )
                     result = product_affinity_analysis(validated, rows, chosen, config, None)
-                
+
                 pairs = result["product_pairs"]
                 if pairs.is_empty():
                     st.info("No product pairs meet the quality thresholds.")
@@ -495,17 +492,17 @@ def render_product_association_network(root: Path, rows: pl.LazyFrame, coverage:
                     network = product_association_network(
                         pairs, min_lift=min_lift, min_confidence=min_conf, top_n=top_k
                     )
-                    
+
                     nodes = network["nodes"]
                     edges = network["edges"]
-                    
+
                     if nodes.is_empty():
                         st.info("No network to display after filtering.")
                     else:
                         # Create network layout using spring layout
                         try:
                             import networkx as nx
-                            
+
                             G = nx.Graph()
                             for _, node in nodes.iter_rows(named=True):
                                 G.add_node(
@@ -517,9 +514,9 @@ def render_product_association_network(root: Path, rows: pl.LazyFrame, coverage:
                                 G.add_edge(
                                     edge["item_a"], edge["item_b"], weight=edge["lift"] or 1.0
                                 )
-                            
+
                             pos = nx.spring_layout(G, k=1.5, iterations=50, seed=42)
-                            
+
                             # Build edge traces
                             edge_x, edge_y = [], []
                             for edge in G.edges():
@@ -527,7 +524,7 @@ def render_product_association_network(root: Path, rows: pl.LazyFrame, coverage:
                                 x1, y1 = pos[edge[1]]
                                 edge_x.extend([x0, x1, None])
                                 edge_y.extend([y0, y1, None])
-                            
+
                             edge_trace = go.Scatter(
                                 x=edge_x,
                                 y=edge_y,
@@ -536,7 +533,7 @@ def render_product_association_network(root: Path, rows: pl.LazyFrame, coverage:
                                 mode="lines",
                                 showlegend=False,
                             )
-                            
+
                             # Build node traces
                             node_x = [pos[node][0] for node in G.nodes()]
                             node_y = [pos[node][1] for node in G.nodes()]
@@ -548,7 +545,7 @@ def render_product_association_network(root: Path, rows: pl.LazyFrame, coverage:
                                 G.nodes()[node].get("lift", 1.0) for node in G.nodes()
                             ]
                             node_text = list(G.nodes())
-                            
+
                             node_trace = go.Scatter(
                                 x=node_x,
                                 y=node_y,
@@ -567,7 +564,7 @@ def render_product_association_network(root: Path, rows: pl.LazyFrame, coverage:
                                 hovertemplate="Product: %{text}<br>Connections: %{marker.size}<br>Max lift: %{marker.color:.2f}<extra></extra>",
                                 showlegend=False,
                             )
-                            
+
                             fig = go.Figure(data=[edge_trace, node_trace])
                             fig.update_layout(
                                 showlegend=False,
@@ -580,7 +577,7 @@ def render_product_association_network(root: Path, rows: pl.LazyFrame, coverage:
                                 ),
                                 height=600,
                             )
-                            
+
                             card = create_chart_card(
                                 key="prod_network",
                                 title="Product Association Network",
@@ -608,20 +605,20 @@ def render_product_association_network(root: Path, rows: pl.LazyFrame, coverage:
                                     "Rare pairs with high lift may dominate visual attention."
                                 ),
                                 next_step="Check 'Product Affinity' for tabular association rules.",
-                                alt_description=f"Network graph showing product co-occurrence associations with node size by degree and color by max lift.",
+                                alt_description="Network graph showing product co-occurrence associations with node size by degree and color by max lift.",
                             )
                             card.render()
-                            
+
                             st.caption(
                                 f"Network from {edges.height:,} associations (min support={min_support:.3%}, "
                                 f"min confidence={min_conf:.2f}, min lift={min_lift:.2f}). "
                                 f"Node size = degree, color = max lift. Association ≠ causation."
                             )
-                            
+
                         except ImportError:
                             st.warning("networkx not installed; showing edge table instead.")
                             table(edges.head(100))
-                        
+
                         # Also show tabular view
                         st.write("**Top Product Pairs (Table)**")
                         table(
@@ -637,7 +634,7 @@ def render_product_association_network(root: Path, rows: pl.LazyFrame, coverage:
                                 "conviction_b_to_a",
                             )
                         )
-                        
+
         except Exception as e:
             st.error(f"Product association network failed: {type(e).__name__}: {e}")
 
@@ -650,7 +647,7 @@ def render_trial_conversion_intervals(root: Path, rows: pl.LazyFrame, coverage: 
         "Dot size/label = eligible trial count. "
         "Filters by minimum eligible trials. Identifies products with consistently high repeat behavior."
     )
-    
+
     try:
         min_trials = st.number_input(
             "Minimum eligible trials per product", 1, 1000, 10, key="tci_min"
@@ -658,14 +655,14 @@ def render_trial_conversion_intervals(root: Path, rows: pl.LazyFrame, coverage: 
         show_category = st.checkbox(
             "Show category-level aggregation", value=False, key="tci_cat"
         )
-        
+
         prod_history_paths = list((root / "events" / st.session_state.get("chosen", "")).glob("*/product_history.parquet"))
         if not prod_history_paths:
             st.info("No product history available for this cutoff.")
         else:
             prod_history = pl.scan_parquet(prod_history_paths)
             cutoff_date = date.fromisoformat(st.session_state.get("chosen", str(date.today())))
-            
+
             # Category lookup if needed
             category_lookup = None
             if show_category:
@@ -681,21 +678,23 @@ def render_trial_conversion_intervals(root: Path, rows: pl.LazyFrame, coverage: 
                             ).alias("category_label")
                         )
                     )
-            
-            from retail_analytics.visualization.visual_insights_core import trial_conversion_interval_plot
-            
+
+            from retail_analytics.visualization.visual_insights_core import (
+                trial_conversion_interval_plot,
+            )
+
             trial_data = trial_conversion_interval_plot(
                 prod_history, rows, cutoff_date, min_trials, category_lookup
             )
-            
+
             if trial_data.is_empty():
                 st.info(f"No products with ≥ {min_trials} eligible trials.")
             else:
                 # Dot-and-interval plot
                 fig = go.Figure()
-                
+
                 products = trial_data.sort("trial_conversion", descending=True).head(50)
-                
+
                 for _, row in products.iter_rows(named=True):
                     prod_id = row["product_id"]
                     rate = row["trial_conversion"]
@@ -704,7 +703,7 @@ def render_trial_conversion_intervals(root: Path, rows: pl.LazyFrame, coverage: 
                     n = row["eligible_trials"]
                     buyers = row["repeated_trials"]
                     customers = row["trialling_customers"]
-                    
+
                     fig.add_trace(
                         go.Scatter(
                             x=[rate],
@@ -732,7 +731,7 @@ def render_trial_conversion_intervals(root: Path, rows: pl.LazyFrame, coverage: 
                             showlegend=False,
                         )
                     )
-                
+
                 fig.update_xaxes(
                     range=[0, 1],
                     tickformat=".0%",
@@ -740,7 +739,7 @@ def render_trial_conversion_intervals(root: Path, rows: pl.LazyFrame, coverage: 
                 )
                 fig.update_yaxes(autorange="reversed", title="Product ID")
                 fig.update_layout(height=max(400, products.height * 20))
-                
+
                 card = create_chart_card(
                     key="trial_conv_intervals",
                     title=f"Trial-to-Repeat Conversion (Min {min_trials} Trials)",
@@ -769,16 +768,16 @@ def render_trial_conversion_intervals(root: Path, rows: pl.LazyFrame, coverage: 
                         "Pooled conversion = Σ repeats / Σ eligible trials across customers."
                     ),
                     next_step="Check 'Product Association Network' for sequential purchase patterns.",
-                    alt_description=f"Dot-and-interval plot showing trial-to-repeat conversion rate by product with Wilson 95% confidence intervals.",
+                    alt_description="Dot-and-interval plot showing trial-to-repeat conversion rate by product with Wilson 95% confidence intervals.",
                 )
                 card.render()
-                
+
                 st.caption(
                     "Wilson 95% CI shown for products with ≥20 eligible trials. "
                     "Products with fewer trials have no CI (high uncertainty). "
                     "Pooled conversion = total repeats / total eligible trials across customers."
                 )
-                
+
                 display_cols = [
                     "product_id",
                     "eligible_trials",
@@ -791,7 +790,7 @@ def render_trial_conversion_intervals(root: Path, rows: pl.LazyFrame, coverage: 
                 if "category_label" in trial_data.columns:
                     display_cols.insert(1, "category_label")
                 table(trial_data.select(display_cols))
-                
+
     except Exception as e:
         st.error(f"Trial conversion intervals failed: {type(e).__name__}: {e}")
 
@@ -806,7 +805,7 @@ def render_product_affinity(root: Path, rows: pl.LazyFrame, coverage: bool, colo
         "Confidence = P(B|A). Lift = P(A∪B)/(P(A)P(B)). Conviction = (1-P(B))/(1-P(B|A)). "
         "Minimum support and top-K limits keep computation tractable."
     )
-    
+
     if not coverage:
         st.warning(
             "Coverage unconfirmed: segment-specific affinity requires confirmed follow-up. "
@@ -842,7 +841,7 @@ def render_product_affinity(root: Path, rows: pl.LazyFrame, coverage: bool, colo
                 format="%.2f",
                 help="Lift = P(A∪B)/(P(A)P(B)). >1 means positive association.",
             )
-        
+
         col4, col5, col6 = st.columns(3)
         with col4:
             top_k_items = st.number_input(
@@ -856,9 +855,9 @@ def render_product_affinity(root: Path, rows: pl.LazyFrame, coverage: bool, colo
             max_items_per_basket = st.number_input(
                 "Max items/basket", 10, 100, 50, help="Cap basket size to limit pair explosion."
             )
-        
+
         category_level = st.checkbox("Include category-level analysis", value=True)
-        
+
         # Segment filter
         segment_options = ["All customers"] + sorted(
             set(
@@ -869,7 +868,7 @@ def render_product_affinity(root: Path, rows: pl.LazyFrame, coverage: bool, colo
         )
         segment_filter = st.selectbox("Segment filter (optional)", segment_options)
         segment = None if segment_filter == "All customers" else segment_filter
-        
+
         # Load validated data for basket-level analysis
         validated_path = root / "validated.parquet"
         if not validated_path.exists():
@@ -878,7 +877,7 @@ def render_product_affinity(root: Path, rows: pl.LazyFrame, coverage: bool, colo
             try:
                 validated = pl.scan_parquet(validated_path)
                 chosen = st.session_state.get("chosen", str(date.today()))
-                
+
                 with st.spinner("Computing product affinities..."):
                     config = ProductAffinityConfig(
                         min_support=min_support,
@@ -890,7 +889,7 @@ def render_product_affinity(root: Path, rows: pl.LazyFrame, coverage: bool, colo
                         category_level=category_level,
                     )
                     result = product_affinity_analysis(validated, rows, chosen, config, segment)
-                
+
                 # Frequent products
                 st.write("**Frequent Products**")
                 pf = result["product_frequent"]
@@ -910,7 +909,7 @@ def render_product_affinity(root: Path, rows: pl.LazyFrame, coverage: bool, colo
                         f"Total frequent products: {pf.height:,} (min support = {min_support:.3%} of {pf['total_baskets'][0]:,} baskets)"
                     )
                     table(display_pf.select("product_id", "basket_count", "support"))
-                
+
                 # Product association rules
                 st.write("**Product Association Rules**")
                 pp = result["product_pairs"]
@@ -941,7 +940,7 @@ def render_product_affinity(root: Path, rows: pl.LazyFrame, coverage: bool, colo
                             "conviction_b_to_a",
                         )
                     )
-                
+
                 # Cross-sell recommendations
                 st.write("**Cross-Sell Recommendations**")
                 recs = cross_sell_recommendations(
@@ -966,7 +965,7 @@ def render_product_affinity(root: Path, rows: pl.LazyFrame, coverage: bool, colo
                             "direction",
                         )
                     )
-                
+
                 # Category-level analysis
                 if category_level:
                     st.write("**Frequent Categories**")
@@ -985,7 +984,7 @@ def render_product_affinity(root: Path, rows: pl.LazyFrame, coverage: bool, colo
                         )
                         st.caption(f"Total frequent categories: {cf.height:,}")
                         table(display_cf.select("category_key", "basket_count", "support"))
-                    
+
                     st.write("**Category Association Rules**")
                     cp = result.get("category_pairs", pl.DataFrame())
                     if cp.is_empty():
@@ -1015,7 +1014,7 @@ def render_product_affinity(root: Path, rows: pl.LazyFrame, coverage: bool, colo
                                 "conviction_b_to_a",
                             )
                         )
-                    
+
                     cat_recs = recs["category_recommendations"]
                     if not cat_recs.is_empty():
                         st.write("**Category Cross-Sell Recommendations**")
@@ -1030,7 +1029,7 @@ def render_product_affinity(root: Path, rows: pl.LazyFrame, coverage: bool, colo
                                 "direction",
                             )
                         )
-                
+
                 # New-to-repeat pathways
                 st.write("**New-to-Repeat Pathways**")
                 st.caption(
@@ -1040,7 +1039,7 @@ def render_product_affinity(root: Path, rows: pl.LazyFrame, coverage: bool, colo
                 pathways = new_to_repeat_pathways(validated, rows, st.session_state.get("chosen", str(date.today())), min_trials=5)
                 prod_paths = pathways["product_transitions"]
                 cat_paths = pathways["category_transitions"]
-                
+
                 if not prod_paths.is_empty():
                     st.write("Product → next product transitions")
                     table(
@@ -1050,7 +1049,7 @@ def render_product_affinity(root: Path, rows: pl.LazyFrame, coverage: bool, colo
                     )
                 else:
                     st.info("No product transitions meet minimum threshold.")
-                
+
                 if not cat_paths.is_empty():
                     st.write("Category → next category transitions")
                     table(
@@ -1060,7 +1059,7 @@ def render_product_affinity(root: Path, rows: pl.LazyFrame, coverage: bool, colo
                     )
                 else:
                     st.info("No category transitions meet minimum threshold.")
-                
+
                 # Basket composition by segment
                 if segment_filter == "All customers":
                     st.write("**Basket Composition by Segment**")
@@ -1091,7 +1090,7 @@ def render_product_affinity(root: Path, rows: pl.LazyFrame, coverage: bool, colo
                                 .head(20)
                                 .select(dim, "category_key", "spend_share", "buyers")
                             )
-                
+
             except Exception as e:
                 st.error(f"Product affinity analysis failed: {type(e).__name__}: {e}")
                 st.caption(

@@ -7,31 +7,16 @@ import plotly.graph_objects as go
 import polars as pl
 import streamlit as st
 
-from retail_analytics.visualization.chart_components import (
-    ChartEvidence,
-    ChartCard,
-    create_chart_card,
-    SupportThresholds,
-    EvidenceState,
-    evaluate_evidence,
-    build_color_map,
-    get_color,
-    sampling_disclosure,
-)
-from retail_analytics.visualization.visual_insights_core import (
-    cohort_summary,
-    multi_horizon_cohort_repeat,
-)
 from retail_analytics.modeling.models import (
     BGNBDParams,
     GammaGammaParams,
+    bg_nbd_expected_transactions,
     fit_bg_nbd,
     fit_gamma_gamma,
-    bg_nbd_expected_transactions,
     gamma_gamma_expected_avg_value,
     predict_clv,
 )
-from retail_analytics.dashboard.app import read_json, apply_filters, collect, PAGE_ROWS
+from retail_analytics.visualization.chart_components import collect
 
 
 def render_model_evaluation(root: Path, rows: pl.LazyFrame, coverage: bool, color_map: dict):
@@ -62,7 +47,7 @@ def render_model_evaluation(root: Path, rows: pl.LazyFrame, coverage: bool, colo
     # Get date range
     chosen = st.session_state.get("chosen", str(date.today()))
     chosen_date = date.fromisoformat(chosen)
-    
+
     # Calculate split dates
     test_end = chosen_date
     test_start = test_end - timedelta(days=test_months * 30)
@@ -94,7 +79,6 @@ def run_model_evaluation(
 ):
     """Run model evaluation with temporal splits."""
     from retail_analytics.visualization.visual_insights_core import collect
-    from retail_analytics.dashboard.app import table
 
     try:
         # Get training data
@@ -103,7 +87,7 @@ def run_model_evaluation(
             (pl.col("recency") <= (train_end - train_start).days)
         )
         train_data = collect(train_rows)
-        
+
         if train_data.is_empty():
             st.error("No training data available for the selected period.")
             return
@@ -117,20 +101,20 @@ def run_model_evaluation(
         # Fit BG/NBD
         with st.spinner("Fitting BG/NBD..."):
             bg_params, bg_converged, bg_ll = fit_bg_nbd(freq, rec, T)
-        
+
         if not bg_converged:
             st.warning("BG/NBD did not converge. Results may be unreliable.")
-        
+
         st.success(f"BG/NBD converged: {bg_converged} (LL: {bg_ll:.2f})")
         st.write(f"Params: r={bg_params.r:.4f}, α={bg_params.alpha:.4f}, a={bg_params.a:.4f}, b={bg_params.b:.4f}")
 
         # Fit Gamma-Gamma
         with st.spinner("Fitting Gamma-Gamma..."):
             gg_params, gg_converged, gg_ll = fit_gamma_gamma(freq, mon)
-        
+
         if not gg_converged:
             st.warning("Gamma-Gamma did not converge. Results may be unreliable.")
-        
+
         st.success(f"Gamma-Gamma converged: {gg_converged} (LL: {gg_ll:.2f})")
         st.write(f"Params: p={gg_params.p:.4f}, q={gg_params.q:.4f}, γ={gg_params.gamma:.4f}")
 
@@ -174,7 +158,7 @@ def run_model_evaluation(
         if actual_trans is not None:
             # Evaluation metrics
             from retail_analytics.modeling.evaluation import compute_evaluation_metrics
-            
+
             trans_metrics = compute_evaluation_metrics(pred_trans, actual_trans)
             mon_metrics = compute_evaluation_metrics(pred_monetary, actual_mon)
 
@@ -226,7 +210,7 @@ def run_model_evaluation(
                     pl.Series("pred_trans", pred_trans),
                     pl.Series("pred_monetary", pred_monetary),
                 ])
-                
+
                 segment_metrics = test_df.group_by("behavior").agg([
                     pl.col("pred_trans").mean().alias("avg_pred_trans"),
                     pl.col("future_purchases_90d").mean().alias("avg_actual_trans"),
@@ -269,9 +253,11 @@ def render_clv_predictions(root: Path, rows: pl.LazyFrame, coverage: bool, color
         return
 
     # Fit models on full data
-    from retail_analytics.dashboard.app import collect
     from retail_analytics.modeling.models import (
-        BGNBDParams, GammaGammaParams, fit_bg_nbd, fit_gamma_gamma, predict_clv
+        BGNBDParams,
+        GammaGammaParams,
+        fit_bg_nbd,
+        fit_gamma_gamma,
     )
 
     data = collect(rows)
@@ -325,7 +311,7 @@ def render_clv_predictions(root: Path, rows: pl.LazyFrame, coverage: bool, color
 
             # Display
             st.write(f"### Top {top_n} Customers by Expected {horizon}-Day Value")
-            
+
             fig = go.Figure()
             fig.add_trace(go.Bar(
                 x=pred_df["customer_id"].to_list(),
@@ -344,7 +330,7 @@ def render_clv_predictions(root: Path, rows: pl.LazyFrame, coverage: bool, color
             st.plotly_chart(fig, use_container_width=True)
 
             st.dataframe(pred_df, hide_index=True, use_container_width=True)
-            
+
             st.caption(
                 f"Models: BG/NBD (converged={bg_conv}, LL={bg_ll:.1f}) + Gamma-Gamma (converged={gg_conv}, LL={gg_ll:.1f}). "
                 f"Horizon: {horizon} days. Expected transactions × expected avg value = expected monetary. "

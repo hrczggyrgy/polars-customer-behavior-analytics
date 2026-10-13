@@ -4,16 +4,17 @@ This module provides a rigorous evaluation framework for BG/NBD, Pareto/NBD,
 and Gamma-Gamma models with proper temporal holdout validation.
 """
 
+import json
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-import json
 
 import numpy as np
 import polars as pl
 import scipy.stats as stats
 from scipy.optimize import minimize
+
+from retail_analytics.visualization.chart_components import collect
 
 
 @dataclass
@@ -24,15 +25,15 @@ class TemporalSplit:
     val_end: date
     test_start: date
     test_end: date
-    
+
     @property
     def train_days(self) -> int:
         return (self.val_start - self.train_end).days
-    
+
     @property
     def val_days(self) -> int:
         return (self.val_end - self.val_start).days
-    
+
     @property
     def test_days(self) -> int:
         return (self.test_end - self.test_start).days
@@ -42,12 +43,12 @@ class TemporalSplit:
 class ModelConfig:
     """Configuration for a probabilistic model."""
     model_type: str  # "BG_NBD", "Pareto_NBD", "Gamma_Gamma"
-    params: Dict[str, float]
+    params: dict[str, float]
     train_cutoff: date
     fit_converged: bool = False
-    log_likelihood: Optional[float] = None
-    aic: Optional[float] = None
-    bic: Optional[float] = None
+    log_likelihood: float | None = None
+    aic: float | None = None
+    bic: float | None = None
 
 
 @dataclass
@@ -57,20 +58,20 @@ class EvaluationMetrics:
     mae: float  # Mean Absolute Error
     rmse: float  # Root Mean Squared Error
     mape: float  # Mean Absolute Percentage Error
-    
+
     # Calibration metrics
     calibration_slope: float
     calibration_intercept: float
     calibration_r2: float
-    
+
     # Discrimination
     concordance: float  # C-index / AUC for binary repeat
-    
+
     # Per-segment breakdown
-    by_segment: Dict[str, Dict[str, float]] = field(default_factory=dict)
-    
+    by_segment: dict[str, dict[str, float]] = field(default_factory=dict)
+
     # Per-horizon breakdown
-    by_horizon: Dict[int, Dict[str, float]] = field(default_factory=dict)
+    by_horizon: dict[int, dict[str, float]] = field(default_factory=dict)
 
 
 @dataclass
@@ -81,8 +82,8 @@ class HoldoutResult:
     train_metrics: EvaluationMetrics
     val_metrics: EvaluationMetrics
     test_metrics: EvaluationMetrics
-    baseline_comparison: Dict[str, float]  # vs naive baselines
-    warnings: List[str] = field(default_factory=list)
+    baseline_comparison: dict[str, float]  # vs naive baselines
+    warnings: list[str] = field(default_factory=list)
 
 
 # ============================================================================
@@ -97,7 +98,7 @@ def prepare_modeling_data(
     test_start: date,
     test_end: date,
     min_train_purchases: int = 2,
-) -> Tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """
     Prepare RFM summary data for BG/NBD and Gamma-Gamma modeling.
     
@@ -112,7 +113,7 @@ def prepare_modeling_data(
             (pl.col("date") <= pl.lit(train_end))
         )
     )
-    
+
     # Validation period transactions
     val_txns = collect(
         transactions.filter(
@@ -120,7 +121,7 @@ def prepare_modeling_data(
             (pl.col("date") <= pl.lit(val_end))
         )
     )
-    
+
     # Test period transactions
     test_txns = collect(
         transactions.filter(
@@ -128,12 +129,12 @@ def prepare_modeling_data(
             (pl.col("date") <= pl.lit(test_end))
         )
     )
-    
+
     def compute_rfm(txns: pl.DataFrame, reference_date: date, min_purchases: int = 0) -> pl.DataFrame:
         """Compute RFM summary from transactions."""
         if txns.is_empty():
             return pl.DataFrame()
-        
+
         # Customer-level aggregation
         rfm = txns.group_by("customer_id").agg(
             pl.col("date").min().alias("first_purchase"),
@@ -142,17 +143,17 @@ def prepare_modeling_data(
             pl.col("value").sum().alias("total_spend"),
             pl.col("value").mean().alias("monetary_value"),
         )
-        
+
         # Filter minimum purchases
         rfm = rfm.filter(pl.col("frequency") >= min_purchases)
-        
+
         # Compute recency (days since last purchase to reference_date)
         # and T (days since first purchase to reference_date)
         rfm = rfm.with_columns([
             (pl.lit(reference_date) - pl.col("last_purchase")).dt.total_days().alias("recency"),
             (pl.lit(reference_date) - pl.col("first_purchase")).dt.total_days().alias("T"),
         ])
-        
+
         # Rename for model compatibility
         rfm = rfm.rename({
             "frequency": "frequency",
@@ -160,13 +161,13 @@ def prepare_modeling_data(
             "T": "T",
             "monetary_value": "monetary_value",
         })
-        
+
         return rfm.select(["customer_id", "frequency", "recency", "T", "monetary_value"])
-    
+
     train_rfm = compute_rfm(train_txns, train_end, min_train_purchases)
     val_rfm = compute_rfm(val_txns, val_end, 0)  # All customers for validation
     test_rfm = compute_rfm(test_txns, test_end, 0)  # All customers for test
-    
+
     # Full period for final model
     full_txns = collect(
         transactions.filter(
@@ -175,7 +176,7 @@ def prepare_modeling_data(
         )
     )
     full_rfm = compute_rfm(full_txns, test_end, min_train_purchases)
-    
+
     return train_rfm, val_rfm, test_rfm, full_rfm
 
 
@@ -200,7 +201,7 @@ def naive_repeat_baseline(
         .otherwise(pl.lit("6+"))
         .alias("freq_bin")
     )
-    
+
     # Historical repeat rate per bin (using a proxy)
     # For true baseline, we'd need historical repeat data
     # This is a placeholder structure
@@ -208,14 +209,14 @@ def naive_repeat_baseline(
         pl.len().alias("n"),
         pl.col("frequency").mean().alias("avg_frequency"),
     )
-    
+
     return baseline_rates
 
 
 def frequency_recency_baseline(
     train_rfm: pl.DataFrame,
     horizon_days: int,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """
     Baseline using observed frequency and recency.
     
@@ -225,7 +226,7 @@ def frequency_recency_baseline(
     expected = train_rfm.with_columns(
         (pl.col("frequency") * horizon_days / pl.col("T").clip(1)).alias("expected_transactions")
     )
-    
+
     return {
         "avg_expected": expected["expected_transactions"].mean(),
         "by_frequency": expected.group_by("frequency").agg(
@@ -254,15 +255,15 @@ def bg_nbd_log_likelihood(
     b: scale parameter for dropout process
     """
     r, alpha, a, b = params
-    
+
     if r <= 0 or alpha <= 0 or a <= 0 or b <= 0:
         return -np.inf
-    
+
     # Vectorized log-likelihood computation
     # For customers with frequency = 0:
-    #   log L = r*log(alpha) - (r)*log(alpha + T) + log(1 - (alpha/(alpha+T))**r * ...) 
+    #   log L = r*log(alpha) - (r)*log(alpha + T) + log(1 - (alpha/(alpha+T))**r * ...)
     # Simplified implementation - full derivation in Fader & Hardie (2005)
-    
+
     # Using the standard BG/NBD likelihood formulation
     ll = 0.0
     for freq, rec, t in zip(frequency, recency, T):
@@ -278,14 +279,14 @@ def bg_nbd_log_likelihood(
             # log [ (r)_freq * alpha^r * a * b^(a) * (a+b+freq-1)! / (a+b+freq-1+r)! * ... ]
             # Using gamma functions for continuous params
             from scipy.special import gammaln
-            
+
             # Transaction process part
             trans_ll = (
                 gammaln(r + freq) - gammaln(r) +
                 r * np.log(alpha) -
                 (r + freq) * np.log(alpha + t)
             )
-            
+
             # Dropout process part
             dropout_ll = (
                 np.log(a) + a * np.log(b) +
@@ -293,15 +294,15 @@ def bg_nbd_log_likelihood(
                 # ... full expression is complex
                 0  # Placeholder
             )
-            
+
             ll += trans_ll + dropout_ll
-    
+
     return ll
 
 
 def fit_bg_nbd(
     train_rfm: pl.DataFrame,
-    initial_params: Optional[Dict[str, float]] = None,
+    initial_params: dict[str, float] | None = None,
 ) -> ModelConfig:
     """
     Fit BG/NBD model to training data.
@@ -310,24 +311,24 @@ def fit_bg_nbd(
     """
     if train_rfm.is_empty():
         return ModelConfig(model_type="BG_NBD", params={}, train_cutoff=date.today())
-    
+
     frequency = train_rfm["frequency"].to_numpy()
     recency = train_rfm["recency"].to_numpy()
     T = train_rfm["T"].to_numpy()
-    
+
     # Default initial guess
     if initial_params is None:
         initial_params = {"r": 0.5, "alpha": 10.0, "a": 1.0, "b": 5.0}
-    
-    x0 = np.array([initial_params["r"], initial_params["alpha"], 
+
+    x0 = np.array([initial_params["r"], initial_params["alpha"],
                    initial_params["a"], initial_params["b"]])
-    
+
     # Optimize
     bounds = [(1e-6, None), (1e-6, None), (1e-6, None), (1e-6, None)]
-    
+
     def neg_log_likelihood(params):
         return -bg_nbd_log_likelihood(params, frequency, recency, T)
-    
+
     result = minimize(
         neg_log_likelihood,
         x0,
@@ -335,14 +336,14 @@ def fit_bg_nbd(
         method="L-BFGS-B",
         options={"maxiter": 1000, "ftol": 1e-8},
     )
-    
+
     params = {
         "r": float(result.x[0]),
         "alpha": float(result.x[1]),
         "a": float(result.x[2]),
         "b": float(result.x[3]),
     }
-    
+
     return ModelConfig(
         model_type="BG_NBD",
         params=params,
@@ -355,7 +356,7 @@ def fit_bg_nbd(
 
 
 def bg_nbd_predict(
-    params: Dict[str, float],
+    params: dict[str, float],
     frequency: np.ndarray,
     recency: np.ndarray,
     T: np.ndarray,
@@ -363,15 +364,15 @@ def bg_nbd_predict(
 ) -> np.ndarray:
     """Predict expected transactions in horizon using BG/NBD."""
     r, alpha, a, b = params["r"], params["alpha"], params["a"], params["b"]
-    
+
     # Conditional expected transactions
     # E[X(t) | frequency, recency, T] = ...
     # Using the standard BG/NBD prediction formula
-    
-    from scipy.special import gammaln, hyp2f1
-    
+
+    from scipy.special import gammaln
+
     predictions = np.zeros_like(frequency, dtype=float)
-    
+
     for i, (freq, rec, t) in enumerate(zip(frequency, recency, T)):
         if freq == 0:
             predictions[i] = 0
@@ -391,11 +392,11 @@ def bg_nbd_predict(
                 r * np.log(alpha + t + horizon) - r * np.log(alpha + t)
             )
             p_alive = np.exp(p_alive_numer - p_alive_denom) if p_alive_denom != 0 else 0
-            
+
             # Expected future transactions
             lambda_est = (r + freq) / (alpha + t)
             predictions[i] = p_alive * lambda_est * horizon
-    
+
     return predictions
 
 
@@ -417,10 +418,10 @@ def pareto_nbd_log_likelihood(
     s, beta: dropout process (Beta-Bernoulli)
     """
     r, alpha, s, beta = params
-    
+
     if r <= 0 or alpha <= 0 or s <= 0 or beta <= 0:
         return -np.inf
-    
+
     # Implementation similar to BG/NBD but with different dropout process
     # Full implementation in Fader & Hardie (2005)
     return -1e10  # Placeholder
@@ -434,7 +435,7 @@ def fit_pareto_nbd(
 
 
 def pareto_nbd_predict(
-    params: Dict[str, float],
+    params: dict[str, float],
     frequency: np.ndarray,
     recency: np.ndarray,
     T: np.ndarray,
@@ -461,36 +462,36 @@ def gamma_gamma_log_likelihood(
     gamma: scaling parameter (typically 1 for standard formulation)
     """
     p, q, gamma = params
-    
+
     if p <= 0 or q <= 0 or gamma <= 0:
         return -np.inf
-    
+
     # Only for customers with frequency > 0
     mask = frequency > 0
     if not mask.any():
         return -np.inf
-    
+
     freq_pos = frequency[mask]
     mon_pos = monetary[mask]
-    
+
     # Gamma-Gamma likelihood
     # m_i ~ Gamma(p, q) per transaction
     # Average monetary value follows Gamma-Gamma
-    
+
     from scipy.special import gammaln
-    
+
     ll = 0
     for f, m in zip(freq_pos, mon_pos):
         # Average transaction value
         avg_m = m / f if f > 0 else m
-        
+
         # Marginal likelihood of average monetary value
         # Using the compound distribution
         ll += (
             p * np.log(q) + gammaln(p + f) - gammaln(p) +
             f * np.log(gamma) - (p + f) * np.log(q + f * gamma + m)
         )
-    
+
     return ll
 
 
@@ -500,35 +501,35 @@ def fit_gamma_gamma(
     """Fit Gamma-Gamma model to monetary values."""
     if train_rfm.is_empty():
         return ModelConfig(model_type="Gamma_Gamma", params={}, train_cutoff=date.today())
-    
+
     # Only use customers with frequency > 0
     monetary_rfm = train_rfm.filter(pl.col("frequency") > 0)
-    
+
     if monetary_rfm.is_empty():
         return ModelConfig(model_type="Gamma_Gamma", params={}, train_cutoff=date.today())
-    
+
     frequency = monetary_rfm["frequency"].to_numpy()
     monetary = monetary_rfm["monetary_value"].to_numpy()
-    
+
     # Initial guess
     p_init = 2.0
     q_init = np.mean(monetary) * p_init
     gamma_init = 1.0
-    
+
     x0 = np.array([p_init, q_init, gamma_init])
     bounds = [(1e-6, None), (1e-6, None), (1e-6, None)]
-    
+
     def neg_ll(params):
         return -gamma_gamma_log_likelihood(params, frequency, monetary)
-    
+
     result = minimize(neg_ll, x0, bounds=bounds, method="L-BFGS-B", options={"maxiter": 1000})
-    
+
     params = {
         "p": float(result.x[0]),
         "q": float(result.x[1]),
         "gamma": float(result.x[2]),
     }
-    
+
     return ModelConfig(
         model_type="Gamma_Gamma",
         params=params,
@@ -539,15 +540,15 @@ def fit_gamma_gamma(
 
 
 def gamma_gamma_predict(
-    params: Dict[str, float],
+    params: dict[str, float],
     frequency: np.ndarray,
     monetary: np.ndarray,
 ) -> np.ndarray:
     """Predict expected monetary value per transaction."""
     p, q, gamma = params["p"], params["q"], params["gamma"]
-    
+
     predictions = np.zeros_like(frequency, dtype=float)
-    
+
     for i, (freq, mon) in enumerate(zip(frequency, monetary)):
         if freq > 0:
             # E[M | freq, avg_monetary] = (q + freq * avg_monetary) / (p + freq - 1)
@@ -556,7 +557,7 @@ def gamma_gamma_predict(
             predictions[i] = (q + freq * avg_monetary) / (p + freq - 1) if (p + freq - 1) > 0 else 0
         else:
             predictions[i] = 0
-    
+
     return predictions
 
 
@@ -567,40 +568,40 @@ def gamma_gamma_predict(
 def compute_evaluation_metrics(
     predicted: np.ndarray,
     actual: np.ndarray,
-    rfm: Optional[pl.DataFrame] = None,
-    segment_col: Optional[str] = None,
-    horizons: Optional[List[int]] = None,
+    rfm: pl.DataFrame | None = None,
+    segment_col: str | None = None,
+    horizons: list[int] | None = None,
 ) -> EvaluationMetrics:
     """Compute comprehensive evaluation metrics."""
-    
+
     # Filter finite values
     mask = np.isfinite(predicted) & np.isfinite(actual)
     pred = predicted[mask]
     act = actual[mask]
-    
+
     if len(pred) == 0:
         return EvaluationMetrics(
             mae=np.nan, rmse=np.nan, mape=np.nan,
             calibration_slope=np.nan, calibration_intercept=np.nan, calibration_r2=np.nan,
             concordance=np.nan,
         )
-    
+
     # Error metrics
     mae = np.mean(np.abs(pred - act))
     rmse = np.sqrt(np.mean((pred - act)**2))
     mape = np.mean(np.abs((act - pred) / np.maximum(act, 1e-6))) * 100
-    
+
     # Calibration: regress actual on predicted
     if np.std(pred) > 0:
         slope, intercept, r, _, _ = stats.linregress(pred, act)
         cal_r2 = r**2
     else:
         slope = intercept = cal_r2 = np.nan
-    
+
     # Concordance (for repeat prediction)
     # Concordance index: proportion of concordant pairs
     concordance = 0.5  # Placeholder
-    
+
     # Per-segment metrics
     by_segment = {}
     if rfm is not None and segment_col and segment_col in rfm.columns:
@@ -615,13 +616,13 @@ def compute_evaluation_metrics(
                     "rmse": float(np.sqrt(np.mean((seg_pred - seg_act)**2))),
                     "n": int(seg_mask.sum()),
                 }
-    
+
     # Per-horizon metrics
     by_horizon = {}
     if horizons:
         for h in horizons:
             by_horizon[h] = {"mae": np.nan, "rmse": np.nan, "n": 0}
-    
+
     return EvaluationMetrics(
         mae=float(mae),
         rmse=float(rmse),
@@ -642,9 +643,9 @@ def run_temporal_holdout_evaluation(
     val_end: date,
     test_start: date,
     test_end: date,
-    horizons: List[int] = [30, 60, 90],
+    horizons: list[int] = [30, 60, 90],
     min_train_purchases: int = 2,
-) -> Dict[str, HoldoutResult]:
+) -> dict[str, HoldoutResult]:
     """
     Run complete temporal holdout evaluation for all model types.
     
@@ -657,46 +658,46 @@ def run_temporal_holdout_evaluation(
         test_start=test_start,
         test_end=test_end,
     )
-    
+
     # Prepare data
     train_rfm, val_rfm, test_rfm, full_rfm = prepare_modeling_data(
         transactions, train_end, val_start, val_end, test_start, test_end, min_train_purchases
     )
-    
+
     results = {}
-    
+
     # Fit and evaluate BG/NBD
     bg_config = fit_bg_nbd(train_rfm)
     bg_config.train_cutoff = train_end
-    
+
     # Validate on validation set
     val_freq = val_rfm["frequency"].to_numpy()
     val_rec = val_rfm["recency"].to_numpy()
     val_T = val_rfm["T"].to_numpy()
-    
+
     # Actual future transactions in validation period
     # This requires transaction data, not just RFM
     # Placeholder: compute from validation transactions
-    
+
     # For now, return structure with placeholders
     val_metrics = EvaluationMetrics(
         mae=0.0, rmse=0.0, mape=0.0,
         calibration_slope=1.0, calibration_intercept=0.0, calibration_r2=1.0,
         concordance=0.5,
     )
-    
+
     test_metrics = EvaluationMetrics(
         mae=0.0, rmse=0.0, mape=0.0,
         calibration_slope=1.0, calibration_intercept=0.0, calibration_r2=1.0,
         concordance=0.5,
     )
-    
+
     train_metrics = EvaluationMetrics(
         mae=0.0, rmse=0.0, mape=0.0,
         calibration_slope=1.0, calibration_intercept=0.0, calibration_r2=1.0,
         concordance=0.5,
     )
-    
+
     results["BG_NBD"] = HoldoutResult(
         model_config=bg_config,
         split=split,
@@ -705,20 +706,20 @@ def run_temporal_holdout_evaluation(
         test_metrics=test_metrics,
         baseline_comparison={"vs_naive_mae": 0.0},
     )
-    
+
     # Similar for Pareto/NBD and Gamma-Gamma
     # ... (structure same)
-    
+
     return results
 
 
 def save_evaluation_report(
-    results: Dict[str, HoldoutResult],
+    results: dict[str, HoldoutResult],
     output_path: Path,
 ) -> None:
     """Save evaluation report as JSON."""
-    
-    def serialize_config(cfg: ModelConfig) -> Dict:
+
+    def serialize_config(cfg: ModelConfig) -> dict:
         return {
             "model_type": cfg.model_type,
             "params": cfg.params,
@@ -728,8 +729,8 @@ def save_evaluation_report(
             "aic": cfg.aic,
             "bic": cfg.bic,
         }
-    
-    def serialize_metrics(m: EvaluationMetrics) -> Dict:
+
+    def serialize_metrics(m: EvaluationMetrics) -> dict:
         return {
             "mae": m.mae,
             "rmse": m.rmse,
@@ -741,8 +742,8 @@ def save_evaluation_report(
             "by_segment": m.by_segment,
             "by_horizon": m.by_horizon,
         }
-    
-    def serialize_split(s: TemporalSplit) -> Dict:
+
+    def serialize_split(s: TemporalSplit) -> dict:
         return {
             "train_end": str(s.train_end),
             "val_start": str(s.val_start),
@@ -750,7 +751,7 @@ def save_evaluation_report(
             "test_start": str(s.test_start),
             "test_end": str(s.test_end),
         }
-    
+
     report = {
         "evaluation_date": str(date.today()),
         "results": {
@@ -766,7 +767,7 @@ def save_evaluation_report(
             for name, r in results.items()
         }
     }
-    
+
     output_path.write_text(json.dumps(report, indent=2, default=str))
 
 
@@ -782,23 +783,23 @@ def evaluate_all_models(
     val_end: date,
     test_start: date,
     test_end: date,
-    horizons: List[int] = [30, 60, 90],
-) -> Dict[str, HoldoutResult]:
+    horizons: list[int] = [30, 60, 90],
+) -> dict[str, HoldoutResult]:
     """Convenience function to run full evaluation pipeline."""
-    
+
     # Load transactions
     transactions = pl.scan_parquet(transactions_path)
-    
+
     # Run evaluation
     results = run_temporal_holdout_evaluation(
         transactions, train_end, val_start, val_end, test_start, test_end, horizons
     )
-    
+
     # Save report
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     save_evaluation_report(results, output_path / "model_evaluation_report.json")
-    
+
     return results
 
 

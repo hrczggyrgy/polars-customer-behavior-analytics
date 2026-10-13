@@ -17,7 +17,7 @@ from typing import Literal
 
 import polars as pl
 
-from retail_analytics.core.pipeline.utils import C, _safe_ratio
+from retail_analytics.core.pipeline.utils import C
 
 PriceMode = Literal["unit", "line_total"]
 
