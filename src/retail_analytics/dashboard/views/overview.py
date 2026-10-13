@@ -13,6 +13,7 @@ from retail_analytics.visualization.chart_components import (
     get_color,
     read_json,
     table,
+    apply_filters,
 )
 
 
@@ -302,3 +303,71 @@ def render_key_signals(rows: pl.LazyFrame, coverage: bool, color_map: dict):
 
     st.markdown("---")
     st.caption("These signals are descriptive observations, not predictions or recommendations. Click 'Explore' to dive deeper.")
+
+
+def render_overview(root: Path, rows: pl.LazyFrame, coverage: bool, color_map: dict, history: list, filters: dict, chosen: str, manifest: dict):
+    """Overview - rolling trends and composition (migrated from app.py inline)."""
+    st.subheader("Overview")
+    st.caption("Rolling 90-day trends and segment composition for the current cutoff.")
+
+    historical = apply_filters(
+        pl.scan_parquet(
+            [
+                str(root / "snapshots" / d / p.name)
+                for d in history
+                for p in (root / "snapshots" / d).glob("*.parquet")
+            ]
+        ),
+        filters,
+    )
+    trend = collect(
+        historical.group_by("snapshot")
+        .agg(
+            pl.col("spend_90d").sum().alias("spend"),
+            (pl.col("purchases_90d") > 0).sum().alias("active"),
+            pl.len().alias("customers"),
+        )
+        .sort("snapshot")
+    )
+    from retail_analytics.visualization.visual_insights_core import METRICS
+    for box, metric in zip(st.columns(2), ["spend", "active"]):
+        with box:
+            fig = go.Figure(
+                go.Scatter(
+                    x=trend["snapshot"].to_list(),
+                    y=trend[metric].to_list(),
+                    mode="lines+markers",
+                )
+            )
+            fig.update_layout(
+                title=f"Rolling 90-day {metric}",
+                xaxis_title="Cutoff",
+                yaxis_title=metric,
+                template="plotly_white"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        "Overlapping windows are not independent; filtered membership and observation exposure may change."
+    )
+    DIMS = ["behavior", "trajectory", "lifecycle", "value_tier", "evidence"]
+    dim = st.selectbox("Composition", DIMS, key="overview_dim")
+    data = collect(
+        rows.group_by(dim).agg(
+            pl.len().alias("customers"), pl.col("spend_90d").sum().alias("spend_90d")
+        )
+    )
+    for box, metric in zip(st.columns(2), ["customers", "spend_90d"]):
+        with box:
+            fig = go.Figure(
+                go.Bar(
+                    x=data[metric].to_list(),
+                    y=data[dim].to_list(),
+                    orientation="h",
+                    marker_color=[get_color(v, color_map) for v in data[dim].to_list()],
+                )
+            )
+            fig.update_layout(
+                title=f"{metric} by {dim}",
+                template="plotly_white"
+            )
+            st.plotly_chart(fig, use_container_width=True)
