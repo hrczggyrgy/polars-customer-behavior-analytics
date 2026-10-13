@@ -93,7 +93,8 @@ def parse_numeric_columns(
             # Preserve raw string values before casting to distinguish missing vs malformed
             price_expr.alias("price_raw"),
             qty_expr.alias("quantity_raw"),
-            *[pl.col(x).cast(pl.Float64, strict=False) for x in ["price", "quantity"]],
+            price_expr.cast(pl.Float64, strict=False).alias("price"),
+            qty_expr.cast(pl.Float64, strict=False).alias("quantity"),
         )
 
     frame = frame.with_columns(

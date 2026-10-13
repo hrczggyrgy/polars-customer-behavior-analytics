@@ -616,6 +616,8 @@ def calibrate_thresholds(
         "value_population": value_n,
         "style_population": style_n,
         "calibration_policy": policy_dict,
+        # Global quantile interpolation method (per Decision 5)
+        "quantile_interpolation": "linear",
         # Rich per-threshold metadata
         "threshold_details": {
             name: {

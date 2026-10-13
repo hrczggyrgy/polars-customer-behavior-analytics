@@ -62,6 +62,34 @@ from retail_analytics.visualization.visual_insights_core import (
     value_at_risk_scatter,
     value_tier_transition_waterfall,
 )
+# Import view modules
+from retail_analytics.dashboard.views import (
+    render_data_trust_quality,
+    render_customer_base_summary,
+    render_key_signals,
+    render_cohort_age_retention,
+    render_time_to_repeat,
+    render_multi_horizon_cohorts,
+    render_purchase_cadence,
+    render_cadence_validation,
+    render_rfm_response_surface,
+    render_value_at_risk_scatter,
+    render_revenue_bridge,
+    render_customer_momentum,
+    render_spend_concentration,
+    render_category_penetration_growth,
+    render_category_opportunity_map,
+    render_category_participation,
+    render_product_association_network,
+    render_trial_conversion_intervals,
+    render_product_affinity,
+    render_customer_brief,
+    render_customer_timeline,
+    render_metric_definitions,
+    render_thresholds_calibration,
+    render_data_quality_report,
+    render_analysis_settings,
+)
 
 
 def safe_list(series):
@@ -108,6 +136,453 @@ FEATURES = [
 ]
 DIMS = ["behavior", "trajectory", "lifecycle", "value_tier", "evidence"]
 
+
+# ============================================================================
+# Standardized Chart Component (ChartCard)
+# ============================================================================
+
+from dataclasses import dataclass, field
+from typing import Optional, Dict, Any, List
+
+
+@dataclass
+class ChartEvidence:
+    """Evidence metadata for a chart."""
+    numerator: Optional[str] = None
+    denominator: Optional[str] = None
+    population_size: Optional[int] = None
+    comparison_period: Optional[str] = None
+    confidence_interval: Optional[str] = None
+    interval_type: Optional[str] = None  # e.g., "Wilson 95%", "bootstrap"
+    eligibility_criteria: Optional[str] = None
+    sample_policy: Optional[str] = None  # e.g., "hash-sampled 2000", "full population"
+    additional: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ChartCard:
+    """
+    Standardized chart component with consistent explanation metadata.
+    
+    Per improvement plan: every chart should show question, takeaway, evidence,
+    how-to-read, caveat, and next-step.
+    """
+    # Core identification
+    key: str  # Unique key for Streamlit
+    title: str  # Chart title
+    
+    # Explanation metadata (per improvement plan)
+    question: str = ""  # What decision/customer question does this answer?
+    takeaway: str = ""  # One concise factual sentence from displayed aggregates
+    evidence: ChartEvidence = field(default_factory=ChartEvidence)
+    how_to_read: str = ""  # Short interpretation of axes, bins, color, reference lines
+    caveat: str = ""  # Sparse history, incomplete coverage, sampling, etc.
+    next_step: str = ""  # One relevant drill-down, filter, or adjacent chart
+    
+    # Accessibility
+    alt_description: str = ""  # Screen-reader description for Plotly
+    
+    # Chart object
+    figure: Optional[go.Figure] = None
+    
+    # Display options
+    height: int = 430
+    show_evidence: bool = True
+    show_how_to_read: bool = True
+    show_caveat: bool = True
+    show_next_step: bool = True
+    
+    def render(self) -> None:
+        """Render the chart card with standardized layout."""
+        # Title and question
+        st.subheader(self.title)
+        if self.question:
+            st.caption(f"**Question:** {self.question}")
+        
+        # Takeaway (prominent)
+        if self.takeaway:
+            st.info(f"**Takeaway:** {self.takeaway}")
+        
+        # Evidence panel
+        if self.show_evidence and self._has_evidence():
+            with st.expander("📊 Evidence & Methodology", expanded=False):
+                self._render_evidence()
+        
+        # How to read
+        if self.show_how_to_read and self.how_to_read:
+            with st.expander("📖 How to read this chart", expanded=False):
+                st.markdown(self.how_to_read)
+        
+        # Render the Plotly chart
+        if self.figure is not None:
+            self._render_chart()
+        
+        # Caveat
+        if self.show_caveat and self.caveat:
+            st.warning(f"⚠ **Caveat:** {self.caveat}")
+        
+        # Next step
+        if self.show_next_step and self.next_step:
+            st.success(f"🔍 **Next step:** {self.next_step}")
+    
+    def _has_evidence(self) -> bool:
+        e = self.evidence
+        return any([
+            e.numerator, e.denominator, e.population_size,
+            e.comparison_period, e.confidence_interval,
+            e.interval_type, e.eligibility_criteria, e.sample_policy
+        ])
+    
+    def _render_evidence(self) -> None:
+        e = self.evidence
+        cols = st.columns(3)
+        idx = 0
+        
+        if e.population_size is not None:
+            with cols[idx % 3]:
+                st.metric("Population (n)", f"{e.population_size:,}")
+            idx += 1
+        
+        if e.numerator:
+            with cols[idx % 3]:
+                st.metric("Numerator", e.numerator)
+            idx += 1
+        
+        if e.denominator:
+            with cols[idx % 3]:
+                st.metric("Denominator", e.denominator)
+            idx += 1
+        
+        if e.comparison_period:
+            with cols[idx % 3]:
+                st.metric("Period", e.comparison_period)
+            idx += 1
+        
+        if e.confidence_interval:
+            with cols[idx % 3]:
+                st.metric("Confidence Interval", e.confidence_interval)
+            idx += 1
+        
+        if e.interval_type:
+            with cols[idx % 3]:
+                st.metric("Interval Type", e.interval_type)
+            idx += 1
+        
+        if e.eligibility_criteria:
+            with cols[idx % 3]:
+                st.metric("Eligibility", e.eligibility_criteria)
+            idx += 1
+        
+        if e.sample_policy:
+            with cols[idx % 3]:
+                st.metric("Sample Policy", e.sample_policy)
+            idx += 1
+        
+        # Additional evidence fields
+        for key, value in e.additional.items():
+            with cols[idx % 3]:
+                st.metric(key.replace("_", " ").title(), str(value))
+            idx += 1
+    
+    def _render_chart(self) -> None:
+        """Render the Plotly chart with accessibility."""
+        try:
+            self.figure.update_layout(
+                title=self.title,
+                template="plotly_white",
+                height=self.height,
+                margin=dict(l=20, r=20, t=65, b=50),
+                uirevision=self.key,
+            )
+            st.plotly_chart(
+                self.figure,
+                use_container_width=True,
+                key=self.key,
+                config={"displaylogo": False, "toImageButtonOptions": {"format": "png", "scale": 2}},
+                # Accessibility
+                alt=self.alt_description or f"Chart: {self.title}",
+            )
+        except Exception as exc:
+            st.error(f"Chart rendering failed for '{self.title}': {type(exc).__name__}: {exc}")
+            st.caption("This may be due to empty data, invalid data types, or missing columns.")
+
+
+def create_chart_card(
+    key: str,
+    title: str,
+    figure: go.Figure,
+    question: str = "",
+    takeaway: str = "",
+    evidence: Optional[ChartEvidence] = None,
+    how_to_read: str = "",
+    caveat: str = "",
+    next_step: str = "",
+    alt_description: str = "",
+    **kwargs,
+) -> ChartCard:
+    """Factory function to create a ChartCard with all metadata."""
+    return ChartCard(
+        key=key,
+        title=title,
+        figure=figure,
+        question=question,
+        takeaway=takeaway,
+        evidence=evidence or ChartEvidence(),
+        how_to_read=how_to_read,
+        caveat=caveat,
+        next_step=next_step,
+        alt_description=alt_description,
+        **kwargs,
+    )
+
+# ============================================================================
+# Sparse-Data Safeguards (Phase 3: Strengthen evidence for limited data)
+# ============================================================================
+
+from dataclasses import dataclass
+from typing import Tuple, List, Optional
+import numpy as np
+
+
+@dataclass
+class SupportThresholds:
+    """Documented minimum-support policy by analysis type."""
+    # Segment comparisons
+    min_segment_size: int = 20
+    min_segment_rate_denominator: int = 30
+    
+    # Cohort analysis
+    min_cohort_size: int = 30
+    min_cohort_periods: int = 3
+    
+    # Product associations
+    min_basket_support: float = 0.001  # 0.1% of baskets
+    min_pair_confidence: float = 0.10  # 10%
+    min_pair_lift: float = 1.0
+    min_pair_count: int = 5
+    
+    # Scatter plots / sampling
+    max_scatter_points: int = 2000
+    min_stratified_per_segment: int = 50
+    
+    # Bootstrap
+    bootstrap_iterations: int = 500
+    bootstrap_min_sample: int = 20
+    
+    # Multiplicity
+    max_exploratory_comparisons: int = 20
+    
+    # Threshold stability
+    threshold_min_population: int = 100
+    threshold_max_ci_width_ratio: float = 0.5
+
+
+@dataclass
+class EvidenceState:
+    """Represents the evidence quality for a metric/group."""
+    has_evidence: bool
+    evidence_level: str  # "strong", "limited", "insufficient", "ineligible"
+    n: int
+    message: str
+    details: dict = None
+    
+    def __post_init__(self):
+        if self.details is None:
+            self.details = {}
+
+
+def evaluate_evidence(
+    n: int,
+    numerator: int = None,
+    denominator: int = None,
+    thresholds: SupportThresholds = None,
+    analysis_type: str = "segment",
+) -> EvidenceState:
+    """
+    Evaluate evidence quality for a metric/group.
+    
+    Returns EvidenceState with level and actionable message.
+    """
+    if thresholds is None:
+        thresholds = SupportThresholds()
+    
+    if n == 0:
+        return EvidenceState(
+            has_evidence=False,
+            evidence_level="insufficient",
+            n=0,
+            message="No observations in this group.",
+            details={"reason": "zero_count"}
+        )
+    
+    if analysis_type == "segment":
+        if n < thresholds.min_segment_size:
+            return EvidenceState(
+                has_evidence=False,
+                evidence_level="insufficient",
+                n=n,
+                message=f"Insufficient evidence: {n} customers (minimum {thresholds.min_segment_size} for segment comparisons).",
+                details={"reason": "below_min_segment", "minimum": thresholds.min_segment_size}
+            )
+        if denominator is not None and denominator < thresholds.min_segment_rate_denominator:
+            return EvidenceState(
+                has_evidence=True,
+                evidence_level="limited",
+                n=n,
+                message=f"Limited evidence: {denominator} eligible for rate calculation (minimum {thresholds.min_segment_rate_denominator}).",
+                details={"reason": "low_denominator", "denominator": denominator, "minimum": thresholds.min_segment_rate_denominator}
+            )
+        return EvidenceState(
+            has_evidence=True,
+            evidence_level="strong",
+            n=n,
+            message=f"Adequate evidence: {n} customers.",
+            details={"reason": "adequate"}
+        )
+    
+    elif analysis_type == "cohort":
+        if n < thresholds.min_cohort_size:
+            return EvidenceState(
+                has_evidence=False,
+                evidence_level="insufficient",
+                n=n,
+                message=f"Cohort too small: {n} customers (minimum {thresholds.min_cohort_size}).",
+                details={"reason": "below_min_cohort", "minimum": thresholds.min_cohort_size}
+            )
+        return EvidenceState(
+            has_evidence=True,
+            evidence_level="strong" if n >= thresholds.min_cohort_size * 2 else "limited",
+            n=n,
+            message=f"Cohort size: {n} customers.",
+            details={"reason": "adequate"}
+        )
+    
+    elif analysis_type == "product_pair":
+        if numerator is not None and numerator < thresholds.min_pair_count:
+            return EvidenceState(
+                has_evidence=False,
+                evidence_level="insufficient",
+                n=numerator,
+                message=f"Pair count too low: {numerator} co-occurrences (minimum {thresholds.min_pair_count}).",
+                details={"reason": "low_pair_count", "minimum": thresholds.min_pair_count}
+            )
+        return EvidenceState(
+            has_evidence=True,
+            evidence_level="strong",
+            n=numerator or n,
+            message=f"Product pair count: {numerator or n}.",
+            details={"reason": "adequate"}
+        )
+    
+    # Default
+    return EvidenceState(
+        has_evidence=n >= 5,
+        evidence_level="strong" if n >= 30 else "limited",
+        n=n,
+        message=f"Observations: {n}.",
+        details={"reason": "default"}
+    )
+
+
+def bootstrap_ci(
+    data: np.ndarray,
+    statistic: callable = np.median,
+    n_iterations: int = 500,
+    confidence: float = 0.95,
+    random_seed: int = 42,
+) -> Tuple[float, float]:
+    """
+    Compute bootstrap confidence interval for a statistic.
+    
+    Args:
+        data: Array of values
+        statistic: Function to compute (default: median)
+        n_iterations: Number of bootstrap samples
+        confidence: Confidence level (default: 0.95)
+        random_seed: Seed for reproducibility
+    
+    Returns:
+        Tuple of (lower_ci, upper_ci)
+    """
+    if len(data) < 2:
+        return (np.nan, np.nan)
+    
+    np.random.seed(random_seed)
+    boot_stats = []
+    n = len(data)
+    
+    for _ in range(n_iterations):
+        sample = np.random.choice(data, size=n, replace=True)
+        boot_stats.append(statistic(sample))
+    
+    alpha = (1 - confidence) / 2
+    lower = np.percentile(boot_stats, alpha * 100)
+    upper = np.percentile(boot_stats, (1 - alpha) * 100)
+    
+    return (float(lower), float(upper))
+
+
+def format_evidence_badge(state: EvidenceState) -> str:
+    """Format evidence state as a colored badge for UI."""
+    badges = {
+        "strong": "🟢 **Strong evidence**",
+        "limited": "🟡 **Limited evidence**",
+        "insufficient": "🔴 **Insufficient evidence**",
+        "ineligible": "⚪ **Not eligible**",
+    }
+    return f"{badges.get(state.evidence_level, state.evidence_level)} — {state.message}"
+
+
+def multiplicity_warning(n_comparisons: int, threshold: int = 20) -> str:
+    """Generate multiplicity warning for exploratory comparisons."""
+    if n_comparisons > threshold:
+        return (
+            f"⚠ **Multiplicity warning:** {n_comparisons} exploratory comparisons shown. "
+            f"These are not multiplicity-adjusted. Treat as hypothesis-generating only."
+        )
+    return ""
+
+
+def sampling_disclosure(
+    sampled_n: int,
+    population_n: int,
+    method: str = "deterministic hash",
+    stratified: bool = False,
+    strata: List[str] = None,
+) -> str:
+    """Generate sampling disclosure text."""
+    pct = (sampled_n / population_n * 100) if population_n > 0 else 0
+    base = (
+        f"Chart shows {sampled_n:,} of {population_n:,} customers ({pct:.1}%) "
+        f"using {method} sampling."
+    )
+    if stratified and strata:
+        base += f" Stratified by: {', '.join(strata)}."
+    base += " This is a sample, not the full population."
+    return base
+
+
+def threshold_sensitivity_note(
+    reference_date: str,
+    reference_population: int,
+    current_snapshot: str,
+    current_population: int,
+) -> str:
+    """Generate threshold stability note."""
+    if reference_population == 0 or current_population == 0:
+        return ""
+    
+    change_pct = (current_population - reference_population) / reference_population * 100
+    
+    return (
+        f"📌 **Threshold stability:** Quantile thresholds calibrated on "
+        f"{reference_date} (n={reference_population:,}). "
+        f"Current snapshot {current_snapshot} has n={current_population:,} "
+        f"({change_pct:+.1f}%). "
+        f"Labels are relative to reference population, not absolute benchmarks."
+    )
+
+
 # Colorblind-safe Okabe-Ito palette (8 colors)
 OKABE_ITO = [
     "#000000",  # black
@@ -151,6 +626,38 @@ def bounded_grid(records, row, column, value, limit=24):
 
 def read_json(path):
     return json.loads(Path(path).read_text())
+
+
+def check_horizon_eligibility(manifest: dict, horizon_days: int, cutoff_date: date = None) -> tuple[bool, str]:
+    """
+    Check if a future-purchase horizon is eligible given coverage confirmation.
+    
+    Returns:
+        (eligible: bool, reason: str)
+    """
+    coverage_confirmed = manifest.get("coverage_confirmed", False)
+    if not coverage_confirmed:
+        return False, "Coverage not confirmed — future outcomes unavailable"
+    
+    coverage_complete_through = manifest.get("coverage_complete_through")
+    if not coverage_complete_through:
+        return False, "Complete-through date not set"
+    
+    complete_date = date.fromisoformat(coverage_complete_through)
+    
+    if cutoff_date is None:
+        # Use latest cutoff from manifest
+        cutoff_date = date.fromisoformat(manifest["snapshots"][-1])
+    
+    horizon_end = cutoff_date + timedelta(days=horizon_days)
+    
+    if horizon_end > complete_date:
+        return False, (
+            f"Insufficient observed follow-up: cutoff {cutoff_date} + {horizon_days}d "
+            f"= {horizon_end} exceeds complete-through {complete_date}"
+        )
+    
+    return True, f"Eligible: complete-through {complete_date} covers horizon end {horizon_end}"
 
 
 def reset():
@@ -294,8 +801,69 @@ def apply_filters(rows, filters):
 def display_results(root, coverage):
     manifest = read_json(root / "run.json")
     thresholds = read_json(root / "thresholds.json")
-    coverage = bool(coverage and manifest.get("coverage_confirmed"))
+    
+    # Read coverage fields from manifest (P0 fix)
+    coverage_confirmed = manifest.get("coverage_confirmed", False)
+    coverage_complete_through = manifest.get("coverage_complete_through")
+    coverage_scope_note = manifest.get("coverage_scope_note")
+    coverage_confirmation_source = manifest.get("coverage_confirmation_source")
+    latest_observed_transaction_date = manifest.get("latest_observed_transaction_date")
+    observed_through = manifest.get("observed_through")
+    
+    # Effective coverage for future outcomes
+    coverage = bool(coverage_confirmed)
 
+    # ============================================================
+    # Coverage Status Banner (P0: explicit eligibility display)
+    # ============================================================
+    st.markdown("---")
+    st.subheader("🔬 Observation Coverage Status")
+    
+    if coverage_confirmed:
+        st.success(
+            f"✅ **Coverage confirmed** (source: {coverage_confirmation_source or 'user_assertion'})"
+        )
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Latest transaction in file", latest_observed_transaction_date or "N/A")
+        with col2:
+            st.metric("Data complete through", coverage_complete_through or "N/A")
+        with col3:
+            st.metric("Analysis observed through", observed_through or "N/A")
+        
+        if coverage_scope_note and coverage_scope_note != "unknown":
+            st.info(f"📍 **Scope covered:** {coverage_scope_note}")
+        
+        # Check for horizon eligibility
+        chosen_for_check = manifest["snapshots"][-1]  # Latest cutoff
+        chosen_date = date.fromisoformat(chosen_for_check)
+        if coverage_complete_through:
+            complete_date = date.fromisoformat(coverage_complete_through)
+            for horizon in [30, 60, 90]:
+                horizon_end = chosen_date + timedelta(days=horizon)
+                if horizon_end > complete_date:
+                    st.warning(
+                        f"⚠ **{horizon}-day horizon incomplete:** "
+                        f"Cutoff {chosen_for_check} + {horizon}d = {horizon_end} > "
+                        f"complete-through {coverage_complete_through}. "
+                        f"This horizon will show as unavailable."
+                    )
+    else:
+        st.error(
+            "❌ **Coverage NOT confirmed** — Future outcome validation is disabled.\n\n"
+            "Historical descriptive metrics are available. "
+            "To enable repeat-purchase rates, cohort repeat, RFM response surface, "
+            "and other future-outcome views, re-run analysis with coverage confirmation "
+            "and a complete-through date."
+        )
+        st.metric("Latest transaction in file", latest_observed_transaction_date or "N/A")
+        st.caption(
+            "The latest observed transaction date does NOT prove complete capture. "
+            "Exports can omit stores, channels, customers, or delayed events."
+        )
+    
+    st.markdown("---")
+    
     # Show threshold calibration info
     if thresholds.get("reference_selection", {}).get("selected"):
         ref_sel = thresholds["reference_selection"]
@@ -385,44 +953,65 @@ def display_results(root, coverage):
     if not metrics["customers"]:
         st.info("No customers match the filters. Clear or broaden the selections.")
         return
-    # Navigation groups for better organization
+
+    # Question-based navigation structure (per improvement plan)
     NAV_GROUPS = {
-        "Customer Lifecycle": [
+        "01 · Start Here": [
+            "Data Trust & Quality",
+            "Customer Base Summary",
+            "Key Signals",
+        ],
+        "02 · Lifecycle & Repeat": [
             "Cohort-Age Retention",
             "Time to Repeat",
             "Multi-Horizon Cohorts",
             "Purchase Cadence",
         ],
-        "Customer Value & Risk": [
+        "03 · Value & Risk": [
             "RFM Response Surface",
             "Value-at-Risk Scatter",
             "Revenue Bridge",
             "Customer Momentum",
             "Spend Concentration",
         ],
-        "Product & Category Intelligence": [
-            "Product Association Network",
-            "Trial Conversion Intervals",
+        "04 · Products & Categories": [
             "Category Penetration × Growth",
-            "Product Affinity",
             "Category Opportunity Map",
             "Category Participation",
+            "Product Association Network",
+            "Trial Conversion Intervals",
+            "Product Affinity",
         ],
-        "Segment Migration & Quality": [
+        "05 · Explore Customers": [
+            "Customer Brief",
+            "Customer Timeline",
+        ],
+        "06 · Methods & Data Quality": [
+            "Metric Definitions",
+            "Thresholds & Calibration",
+            "Data Quality Report",
+            "Analysis Settings",
+        ],
+        "07 · Predictive Modeling": [
+            "Model Evaluation",
+            "CLV Predictions",
+        ],
+        "Advanced Analytics": [
+            # Segment Migration & Quality (legacy group)
             "Segment Alluvial Flow",
             "Behavior × Trajectory",
             "Transitions",
             "Basket Evolution",
             "Future Validation",
             "Quality",
-        ],
-        "Exploration": [
+            # Exploration (legacy group)
             "Overview",
             "Segments",
             "Features",
             "Cohorts",
             "Customer",
             "Methods",
+            "Full-Population Distributions",
             # Research-backed priority views (legacy)
             "Cadence Validation",
             "Category Sankey",
@@ -432,15 +1021,18 @@ def display_results(root, coverage):
         ],
     }
 
-    # Flatten for radio selection
-    all_views = []
-    for group, views in NAV_GROUPS.items():
-        all_views.extend(views)
-
+    # Two-level navigation: section selector + view selector
+    section = st.selectbox(
+        "Section",
+        list(NAV_GROUPS.keys()),
+        index=0,
+        key="nav_section",
+    )
     view = st.radio(
-        "Analytical view",
-        all_views,
+        "View",
+        NAV_GROUPS[section],
         horizontal=True,
+        key="nav_view",
     )
     history = [x for x in manifest["snapshots"] if x <= chosen]
     if view == "Overview":
@@ -491,309 +1083,33 @@ def display_results(root, coverage):
             with box:
                 bars(data, dim, metric, f"{metric} by {dim}", f"composition_{metric}", color_map)
     elif view == "Segments":
-        dim = st.selectbox("Segmentation layer", DIMS)
-        horizon = st.selectbox("Future-purchase horizon (days)", [30, 90])
-        minimum = st.number_input("Minimum eligible customers per outcome estimate", 1, 10000, 20)
-        outcome, eligible = f"future_purchases_{horizon}d", f"eligible_followup_{horizon}d"
-        data = collect(
-            rows.group_by(dim)
-            .agg(
-                pl.len().alias("customers"),
-                pl.col("spend_90d").sum().alias("spend_90d"),
-                pl.col("median_gap").median().alias("median_gap"),
-                pl.col(outcome).filter(pl.col(eligible)).count().alias("followup_n"),
-                (pl.col(outcome) > 0).filter(pl.col(eligible)).sum().alias("future_buyers"),
-            )
-            .sort("customers", descending=True)
-        )
-        records = []
-        for record in data.to_dicts():
-            n, buyers = record["followup_n"], record["future_buyers"]
-            allowed = coverage and n >= minimum
-            lo, hi = wilson(buyers, n) if allowed else (None, None)  # noqa: F823
-            record.update(rate=buyers / n if allowed else None, low=lo, high=hi)
-            if not coverage:
-                record["followup_n"], record["future_buyers"] = None, None
-            records.append(record)
-        data = pl.DataFrame(records)
-        bars(
-            data,
-            dim,
-            st.selectbox("Segment bar measure", ["customers", "spend_90d"]),
-            "Segment comparison",
-            "segment_bars",
-            color_map,
-        )
-        valid = [r for r in records if r["rate"] is not None][:25]
-        if valid:
-            fig = go.Figure(
-                go.Scatter(
-                    x=[r["rate"] for r in valid],
-                    y=[r[dim] for r in valid],
-                    mode="markers",
-                    marker=dict(size=10, color=[get_color(r[dim], color_map) for r in valid]),
-                    error_x=dict(
-                        type="data",
-                        symmetric=False,
-                        array=[r["high"] - r["rate"] for r in valid],
-                        arrayminus=[r["rate"] - r["low"] for r in valid],
-                    ),
-                    customdata=[[r["future_buyers"], r["followup_n"]] for r in valid],
-                    hovertemplate="%{y}<br>Rate: %{x:.1%}<br>Buyers: %{customdata[0]} / %{customdata[1]}<extra></extra>",
-                )
-            )
-            fig.update_xaxes(range=[0, 1], tickformat=".0%")
-            chart(
-                fig,
-                f"Next-{horizon}-day purchase rate: 95% Wilson intervals",
-                "outcome_intervals",
-                "Purchase proportion",
-                dim,
-            )
-        else:
-            st.info(
-                "No outcome estimates: coverage is unconfirmed, follow-up is incomplete, or groups are too small."
-            )
-        st.caption(
-            "Intervals assume independent customers at one cutoff, not causal effects. Up to 25 estimates are shown; exploratory comparisons are not multiplicity-adjusted."
-        )
-        table(data)
-        st.download_button(
-            "Export filtered segment summary", export_csv(data), "segments.csv", "text/csv"
-        )
+        render_segments(root, rows, coverage, color_map)
+    elif view == "Data Trust & Quality":
+        render_data_trust_quality(root, rows, coverage, color_map)
+    elif view == "Customer Base Summary":
+        render_customer_base_summary(rows, coverage, color_map)
+    elif view == "Key Signals":
+        render_key_signals(rows, coverage, color_map)
+    elif view == "Customer Brief":
+        render_customer_brief(root, rows, coverage, color_map)
+    elif view == "Customer Timeline":
+        render_customer_timeline(root, rows, coverage, color_map)
+    elif view == "Metric Definitions":
+        render_metric_definitions()
+    elif view == "Thresholds & Calibration":
+        render_thresholds_calibration(root)
+    elif view == "Data Quality Report":
+        render_data_quality_report(root)
+    elif view == "Analysis Settings":
+        render_analysis_settings(root)
+    elif view == "Model Evaluation":
+        render_model_evaluation(root, rows, coverage, color_map)
+    elif view == "CLV Predictions":
+        render_clv_predictions(root, rows, coverage, color_map)
     elif view == "Features":
-        features = [f for f in FEATURES if f in rows.collect_schema().names()]
-        expressions = [pl.len().alias("n")]
-        for f in features:
-            finite = pl.col(f).filter(pl.col(f).is_finite())
-            expressions += [finite.count().alias(f + "_n"), finite.median().alias(f + "_median")]
-        stats = collect(rows.select(expressions)).row(0, named=True)
-        diagnostic = pl.DataFrame(
-            [
-                dict(
-                    feature=f,
-                    finite=stats[f + "_n"],
-                    unavailable=stats["n"] - stats[f + "_n"],
-                    median=stats[f + "_median"],
-                )
-                for f in features
-            ]
-        )
-        bars(
-            diagnostic,
-            "feature",
-            "unavailable",
-            "Missing or non-finite feature values",
-            "missingness",
-            color_map,
-        )
-        table(diagnostic)
-        feature = st.selectbox("Distribution feature", features)
-        sample = collect(
-            rows.filter(pl.col(feature).is_finite())
-            .sort(pl.col("customer_id").hash(seed=29))
-            .limit(PAGE_ROWS)
-            .select(feature)
-        )
-        if sample.height:
-            for box, trace, title in zip(
-                st.columns(2),
-                [
-                    go.Histogram(x=sample[feature].to_list(), nbinsx=30),
-                    go.Box(x=sample[feature].to_list(), boxpoints=False),
-                ],
-                ["Histogram", "Box plot"],
-            ):
-                with box:
-                    chart(
-                        go.Figure(trace),
-                        title,
-                        title.lower().replace(" ", "_"),
-                        feature,
-                        "Sample count" if title == "Histogram" else None,
-                    )
-        x = st.selectbox("Scatter X", features)
-        y = st.selectbox("Scatter Y", features, index=min(1, len(features) - 1))
-        dim = st.selectbox("Scatter color", DIMS)
-        if x != y:
-            sample = collect(
-                rows.filter(pl.col(x).is_finite() & pl.col(y).is_finite())
-                .sort(pl.col("customer_id").hash(seed=29))
-                .limit(PAGE_ROWS)
-                .select(x, y, dim)
-            )
-            fig = go.Figure()
-            for name in sorted(sample[dim].unique().to_list()):
-                part = sample.filter(pl.col(dim) == name)
-                fig.add_trace(
-                    go.Scattergl(
-                        x=part[x].to_list(),
-                        y=part[y].to_list(),
-                        mode="markers",
-                        name=name,
-                        marker=dict(size=6, opacity=0.55, color=get_color(name, color_map)),
-                    )
-                )
-            chart(fig, "Feature relationships", "scatter", x, y)
-        st.caption(
-            "Distributions and scatter use at most 2,000 hash-selected finite observations, not the full population. Missing values are not zeros. No customer IDs are sent to these charts."
-        )
-        st.caption(
-            "repeat_share begins on the second distinct product-purchase day; established_share begins on the third. Existing repeat-style rules use established_share."
-        )
+        render_features(root, rows, coverage, color_map)
     elif view == "Customer Momentum":
-        st.subheader("Customer momentum map: frequency vs. basket change")
-        st.caption(
-            "X-axis: frequency_change (recent 90d vs previous 90d purchase frequency). "
-            "Y-axis: basket_change (recent 90d vs previous 90d AOV). "
-            "Colour: value_tier. Only customers with comparable windows (tenure ≥ 179 days) and non-zero previous purchases are shown."
-        )
-
-        try:
-            mom = momentum_map(rows)
-        except Exception as e:
-            st.error(f"momentum_map failed: {type(e).__name__}: {e}")
-            st.caption(
-                "This may be due to missing frequency_change/basket_change columns or no comparable customers."
-            )
-            return
-
-        sample = mom["sample"]
-        quad = mom["quadrant_summary"]
-        not_comp = mom["not_comparable_n"]
-        finite_n = mom["finite_n"]
-
-        if sample.is_empty():
-            st.info("No customers with comparable frequency and basket changes in this population.")
-        else:
-            # Quadrant summary
-            st.write("**Quadrant summary (all comparable customers)**")
-            if not quad.is_empty():
-                quad_display = quad.with_columns(
-                    pl.col("quadrant")
-                    .str.replace_all("_", " ")
-                    .str.to_title_case()
-                    .alias("Quadrant"),
-                    pl.col("customer_share").alias("Customer share"),
-                    pl.col("spend_share").alias("Spend share"),
-                ).select("Quadrant", "customers", "Customer share", "spend_90d", "Spend share")
-                st.dataframe(quad_display, hide_index=True, use_container_width=True)
-            st.caption(
-                f"Customers with comparable changes: {finite_n:,}. Not comparable (missing changes): {not_comp:,}. Not comparable customers are excluded from the scatter and quadrant counts; they are not placed at zero."
-            )
-
-            # Scatter plot
-            fig = go.Figure()
-
-            for name in sorted(sample["value_tier"].unique().to_list()):
-                part = sample.filter(pl.col("value_tier") == name)
-                fig.add_trace(
-                    go.Scattergl(
-                        x=part["frequency_change"].to_list(),
-                        y=part["basket_change"].to_list(),
-                        mode="markers",
-                        name=str(name),
-                        marker=dict(size=6, opacity=0.55, color=get_color(name, color_map)),
-                        customdata=list(
-                            zip(
-                                part["spend_90d"].to_list(),
-                                part["purchases_90d"].to_list(),
-                                part["purchases_previous90d"].to_list(),
-                                part["aov_recent"].to_list(),
-                                part["aov_previous"].to_list(),
-                                part["lifecycle"].to_list(),
-                                part["evidence"].to_list(),
-                            )
-                        ),
-                        hovertemplate=(
-                            "Value tier: %{fullData.name}<br>"
-                            "Frequency change: %{x:.1%}<br>"
-                            "Basket change: %{y:.1%}<br>"
-                            "Recent spend: %{customdata[0]:,.2f}<br>"
-                            "Recent purchases: %{customdata[1]}<br>"
-                            "Previous purchases: %{customdata[2]}<br>"
-                            "Recent AOV: %{customdata[3]:,.2f}<br>"
-                            "Previous AOV: %{customdata[4]:,.2f}<br>"
-                            "Lifecycle: %{customdata[5]}<br>"
-                            "Evidence: %{customdata[6]}<extra></extra>"
-                        ),
-                    )
-                )
-
-            # Add zero reference lines
-            fig.add_vline(x=0, line_dash="dash", line_color="gray", line_width=1)
-            fig.add_hline(y=0, line_dash="dash", line_color="gray", line_width=1)
-
-            # Add quadrant annotations
-            fig.add_annotation(
-                x=0.5,
-                y=0.5,
-                xref="paper",
-                yref="paper",
-                text="Growing on both",
-                showarrow=False,
-                font=dict(size=10, color="#009E73"),
-                opacity=0.5,
-            )
-            fig.add_annotation(
-                x=0.5,
-                y=0.05,
-                xref="paper",
-                yref="paper",
-                text="More frequent, lighter",
-                showarrow=False,
-                font=dict(size=10, color="#56B4E9"),
-                opacity=0.5,
-            )
-            fig.add_annotation(
-                x=0.05,
-                y=0.5,
-                xref="paper",
-                yref="paper",
-                text="Less frequent, heavier",
-                showarrow=False,
-                font=dict(size=10, color="#E69F00"),
-                opacity=0.5,
-            )
-            fig.add_annotation(
-                x=0.05,
-                y=0.05,
-                xref="paper",
-                yref="paper",
-                text="Declining on both",
-                showarrow=False,
-                font=dict(size=10, color="#D55E00"),
-                opacity=0.5,
-            )
-
-            chart(
-                fig,
-                "Customer momentum map",
-                "momentum_scatter",
-                format_axis_title("frequency_change"),
-                format_axis_title("basket_change"),
-            )
-
-            st.caption(
-                f"Scatter shows up to {PAGE_ROWS:,} hash-sampled customers with finite changes. "
-                f"Zero reference lines and quadrant labels are visual guides only. "
-                f"Missing changes (not comparable) are not shown at zero; count: {not_comp:,}."
-            )
-            table(
-                sample.select(
-                    "customer_id",
-                    "frequency_change",
-                    "basket_change",
-                    "value_tier",
-                    "lifecycle",
-                    "evidence",
-                    "spend_90d",
-                    "purchases_90d",
-                    "purchases_previous90d",
-                    "aov_recent",
-                    "aov_previous",
-                )
-            )
+        render_customer_momentum(root, rows, coverage, color_map)
 
     elif view == "Purchase Cadence":
         st.subheader("Purchase cadence map: recency vs. median gap")
@@ -961,207 +1277,10 @@ def display_results(root, coverage):
             )
 
     elif view == "Category Participation":
-        st.subheader("Category participation: recent 90d vs previous 90d")
-        st.caption(
-            "Participation = customers purchasing from category during period ÷ fixed comparison population. "
-            "Recent 90d: [C-89, C]. Previous 90d: [C-179, C-90]. "
-            "Same population denominator for both periods. Change in percentage points shown."
-        )
+        render_category_participation(root, rows, coverage, color_map)
 
-        # Load validated data for category participation (needs per-transaction dates)
-        validated_path = root / "validated.parquet"
-        if not validated_path.exists():
-            st.info("No validated data available for this analysis.")
-        else:
-            try:
-                validated = pl.scan_parquet(validated_path)
-                part = category_participation_comparison(validated, rows)
-
-                if part.is_empty():
-                    st.info(
-                        "No category participation data for this population. This may be due to filters removing all customers, or no transactions in the comparison windows."
-                    )
-                else:
-                    # Top categories by recent participation
-                    top_n = st.slider("Top N categories to show", 5, 50, 20)
-                    display = part.head(top_n)
-
-                    # Paired horizontal bar chart - use safe_list for Plotly compatibility
-                    fig = go.Figure()
-                    fig.add_trace(
-                        go.Bar(
-                            y=safe_list(display["label"]),
-                            x=safe_list(display["recent_participation"]),
-                            name="Recent 90d",
-                            orientation="h",
-                            marker_color="#0072B2",
-                            customdata=list(
-                                zip(
-                                    safe_list(display["recent_buyers"]),
-                                    safe_list(display["recent_spend"]),
-                                    safe_list(display["previous_buyers"]),
-                                    safe_list(display["previous_spend"]),
-                                    safe_list(display["participation_change_pp"]),
-                                )
-                            ),
-                            hovertemplate=(
-                                "%{y}<br>"
-                                "Recent participation: %{x:.1%}<br>"
-                                "Recent buyers: %{customdata[0]:,}<br>"
-                                "Recent spend: %{customdata[1]:,.2f}<br>"
-                                "Previous buyers: %{customdata[2]:,}<br>"
-                                "Previous spend: %{customdata[3]:,.2f}<br>"
-                                "Change (pp): %{customdata[4]:.2f}<extra></extra>"
-                            ),
-                        )
-                    )
-                    fig.add_trace(
-                        go.Bar(
-                            y=safe_list(display["label"]),
-                            x=safe_list(display["previous_participation"]),
-                            name="Previous 90d",
-                            orientation="h",
-                            marker_color="#E69F00",
-                            opacity=0.6,
-                            customdata=list(
-                                zip(
-                                    safe_list(display["recent_buyers"]),
-                                    safe_list(display["recent_spend"]),
-                                    safe_list(display["previous_buyers"]),
-                                    safe_list(display["previous_spend"]),
-                                    safe_list(display["participation_change_pp"]),
-                                )
-                            ),
-                            hovertemplate=(
-                                "%{y}<br>"
-                                "Previous participation: %{x:.1%}<br>"
-                                "Recent buyers: %{customdata[0]:,}<br>"
-                                "Recent spend: %{customdata[1]:,.2f}<br>"
-                                "Previous buyers: %{customdata[2]:,}<br>"
-                                "Previous spend: %{customdata[3]:,.2f}<br>"
-                                "Change (pp): %{customdata[4]:.2f}<extra></extra>"
-                            ),
-                        )
-                    )
-                    fig.update_layout(barmode="group")
-                    chart(
-                        fig,
-                        f"Category participation (top {top_n})",
-                        "cat_participation_bars",
-                        "Participation (share of filtered population)",
-                        "Category",
-                    )
-
-                    # Table with changes
-                    table(
-                        display.select(
-                            "label",
-                            "population_n",
-                            "recent_participation",
-                            "previous_participation",
-                            "participation_change_pp",
-                            "buyer_change",
-                            "recent_buyers",
-                            "previous_buyers",
-                            "recent_spend",
-                            "previous_spend",
-                        )
-                    )
-
-                    st.caption(
-                        f"Population (denominator): {part['population_n'][0] if part.height > 0 else 0:,} customers (fixed for both periods). "
-                        f"Participation is share of this population. Change in percentage points = recent - previous. "
-                        f"Categories with zero buyers in a period show 0% participation, not missing."
-                    )
-            except Exception as e:
-                st.error(f"Category participation analysis failed: {type(e).__name__}: {e}")
-                st.caption(
-                    "This may be due to missing columns in validated data, or no customers matching the filters."
-                )
-
-    elif view == "Trial to Repeat":
-        st.subheader("Product discovery to repeat: trial conversion by product")
-        st.caption(
-            "X-axis: number of eligible trials (first purchase in [C-364, C-90]). "
-            "Y-axis: pooled trial conversion (repeats within 90d / eligible trials). "
-            "Bubble size: distinct trialling customers. "
-            "Pooled conversion = Σ repeats / Σ eligible trials across all customers."
-        )
-
-        # Load product history for the chosen cutoff
-        prod_history_paths = list((root / "events" / chosen).glob("*/product_history.parquet"))
-        if not prod_history_paths:
-            st.info("No product history available for this cutoff.")
-        else:
-            prod_history = pl.scan_parquet(prod_history_paths)
-            trial_data = trial_to_repeat_map(prod_history, rows)
-
-            if trial_data.is_empty():
-                st.info("No eligible trials in this population.")
-            else:
-                # Filter to products with minimum trials
-                min_trials = st.number_input("Minimum eligible trials per product", 1, 1000, 5)
-                plot_data = trial_data.filter(pl.col("eligible_trials") >= min_trials)
-
-                if plot_data.is_empty():
-                    st.info(f"No products with ≥ {min_trials} eligible trials.")
-                else:
-                    # Bubble chart
-                    fig = go.Figure()
-                    fig.add_trace(
-                        go.Scatter(
-                            x=plot_data["eligible_trials"].to_list(),
-                            y=plot_data["trial_conversion"].to_list(),
-                            mode="markers",
-                            marker=dict(
-                                size=[
-                                    max(8, min(60, math.sqrt(c) * 3))
-                                    for c in plot_data["trialling_customers"].to_list()
-                                ],
-                                opacity=0.6,
-                                color="#0072B2",
-                            ),
-                            customdata=list(
-                                zip(
-                                    plot_data["eligible_trials"].to_list(),
-                                    plot_data["repeated_trials"].to_list(),
-                                    plot_data["trialling_customers"].to_list(),
-                                    plot_data["product_id"].to_list(),
-                                )
-                            ),
-                            hovertemplate=(
-                                "Product: %{customdata[3]}<br>"
-                                "Eligible trials: %{customdata[0]}<br>"
-                                "Repeated trials: %{customdata[1]}<br>"
-                                "Trialling customers: %{customdata[2]}<br>"
-                                "Trial conversion: %{y:.1%}<extra></extra>"
-                            ),
-                        )
-                    )
-                    fig.update_yaxes(range=[0, 1], tickformat=".0%")
-                    chart(
-                        fig,
-                        f"Trial to repeat (min {min_trials} trials)",
-                        "trial_repeat_bubble",
-                        "Eligible trials",
-                        "Trial conversion (pooled)",
-                    )
-
-                    st.caption(
-                        "Pooled conversion = total repeated trials / total eligible trials across customers. "
-                        "Not the mean of customer-level conversion rates. "
-                        "Eligible trials: first purchase in [C-364, C-90] with 90-day follow-up window fully observed. "
-                        "Categories not shown; requires product→category lookup."
-                    )
-                    table(
-                        plot_data.select(
-                            "product_id",
-                            "eligible_trials",
-                            "repeated_trials",
-                            "trialling_customers",
-                            "trial_conversion",
-                        )
-                    )
+    elif view == "Trial Conversion Intervals":
+        render_trial_conversion_intervals(root, rows, coverage, color_map)
 
     elif view == "Product Affinity":
         st.subheader("Product affinity & market-basket analysis")
@@ -1465,378 +1584,16 @@ def display_results(root, coverage):
                     )
 
     elif view == "Revenue Waterfall":
-        st.subheader("Revenue driver waterfall: recent 90d vs previous 90d")
-        st.caption(
-            "Decomposes spend change into: purchasing customers × baskets per purchaser × spend per basket (AOV). "
-            "Uses a fixed-order bridge (customer count → frequency → AOV). "
-            "Residual captures interaction effects. Method documented; contributions sum to observed change."
-        )
-
-        # Need previous cutoff data
-        if len(history) < 2:
-            st.info(
-                "Need at least two cutoffs for waterfall. Select an earlier snapshot in the sidebar."
-            )
-        else:
-            origin = st.selectbox("Previous cutoff", history[:-1], index=len(history) - 2)
-            before_rows = apply_filters(
-                pl.scan_parquet([str(p) for p in (root / "snapshots" / origin).glob("*.parquet")]),
-                filters,
-            )
-            cutoff_date = date.fromisoformat(chosen)
-            waterfall = revenue_waterfall(rows, before_rows, cutoff_date)
-
-            if waterfall.is_empty():
-                st.info("Could not compute waterfall for this comparison.")
-            else:
-                # Waterfall chart
-                fig = go.Figure()
-                components = waterfall["component"].to_list()
-                values = waterfall["value"].to_list()
-
-                # Calculate cumulative for waterfall
-                cumulative = [values[0]]
-                for i in range(1, len(values) - 1):
-                    cumulative.append(cumulative[-1] + values[i])
-                cumulative.append(values[-1])  # final value
-
-                colors = []
-                for i, v in enumerate(values):
-                    if i == 0 or i == len(values) - 1:
-                        colors.append("#0072B2")  # start/end
-                    elif v >= 0:
-                        colors.append("#009E73")  # positive
-                    else:
-                        colors.append("#D55E00")  # negative
-
-                fig.add_trace(
-                    go.Waterfall(
-                        name="Spend decomposition",
-                        orientation="v",
-                        measure=["absolute"] + ["relative"] * (len(values) - 2) + ["total"],
-                        x=components,
-                        y=values,
-                        text=[f"{v:,.2f}" for v in values],
-                        textposition="outside",
-                        connector=dict(line=dict(color="rgb(63, 63, 63)")),
-                        increasing=dict(marker=dict(color="#009E73")),
-                        decreasing=dict(marker=dict(color="#D55E00")),
-                        totals=dict(marker=dict(color="#0072B2")),
-                    )
-                )
-
-                chart(
-                    fig,
-                    f"Revenue waterfall: {origin} to {chosen}",
-                    "revenue_waterfall",
-                    "Component",
-                    "Spend change (currency units)",
-                )
-
-                table(waterfall)
-                st.caption(
-                    "Fixed-order bridge: (1) purchasing customers change × prev frequency × prev AOV, "
-                    "(2) current customers × frequency change × prev AOV, "
-                    "(3) current customers × current frequency × AOV change. "
-                    "Residual = interaction effects. Attribution depends on decomposition order."
-                )
+        render_revenue_waterfall(root, rows, coverage, color_map)
 
     elif view == "Value-Tier Transitions":
-        st.subheader("Value-tier transition waterfall")
-        st.caption(
-            "Net customer movement between value tiers between two snapshots. "
-            "Inflow = customers entering tier, Outflow = customers leaving tier, "
-            "Net = inflow - outflow. Uses transition data from segment_transitions.parquet."
-        )
-
-        if len(history) < 2:
-            st.info("Need at least two cutoffs. Select an earlier snapshot in the sidebar.")
-        else:
-            origin = st.selectbox(
-                "Previous cutoff", history[:-1], index=len(history) - 2, key="vt_origin"
-            )
-            # Waterfall only works for value_tier; other dimensions use Transitions view
-            dim = "value_tier"
-            st.info(
-                "Showing value_tier transitions (waterfall). For other dimensions, use the Transitions view."
-            )
-
-            before = apply_filters(
-                pl.scan_parquet([str(p) for p in (root / "snapshots" / origin).glob("*.parquet")]),
-                filters,
-            )
-            after = apply_filters(
-                pl.scan_parquet([str(p) for p in (root / "snapshots" / chosen).glob("*.parquet")]),
-                filters,
-            )
-            flows, counts = transition_summary(before, after, dim)
-
-            if flows.is_empty():
-                st.info("No matched customers at both cutoffs.")
-            else:
-                waterfall = value_tier_transition_waterfall(flows)
-
-                if not waterfall.is_empty():
-                    # Waterfall chart
-                    fig = go.Figure()
-                    tiers = waterfall["tier"].to_list()
-                    inflows = waterfall["inflow"].to_list()
-                    outflows = waterfall["outflow"].to_list()
-                    net = waterfall["net_change"].to_list()
-
-                    fig.add_trace(
-                        go.Bar(
-                            x=tiers,
-                            y=inflows,
-                            name="Inflow",
-                            marker_color="#009E73",
-                            hovertemplate="Tier: %{x}<br>Customers entering: %{y}<extra></extra>",
-                        )
-                    )
-                    fig.add_trace(
-                        go.Bar(
-                            x=tiers,
-                            y=[-o for o in outflows],
-                            name="Outflow",
-                            marker_color="#D55E00",
-                            hovertemplate="Tier: %{x}<br>Customers leaving: %{y}<extra></extra>",
-                        )
-                    )
-                    fig.add_trace(
-                        go.Scatter(
-                            x=tiers,
-                            y=net,
-                            name="Net change",
-                            mode="lines+markers",
-                            line=dict(color="#0072B2", width=3),
-                            marker=dict(size=10),
-                            hovertemplate="Tier: %{x}<br>Net change: %{y}<extra></extra>",
-                        )
-                    )
-
-                    fig.update_layout(barmode="relative")
-                    chart(
-                        fig,
-                        f"Value-tier net movement: {origin} to {chosen}",
-                        "vt_waterfall",
-                        "Value tier",
-                        "Customer count",
-                    )
-
-                    # Summary metrics
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Total inflow", int(waterfall["inflow"].sum()))
-                    with col2:
-                        st.metric("Total outflow", int(waterfall["outflow"].sum()))
-                    with col3:
-                        st.metric("Net change", int(waterfall["net_change"].sum()))
-
-                    table(waterfall.select("tier", "inflow", "outflow", "net_change", "direction"))
-                    st.caption(
-                        f"Matched customers: {counts['matched_n']:,}. "
-                        f"Inflow = customers entering tier. Outflow = customers leaving tier. "
-                        f"Unmatched origin customers are not churn; unmatched destination are new arrivals."
-                    )
-                else:
-                    st.info("No value tier transitions found.")
+        render_value_tier_transitions(root, rows, coverage, color_map)
 
     elif view == "Behavior × Trajectory":
-        st.subheader("Behavior × Trajectory bubble matrix")
-        st.caption(
-            "X-axis: behavioral style (behavior). Y-axis: trajectory tags. "
-            "Bubble size: customer count. Bubble color: median 90-day spend. "
-            "Shows which style-trajectory combinations are growing, declining, or at risk."
-        )
-
-        try:
-            matrix = behavior_trajectory_matrix(rows)
-        except Exception as e:
-            st.error(f"behavior_trajectory_matrix failed: {type(e).__name__}: {e}")
-            st.caption("This may be due to missing behavior/trajectory columns.")
-            return
-
-        if matrix.is_empty():
-            st.info("No behavior-trajectory combinations in this population.")
-        else:
-            # Filter to combinations with sufficient customers
-            min_customers = st.number_input(
-                "Minimum customers per combination", 1, 1000, 5, key="bt_min"
-            )
-            plot_data = matrix.filter(pl.col("customers") >= min_customers)
-
-            if plot_data.is_empty():
-                st.info(f"No combinations with ≥ {min_customers} customers.")
-            else:
-                # Bubble chart
-                fig = go.Figure()
-
-                for _, row in plot_data.iter_rows(named=True):
-                    fig.add_trace(
-                        go.Scatter(
-                            x=[row["behavior"]],
-                            y=[row["trajectory"]],
-                            mode="markers",
-                            marker=dict(
-                                size=max(10, min(80, math.sqrt(row["customers"]) * 2)),
-                                color=row["median_spend"] if row["median_spend"] else 0,
-                                colorscale="Viridis",
-                                showscale=True,
-                                colorbar=dict(title="Median 90d spend", thickness=15),
-                                opacity=0.7,
-                            ),
-                            name=f"{row['behavior']} × {row['trajectory']}",
-                            hovertemplate=(
-                                "Behavior: %{x}<br>"
-                                "Trajectory: %{y}<br>"
-                                "Customers: %{customdata[0]:,}<br>"
-                                "Median spend: %{customdata[1]:,.2f}<br>"
-                                "Future 30d rate: %{customdata[2]:.1%}<br>"
-                                "Future 90d rate: %{customdata[3]:.1%}<extra></extra>"
-                            ),
-                            customdata=[
-                                [
-                                    row["customers"],
-                                    row["median_spend"] or 0,
-                                    row["future_30d_rate"] or 0,
-                                    row["future_90d_rate"] or 0,
-                                ]
-                            ],
-                            showlegend=False,
-                        )
-                    )
-
-                chart(
-                    fig,
-                    f"Behavior × Trajectory matrix (min {min_customers} customers)",
-                    "bt_matrix",
-                    "Behavioral style",
-                    "Trajectory",
-                )
-
-                # Summary table with future outcome rates
-                table(
-                    plot_data.select(
-                        "behavior",
-                        "trajectory",
-                        "customers",
-                        "median_spend",
-                        "mean_spend",
-                        "future_30d_rate",
-                        "future_90d_rate",
-                        "eligible_30d",
-                        "eligible_90d",
-                    )
-                )
-                st.caption(
-                    "Bubble size = customer count. Color = median 90-day spend. "
-                    "Future rates only shown for eligible follow-up customers. "
-                    "Behavior and trajectory tags can overlap; matrix preserves multi-tag combinations."
-                )
+        render_behavior_trajectory(root, rows, coverage, color_map)
 
     elif view == "Purchase Rhythm":
-        st.subheader("Purchase rhythm panel")
-        st.caption(
-            "Distributions of median_gap (typical cadence), gap_cv (irregularity), and lateness (overdue). "
-            "Segment-level summary shows how rhythm differs by behavioral style. "
-            "Regular shoppers: low gap_cv, low lateness. Episodic: high median_gap, variable gap_cv."
-        )
-
-        rhythm = purchase_rhythm_panel(rows)
-
-        if rhythm["segment_rhythm"].is_empty():
-            st.info("No style-eligible customers in this population.")
-        else:
-            # Three histograms
-            col1, col2, col3 = st.columns(3)
-
-            with col1:
-                if rhythm["median_gap_hist"].height > 0:
-                    fig = go.Figure(
-                        go.Histogram(
-                            x=rhythm["median_gap_hist"]["median_gap"].to_list(),
-                            nbinsx=30,
-                            marker_color="#0072B2",
-                            opacity=0.7,
-                        )
-                    )
-                    chart(
-                        fig,
-                        "Median gap distribution",
-                        "rhythm_median_gap",
-                        "Median gap (days)",
-                        "Customer count",
-                    )
-
-            with col2:
-                if rhythm["gap_cv_hist"].height > 0:
-                    fig = go.Figure(
-                        go.Histogram(
-                            x=rhythm["gap_cv_hist"]["gap_cv"].to_list(),
-                            nbinsx=30,
-                            marker_color="#E69F00",
-                            opacity=0.7,
-                        )
-                    )
-                    chart(
-                        fig,
-                        "Gap CV distribution",
-                        "rhythm_gap_cv",
-                        "Gap coefficient of variation",
-                        "Customer count",
-                    )
-
-            with col3:
-                if rhythm["lateness_hist"].height > 0:
-                    fig = go.Figure(
-                        go.Histogram(
-                            x=rhythm["lateness_hist"]["lateness"].to_list(),
-                            nbinsx=30,
-                            marker_color="#D55E00",
-                            opacity=0.7,
-                        )
-                    )
-                    fig.add_vline(
-                        x=1.0,
-                        line_dash="dash",
-                        line_color="gray",
-                        annotation_text="On cadence",
-                        annotation_position="top",
-                    )
-                    fig.add_vline(
-                        x=2.0,
-                        line_dash="dash",
-                        line_color="red",
-                        annotation_text="Overdue",
-                        annotation_position="top",
-                    )
-                    chart(
-                        fig,
-                        "Lateness distribution",
-                        "rhythm_lateness",
-                        "Lateness (recency / median_gap)",
-                        "Customer count",
-                    )
-
-            # Segment rhythm summary
-            st.write("**Segment rhythm summary**")
-            seg = rhythm["segment_rhythm"]
-            table(
-                seg.select(
-                    "behavior",
-                    "customers",
-                    "median_gap",
-                    "gap_cv",
-                    "lateness",
-                    "median_recency",
-                    "avg_frequency_90d",
-                )
-            )
-            st.caption(
-                "Median gap = typical inter-purchase interval. Gap CV = irregularity (std/mean). "
-                "Lateness = recency / median_gap (≥2 = overdue). "
-                "Only style-eligible customers (days_365d≥6, tenure≥90, gap_count≥4) included."
-            )
+        render_purchase_rhythm(root, rows, coverage, color_map)
 
     elif view == "Basket Evolution":
         st.subheader("Basket composition slope chart")
@@ -2221,127 +1978,7 @@ def display_results(root, coverage):
                     )
 
     elif view == "Future Validation":
-        st.subheader("Future outcome validation")
-        st.caption(
-            "Do current behavioral tags predict 30/90-day future purchases and spend? "
-            "Only customers with fully observed follow-up windows (eligible_followup) are included. "
-            "Wilson 95% confidence intervals shown for purchase rates."
-        )
-
-        if not coverage:
-            st.warning(
-                "Coverage unconfirmed: future outcome validation unavailable. "
-                "Enable coverage confirmation in sidebar to see this view."
-            )
-        else:
-            validation = future_outcome_validation(rows)
-
-            if validation.is_empty():
-                st.info("No eligible follow-up customers in this population.")
-            else:
-                horizon = st.selectbox("Horizon", [30, 90], key="fv_horizon")
-                dim = st.selectbox(
-                    "Dimension",
-                    ["behavior", "trajectory", "value_tier", "lifecycle", "evidence"],
-                    key="fv_dim",
-                )
-
-                plot_data = validation.filter(
-                    (pl.col("horizon") == horizon) & (pl.col("dimension") == dim)
-                ).sort("rate", descending=True)
-
-                if plot_data.is_empty():
-                    st.info(f"No data for {dim} at {horizon}-day horizon.")
-                else:
-                    # Bar chart with Wilson intervals
-                    from retail_analytics.core.stats import wilson
-
-                    fig = go.Figure()
-                    for row in plot_data.iter_rows(named=True):
-                        n = row["eligible_n"]
-                        buyers = row["buyers"]
-                        rate = row["rate"]
-                        lo, hi = wilson(buyers, n) if n >= 20 else (None, None)
-
-                        fig.add_trace(
-                            go.Bar(
-                                x=[row[dim]],
-                                y=[rate],
-                                name=str(row[dim]),
-                                marker_color=get_color(row[dim], color_map),
-                                error_y=dict(
-                                    type="data",
-                                    array=[hi - rate] if hi else None,
-                                    arrayminus=[rate - lo] if lo else None,
-                                    visible=True,
-                                )
-                                if lo is not None
-                                else None,
-                                customdata=[
-                                    [buyers, n, row["mean_spend"], row["mean_spend_buyers"]]
-                                ],
-                                hovertemplate=(
-                                    "%{x}<br>Rate: %{y:.1%}<br>"
-                                    "Buyers: %{customdata[0]} / %{customdata[1]}<br>"
-                                    "Mean spend: %{customdata[2]:,.2f}<br>"
-                                    "Mean spend (buyers): %{customdata[3]:,.2f}<extra></extra>"
-                                ),
-                                showlegend=False,
-                            )
-                        )
-
-                    fig.update_yaxes(range=[0, 1], tickformat=".0%")
-                    chart(
-                        fig,
-                        f"Future {horizon}-day purchase rate by {dim}",
-                        "fv_rate",
-                        dim,
-                        "Purchase rate (Wilson 95% CI)",
-                    )
-
-                    # Spend chart
-                    fig2 = go.Figure()
-                    for row in plot_data.iter_rows(named=True):
-                        fig2.add_trace(
-                            go.Bar(
-                                x=[row[dim]],
-                                y=[row["mean_spend"]],
-                                name=str(row[dim]),
-                                marker_color=get_color(row[dim], color_map),
-                                customdata=[[row["buyers"], row["eligible_n"]]],
-                                hovertemplate=(
-                                    "%{x}<br>Mean future spend: %{y:,.2f}<br>"
-                                    "Buyers: %{customdata[0]} / %{customdata[1]}<extra></extra>"
-                                ),
-                                showlegend=False,
-                            )
-                        )
-
-                    chart(
-                        fig2,
-                        f"Mean future {horizon}-day spend by {dim}",
-                        "fv_spend",
-                        dim,
-                        "Mean spend (currency units)",
-                    )
-
-                    table(
-                        plot_data.select(
-                            "dimension",
-                            dim,
-                            "eligible_n",
-                            "buyers",
-                            "rate",
-                            "mean_spend",
-                            "mean_spend_buyers",
-                        )
-                    )
-                    st.caption(
-                        f"Only customers with eligible_followup_{horizon}d=True included. "
-                        f"Wilson 95% CI shown for groups with ≥20 eligible customers. "
-                        f"Descriptive association, not causal prediction. "
-                        f"Multiple comparisons not multiplicity-adjusted."
-                    )
+        render_future_validation(root, rows, coverage, color_map)
 
     elif view == "Cohorts":
         historical = apply_filters(
@@ -2393,104 +2030,120 @@ def display_results(root, coverage):
 
         # Age-aligned repeat purchase chart using cohort_summary (Wilson intervals)
         st.subheader("Age-aligned repeat purchase (cohort_summary)")
-        try:
-            cutoff_date = date.fromisoformat(chosen)
-            first_date = collect(historical.select(pl.col("first_purchase").min())).item()
-            if first_date is not None:
-                # Get baskets for the chosen cutoff
-                baskets_cutoff = pl.scan_parquet(
-                    [str(p) for p in (root / "events" / chosen).glob("*/baskets.parquet")]
-                )
-                # Filter to chosen cutoff population
-                ids = rows.select("customer_id", "first_purchase").unique()
-                cohort_data = cohort_summary(
-                    baskets_cutoff, ids.lazy(), cutoff_date, coverage, minimum=20
-                )
-                if not cohort_data.is_empty():
-                    # Show for 30-day horizon
-                    horizon_data = cohort_data.filter(pl.col("horizon") == 30)
-                    if not horizon_data.is_empty():
-                        fig = go.Figure()
-                        for status in [
-                            "eligible",
-                            "capture_unconfirmed",
-                            "insufficient_followup_or_n",
-                        ]:
-                            subset = horizon_data.filter(pl.col("status") == status)
-                            if not subset.is_empty():
-                                label = {
-                                    "eligible": "Eligible (Wilson 95%)",
-                                    "capture_unconfirmed": "Capture unconfirmed",
-                                    "insufficient_followup_or_n": "Insufficient follow-up or N",
-                                }.get(status, status)
-                                color = {
-                                    "eligible": "#0072B2",
-                                    "capture_unconfirmed": "#CC79A7",
-                                    "insufficient_followup_or_n": "#D55E00",
-                                }.get(status, "#64748b")
-                                fig.add_trace(
-                                    go.Scatter(
-                                        x=safe_list(subset["cohort"].dt.strftime("%Y-%m")),
-                                        y=safe_list(subset["rate"])
-                                        if status == "eligible"
-                                        else [None] * subset.height,
-                                        mode="markers+lines" if status == "eligible" else "markers",
-                                        name=label,
-                                        marker=dict(size=10, color=color),
-                                        error_y=dict(
-                                            type="data",
-                                            symmetric=False,
-                                            array=safe_list(subset["high"] - subset["rate"])
+        
+        # Per-horizon eligibility check (P0 fix) - 30-day horizon
+        manifest = read_json(root / "run.json")
+        chosen_date = date.fromisoformat(chosen)
+        eligible, reason = check_horizon_eligibility(manifest, 30, chosen_date)
+        
+        if not coverage:
+            st.warning(
+                "⚠ **Coverage not confirmed** — Age-aligned repeat purchase is unavailable.\n\n"
+                "To enable this view, re-run analysis with coverage confirmation "
+                "and a complete-through date."
+            )
+        elif not eligible:
+            st.error(f"❌ **30-day horizon ineligible:** {reason}")
+        else:
+            st.success(f"✅ **30-day horizon:** {reason}")
+            try:
+                cutoff_date = date.fromisoformat(chosen)
+                first_date = collect(historical.select(pl.col("first_purchase").min())).item()
+                if first_date is not None:
+                    # Get baskets for the chosen cutoff
+                    baskets_cutoff = pl.scan_parquet(
+                        [str(p) for p in (root / "events" / chosen).glob("*/baskets.parquet")]
+                    )
+                    # Filter to chosen cutoff population
+                    ids = rows.select("customer_id", "first_purchase").unique()
+                    cohort_data = cohort_summary(
+                        baskets_cutoff, ids.lazy(), cutoff_date, coverage, minimum=20
+                    )
+                    if not cohort_data.is_empty():
+                        # Show for 30-day horizon
+                        horizon_data = cohort_data.filter(pl.col("horizon") == 30)
+                        if not horizon_data.is_empty():
+                            fig = go.Figure()
+                            for status in [
+                                "eligible",
+                                "capture_unconfirmed",
+                                "insufficient_followup_or_n",
+                            ]:
+                                subset = horizon_data.filter(pl.col("status") == status)
+                                if not subset.is_empty():
+                                    label = {
+                                        "eligible": "Eligible (Wilson 95%)",
+                                        "capture_unconfirmed": "Capture unconfirmed",
+                                        "insufficient_followup_or_n": "Insufficient follow-up or N",
+                                    }.get(status, status)
+                                    color = {
+                                        "eligible": "#0072B2",
+                                        "capture_unconfirmed": "#CC79A7",
+                                        "insufficient_followup_or_n": "#D55E00",
+                                    }.get(status, "#64748b")
+                                    fig.add_trace(
+                                        go.Scatter(
+                                            x=safe_list(subset["cohort"].dt.strftime("%Y-%m")),
+                                            y=safe_list(subset["rate"])
                                             if status == "eligible"
-                                            else None,
-                                            arrayminus=safe_list(subset["rate"] - subset["low"])
-                                            if status == "eligible"
-                                            else None,
-                                            visible=True,
-                                        )
-                                        if status == "eligible"
-                                        else None,
-                                        hovertemplate="Cohort: %{x}<br>Repeat rate: %{y:.1%}<br>Eligible: %{customdata[0]}<br>Repeats: %{customdata[1]}<extra></extra>",
-                                        customdata=list(
-                                            zip(
-                                                safe_list(subset["eligible_n"])
-                                                if "eligible_n" in subset.columns
-                                                else [None] * subset.height,
-                                                safe_list(subset["repeat_n"])
-                                                if "repeat_n" in subset.columns
-                                                else [None] * subset.height,
+                                            else [None] * subset.height,
+                                            mode="markers+lines" if status == "eligible" else "markers",
+                                            name=label,
+                                            marker=dict(size=10, color=color),
+                                            error_y=dict(
+                                                type="data",
+                                                symmetric=False,
+                                                array=safe_list(subset["high"] - subset["rate"])
+                                                if status == "eligible"
+                                                else None,
+                                                arrayminus=safe_list(subset["rate"] - subset["low"])
+                                                if status == "eligible"
+                                                else None,
+                                                visible=True,
                                             )
+                                            if status == "eligible"
+                                            else None,
+                                            hovertemplate="Cohort: %{x}<br>Repeat rate: %{y:.1%}<br>Eligible: %{customdata[0]}<br>Repeats: %{customdata[1]}<extra></extra>",
+                                            customdata=list(
+                                                zip(
+                                                    safe_list(subset["eligible_n"])
+                                                    if "eligible_n" in subset.columns
+                                                    else [None] * subset.height,
+                                                    safe_list(subset["repeat_n"])
+                                                    if "repeat_n" in subset.columns
+                                                    else [None] * subset.height,
+                                                )
+                                            )
+                                            if status == "eligible"
+                                            else None,
                                         )
-                                        if status == "eligible"
-                                        else None,
                                     )
+                            # Mark first cohort as left-censored
+                            first_cohort = cohort_data["cohort"].min()
+                            if first_cohort is not None:
+                                fig.add_vline(
+                                    x=first_cohort.strftime("%Y-%m"),
+                                    line_dash="dash",
+                                    line_color="red",
+                                    annotation_text="First cohort (left-censored)",
+                                    annotation_position="top left",
                                 )
-                        # Mark first cohort as left-censored
-                        first_cohort = cohort_data["cohort"].min()
-                        if first_cohort is not None:
-                            fig.add_vline(
-                                x=first_cohort.strftime("%Y-%m"),
-                                line_dash="dash",
-                                line_color="red",
-                                annotation_text="First cohort (left-censored)",
-                                annotation_position="top left",
+                            fig.update_xaxes(tickformat="%Y-%m")
+                            fig.update_yaxes(range=[0, 1], tickformat=".0%")
+                            chart(
+                                fig,
+                                "Age-aligned 30-day repeat purchase rate by cohort (Wilson 95% CI)",
+                                "cohort_repeat_rate",
+                                "Cohort month",
+                                "Repeat rate",
                             )
-                        fig.update_xaxes(tickformat="%Y-%m")
-                        fig.update_yaxes(range=[0, 1], tickformat=".0%")
-                        chart(
-                            fig,
-                            "Age-aligned 30-day repeat purchase rate by cohort (Wilson 95% CI)",
-                            "cohort_repeat_rate",
-                            "Cohort month",
-                            "Repeat rate",
-                        )
-                        st.caption(
-                            "Age-aligned: repeat purchase within 30 days of first purchase. Wilson 95% CI for eligible cohorts (min 20 customers). First cohort marked as left-censored (first purchase = observation start)."
-                        )
-                        table(horizon_data.sort("cohort"))
-        except Exception as e:
-            st.error(f"Age-aligned repeat purchase analysis failed: {type(e).__name__}: {e}")
-            st.caption("This may be due to missing baskets data, or insufficient cohort data.")
+                            st.caption(
+                                "Age-aligned: repeat purchase within 30 days of first purchase. Wilson 95% CI for eligible cohorts (min 20 customers). First cohort marked as left-censored (first purchase = observation start)."
+                            )
+                            table(horizon_data.sort("cohort"))
+            except Exception as e:
+                st.error(f"Age-aligned repeat purchase analysis failed: {type(e).__name__}: {e}")
+                st.caption("This may be due to missing baskets data, or insufficient cohort data.")
 
         # Concentration (Lorenz) chart
         st.subheader("Customer concentration (Lorenz curve)")
@@ -2820,98 +2473,121 @@ def display_results(root, coverage):
             "Bins customers by lateness; plots Wilson 95% CI for future purchase rates."
         )
 
+        # Per-horizon eligibility check (P0 fix)
+        manifest = read_json(root / "run.json")
+        chosen_date = date.fromisoformat(chosen)
+        
+        horizon_options = [30, 90]
+        horizon_eligibility = {}
+        for h in horizon_options:
+            eligible, reason = check_horizon_eligibility(manifest, h, chosen_date)
+            horizon_eligibility[h] = (eligible, reason)
+        
         if not coverage:
             st.warning(
-                "Coverage unconfirmed: future outcome validation unavailable. "
-                "Enable coverage confirmation in sidebar."
+                "⚠ **Coverage not confirmed** — Future outcome validation is unavailable.\n\n"
+                "To enable cadence validation, re-run analysis with coverage confirmation "
+                "and a complete-through date."
             )
         else:
-            try:
-                max_lateness = st.slider("Max lateness to display", 2.0, 10.0, 5.0, 0.5)
-                bins = st.slider("Number of lateness bins", 5, 20, 10)
-
-                val = cadence_return_validation(
-                    rows, coverage, max_lateness=max_lateness, bins=bins
-                )
-
-                if "warning" in val.columns:
-                    st.warning(val["warning"][0])
-                elif "error" in val.columns:
-                    st.error(val["error"][0])
-                elif val.is_empty():
-                    st.info("No eligible customers with finite cadence metrics.")
+            # Show eligibility for each horizon
+            for h in horizon_options:
+                eligible, reason = horizon_eligibility[h]
+                if eligible:
+                    st.success(f"✅ **{h}-day horizon:** {reason}")
                 else:
-                    for horizon in [30, 90]:
-                        h_data = val.filter(pl.col("horizon") == horizon)
-                        if h_data.is_empty():
-                            continue
+                    st.error(f"❌ **{h}-day horizon:** {reason}")
+            
+            eligible_horizons = [h for h in horizon_options if horizon_eligibility[h][0]]
+            if not eligible_horizons:
+                st.info("No horizons are eligible for cadence validation with the current coverage settings.")
+            else:
+                try:
+                    max_lateness = st.slider("Max lateness to display", 2.0, 10.0, 5.0, 0.5)
+                    bins = st.slider("Number of lateness bins", 5, 20, 10)
 
-                        fig = go.Figure()
-                        # Check if CI data exists
-                        has_upper = h_data["upper_ci"].is_not_null().any()
-                        has_lower = h_data["lower_ci"].is_not_null().any()
-                        upper_diff = (h_data["upper_ci"] - h_data["purchase_rate"]).to_list() if has_upper else None
-                        lower_diff = (h_data["purchase_rate"] - h_data["lower_ci"]).to_list() if has_lower else None
+                    val = cadence_return_validation(
+                        rows, coverage, max_lateness=max_lateness, bins=bins
+                    )
 
-                        fig.add_trace(
-                            go.Bar(
-                                x=h_data["lateness_bin"].to_list(),
-                                y=h_data["purchase_rate"].to_list(),
-                                name=f"{horizon}d return rate",
-                                marker_color="#0072B2" if horizon == 30 else "#E69F00",
-                                error_y=dict(
-                                    type="data",
-                                    symmetric=False,
-                                    array=upper_diff,
-                                    arrayminus=lower_diff,
-                                    visible=True,
-                                )
-                                if has_upper or has_lower
-                                else None,
-                                customdata=list(
-                                    zip(
-                                        h_data["eligible_n"].to_list(),
-                                        h_data["buyers"].to_list(),
+                    if "warning" in val.columns:
+                        st.warning(val["warning"][0])
+                    elif "error" in val.columns:
+                        st.error(val["error"][0])
+                    elif val.is_empty():
+                        st.info("No eligible customers with finite cadence metrics.")
+                    else:
+                        for horizon in eligible_horizons:
+                            h_data = val.filter(pl.col("horizon") == horizon)
+                            if h_data.is_empty():
+                                continue
+
+                            fig = go.Figure()
+                            # Check if CI data exists
+                            has_upper = h_data["upper_ci"].is_not_null().any()
+                            has_lower = h_data["lower_ci"].is_not_null().any()
+                            upper_diff = (h_data["upper_ci"] - h_data["purchase_rate"]).to_list() if has_upper else None
+                            lower_diff = (h_data["purchase_rate"] - h_data["lower_ci"]).to_list() if has_lower else None
+
+                            fig.add_trace(
+                                go.Bar(
+                                    x=h_data["lateness_bin"].to_list(),
+                                    y=h_data["purchase_rate"].to_list(),
+                                    name=f"{horizon}d return rate",
+                                    marker_color="#0072B2" if horizon == 30 else "#E69F00",
+                                    error_y=dict(
+                                        type="data",
+                                        symmetric=False,
+                                        array=upper_diff,
+                                        arrayminus=lower_diff,
+                                        visible=True,
                                     )
-                                ),
-                                hovertemplate="Lateness bin: %{x}<br>Return rate: %{y:.1%}<br>Eligible: %{customdata[0]:,}<br>Buyers: %{customdata[1]:,}<extra></extra>",
+                                    if has_upper or has_lower
+                                    else None,
+                                    customdata=list(
+                                        zip(
+                                            h_data["eligible_n"].to_list(),
+                                            h_data["buyers"].to_list(),
+                                        )
+                                    ),
+                                    hovertemplate="Lateness bin: %{x}<br>Return rate: %{y:.1%}<br>Eligible: %{customdata[0]:,}<br>Buyers: %{customdata[1]:,}<extra></extra>",
+                                )
+                            )
+                            fig.add_vline(
+                                x="1.5–2.0" if "1.5–2.0" in h_data["lateness_bin"].to_list() else 2.0,
+                                line_dash="dash",
+                                line_color="red",
+                                annotation_text="2× median_gap boundary",
+                                annotation_position="top",
+                            )
+
+                            fig.update_yaxes(range=[0, 1], tickformat=".0%")
+                            chart(
+                                fig,
+                                f"{horizon}-day return rate by lateness bin",
+                                f"cadence_val_{horizon}",
+                                "Lateness (recency / median_gap)",
+                                "Future purchase rate (Wilson 95% CI)",
+                            )
+
+                        table(
+                            val.select(
+                                "horizon",
+                                "lateness_bin",
+                                "eligible_n",
+                                "buyers",
+                                "purchase_rate",
+                                "lower_ci",
+                                "upper_ci",
                             )
                         )
-                        fig.add_vline(
-                            x="1.5–2.0" if "1.5–2.0" in h_data["lateness_bin"].to_list() else 2.0,
-                            line_dash="dash",
-                            line_color="red",
-                            annotation_text="2× median_gap boundary",
-                            annotation_position="top",
+                        st.caption(
+                            "Wilson 95% CI shown for bins with ≥20 eligible customers. "
+                            "Lateness = recency / median_gap. Research: BG/NBD repeat-buying models."
                         )
 
-                        fig.update_yaxes(range=[0, 1], tickformat=".0%")
-                        chart(
-                            fig,
-                            f"{horizon}-day return rate by lateness bin",
-                            f"cadence_val_{horizon}",
-                            "Lateness (recency / median_gap)",
-                            "Future purchase rate (Wilson 95% CI)",
-                        )
-
-                    table(
-                        val.select(
-                            "horizon",
-                            "lateness_bin",
-                            "eligible_n",
-                            "buyers",
-                            "purchase_rate",
-                            "lower_ci",
-                            "upper_ci",
-                        )
-                    )
-                    st.caption(
-                        "Wilson 95% CI shown for bins with ≥20 eligible customers. "
-                        "Lateness = recency / median_gap. Research: BG/NBD repeat-buying models."
-                    )
-
-            except Exception as e:
-                st.error(f"Cadence validation failed: {type(e).__name__}: {e}")
+                except Exception as e:
+                    st.error(f"Cadence validation failed: {type(e).__name__}: {e}")
 
     elif view == "Multi-Horizon Cohorts":
         st.subheader("Multi-horizon repeat curves by cohort")
@@ -2920,109 +2596,131 @@ def display_results(root, coverage):
             "Wilson 95% confidence intervals. First cohort is left-censored (first purchase = observation start)."
         )
 
+        # Per-horizon eligibility check (P0 fix)
+        manifest = read_json(root / "run.json")
+        chosen_date = date.fromisoformat(chosen)
+        
+        horizon_options = [30, 60, 90]
+        horizon_eligibility = {}
+        for h in horizon_options:
+            eligible, reason = check_horizon_eligibility(manifest, h, chosen_date)
+            horizon_eligibility[h] = (eligible, reason)
+        
         if not coverage:
             st.warning(
-                "Coverage unconfirmed: future outcome validation unavailable. "
-                "Enable coverage confirmation in sidebar."
+                "⚠ **Coverage not confirmed** — Future outcome validation is unavailable.\n\n"
+                "To enable multi-horizon cohorts, re-run analysis with coverage confirmation "
+                "and a complete-through date."
             )
         else:
-            try:
-                horizons = [30, 60, 90]
-                min_cohort = st.number_input("Minimum cohort size", 5, 1000, 20)
-
-                baskets_paths = list((root / "events" / chosen).glob("*/baskets.parquet"))
-                if not baskets_paths:
-                    st.info("No basket data available for this cutoff.")
+            # Show eligibility for each horizon
+            for h in horizon_options:
+                eligible, reason = horizon_eligibility[h]
+                if eligible:
+                    st.success(f"✅ **{h}-day horizon:** {reason}")
                 else:
-                    baskets = pl.scan_parquet(baskets_paths)
-                    cutoff_date = date.fromisoformat(chosen)
-                    cohort_data = multi_horizon_cohort_repeat(
-                        baskets, rows, cutoff_date, coverage, horizons, min_cohort
-                    )
+                    st.error(f"❌ **{h}-day horizon:** {reason}")
+            
+            eligible_horizons = [h for h in horizon_options if horizon_eligibility[h][0]]
+            if not eligible_horizons:
+                st.info("No horizons are eligible for multi-horizon cohort analysis with the current coverage settings.")
+            else:
+                try:
+                    min_cohort = st.number_input("Minimum cohort size", 5, 1000, 20)
 
-                    if cohort_data.is_empty():
-                        st.info("No eligible cohorts.")
+                    baskets_paths = list((root / "events" / chosen).glob("*/baskets.parquet"))
+                    if not baskets_paths:
+                        st.info("No basket data available for this cutoff.")
                     else:
-                        fig = go.Figure()
-                        colors = {30: "#0072B2", 60: "#009E73", 90: "#E69F00"}
+                        baskets = pl.scan_parquet(baskets_paths)
+                        cutoff_date = date.fromisoformat(chosen)
+                        cohort_data = multi_horizon_cohort_repeat(
+                            baskets, rows, cutoff_date, coverage, eligible_horizons, min_cohort
+                        )
 
-                        for horizon in horizons:
-                            h_data = cohort_data.filter(pl.col("horizon") == horizon).sort("cohort")
-                            if h_data.is_empty():
-                                continue
+                        if cohort_data.is_empty():
+                            st.info("No eligible cohorts.")
+                        else:
+                            fig = go.Figure()
+                            colors = {30: "#0072B2", 60: "#009E73", 90: "#E69F00"}
 
-                            eligible = h_data.filter(pl.col("status") == "eligible")
-                            if not eligible.is_empty():
-                                fig.add_trace(
-                                    go.Scatter(
-                                        x=safe_list(eligible["cohort"].dt.strftime("%Y-%m")),
-                                        y=safe_list(eligible["rate"]),
-                                        mode="lines+markers",
-                                        name=f"{horizon}d (eligible)",
-                                        line=dict(color=colors[horizon], width=2),
-                                        marker=dict(size=8),
-                                        error_y=dict(
-                                            type="data",
-                                            symmetric=False,
-                                            array=safe_list(
-                                                eligible["upper_ci"] - eligible["rate"]
+                            for horizon in eligible_horizons:
+                                h_data = cohort_data.filter(pl.col("horizon") == horizon).sort("cohort")
+                                if h_data.is_empty():
+                                    continue
+
+                                eligible = h_data.filter(pl.col("status") == "eligible")
+                                if not eligible.is_empty():
+                                    fig.add_trace(
+                                        go.Scatter(
+                                            x=safe_list(eligible["cohort"].dt.strftime("%Y-%m")),
+                                            y=safe_list(eligible["rate"]),
+                                            mode="lines+markers",
+                                            name=f"{horizon}d (eligible)",
+                                            line=dict(color=colors[horizon], width=2),
+                                            marker=dict(size=8),
+                                            error_y=dict(
+                                                type="data",
+                                                symmetric=False,
+                                                array=safe_list(
+                                                    eligible["upper_ci"] - eligible["rate"]
+                                                ),
+                                                arrayminus=safe_list(
+                                                    eligible["rate"] - eligible["lower_ci"]
+                                                ),
+                                                visible=True,
                                             ),
-                                            arrayminus=safe_list(
-                                                eligible["rate"] - eligible["lower_ci"]
+                                            customdata=list(
+                                                zip(
+                                                    safe_list(eligible["eligible_n"]),
+                                                    safe_list(eligible["repeat_n"]),
+                                                )
                                             ),
-                                            visible=True,
-                                        ),
-                                        customdata=list(
-                                            zip(
-                                                safe_list(eligible["eligible_n"]),
-                                                safe_list(eligible["repeat_n"]),
-                                            )
-                                        ),
-                                        hovertemplate="Cohort: %{x}<br>Rate: %{y:.1%}<br>Eligible: %{customdata[0]:,}<br>Repeats: %{customdata[1]:,}<extra></extra>",
+                                            hovertemplate="Cohort: %{x}<br>Rate: %{y:.1%}<br>Eligible: %{customdata[0]:,}<br>Repeats: %{customdata[1]:,}<extra></extra>",
+                                        )
                                     )
+
+                                ineligible = h_data.filter(pl.col("status") != "eligible")
+                                if not ineligible.is_empty():
+                                    fig.add_trace(
+                                        go.Scatter(
+                                            x=safe_list(ineligible["cohort"].dt.strftime("%Y-%m")),
+                                            y=[None] * ineligible.height,
+                                            mode="markers",
+                                            name=f"{horizon}d (insufficient)",
+                                            marker=dict(color=colors[horizon], size=8, symbol="x"),
+                                            showlegend=True,
+                                        )
+                                    )
+
+                            first_cohort = cohort_data["cohort"].min()
+                            if first_cohort is not None:
+                                fig.add_vline(
+                                    x=first_cohort.strftime("%Y-%m"),
+                                    line_dash="dash",
+                                    line_color="red",
+                                    annotation_text="First cohort (left-censored)",
+                                    annotation_position="top left",
                                 )
 
-                            ineligible = h_data.filter(pl.col("status") != "eligible")
-                            if not ineligible.is_empty():
-                                fig.add_trace(
-                                    go.Scatter(
-                                        x=safe_list(ineligible["cohort"].dt.strftime("%Y-%m")),
-                                        y=[None] * ineligible.height,
-                                        mode="markers",
-                                        name=f"{horizon}d (insufficient)",
-                                        marker=dict(color=colors[horizon], size=8, symbol="x"),
-                                        showlegend=True,
-                                    )
-                                )
-
-                        first_cohort = cohort_data["cohort"].min()
-                        if first_cohort is not None:
-                            fig.add_vline(
-                                x=first_cohort.strftime("%Y-%m"),
-                                line_dash="dash",
-                                line_color="red",
-                                annotation_text="First cohort (left-censored)",
-                                annotation_position="top left",
+                            fig.update_xaxes(tickformat="%Y-%m")
+                            fig.update_yaxes(range=[0, 1], tickformat=".0%")
+                            chart(
+                                fig,
+                                "Age-aligned repeat purchase rates by cohort (30/60/90d)",
+                                "multi_horizon_cohorts",
+                                "Cohort month",
+                                "Repeat rate (Wilson 95% CI)",
                             )
 
-                        fig.update_xaxes(tickformat="%Y-%m")
-                        fig.update_yaxes(range=[0, 1], tickformat=".0%")
-                        chart(
-                            fig,
-                            "Age-aligned repeat purchase rates by cohort (30/60/90d)",
-                            "multi_horizon_cohorts",
-                            "Cohort month",
-                            "Repeat rate (Wilson 95% CI)",
-                        )
+                            table(cohort_data.sort("cohort", "horizon"))
+                            st.caption(
+                                "Age-aligned: repeat within X days of first purchase. Wilson 95% CI for eligible cohorts. "
+                                "First cohort left-censored. Caveat: first observed ≠ true acquisition."
+                            )
 
-                        table(cohort_data.sort("cohort", "horizon"))
-                        st.caption(
-                            "Age-aligned: repeat within X days of first purchase. Wilson 95% CI for eligible cohorts. "
-                            "First cohort left-censored. Caveat: first observed ≠ true acquisition."
-                        )
-
-            except Exception as e:
-                st.error(f"Multi-horizon cohort analysis failed: {type(e).__name__}: {e}")
+                except Exception as e:
+                    st.error(f"Multi-horizon cohort analysis failed: {type(e).__name__}: {e}")
 
     elif view == "Category Opportunity Map":
         st.subheader("Category opportunity map: penetration × intensity")
@@ -3111,19 +2809,21 @@ def display_results(root, coverage):
             st.error(f"Category opportunity map failed: {type(e).__name__}: {e}")
 
     elif view == "RFM Response Surface":
-        st.subheader("RFM response surface: repeat probability heatmap")
-        st.caption(
-            "30-day repeat probability across recency × frequency quantile bins. "
-            "Wilson 95% CI per cell. Research: RFM/Pareto-NBD response surfaces (Fader, Hardie & Lee, 2005). "
-            "Descriptive heatmap — not a calibrated CLV forecast."
-        )
-
+        # Per-horizon eligibility check (P0 fix) - RFM uses 30-day horizon
+        manifest = read_json(root / "run.json")
+        chosen_date = date.fromisoformat(chosen)
+        eligible, reason = check_horizon_eligibility(manifest, 30, chosen_date)
+        
         if not coverage:
             st.warning(
-                "Coverage unconfirmed: future outcome validation unavailable. "
-                "Enable coverage confirmation in sidebar."
+                "⚠ **Coverage not confirmed** — Future outcome validation is unavailable.\n\n"
+                "To enable RFM response surface, re-run analysis with coverage confirmation "
+                "and a complete-through date."
             )
+        elif not eligible:
+            st.error(f"❌ **30-day horizon ineligible:** {reason}")
         else:
+            st.success(f"✅ **30-day horizon:** {reason}")
             try:
                 rec_bins = st.slider("Recency quantile bins", 3, 10, 5)
                 freq_bins = st.slider("Frequency quantile bins", 3, 10, 5)
@@ -3141,6 +2841,8 @@ def display_results(root, coverage):
                 else:
                     z = []
                     hover = []
+                    total_eligible = 0
+                    cells_with_ci = 0
                     for r_bin in sorted(surface["recency_bin"].unique()):
                         z_row = []
                         hover_row = []
@@ -3155,12 +2857,15 @@ def display_results(root, coverage):
                                 )
                                 n = cell["eligible_n"][0]
                                 buyers = cell["buyers"][0]
+                                total_eligible += n
                                 lo = (
                                     cell["lower_ci"][0] if cell["lower_ci"][0] is not None else None
                                 )
                                 hi = (
                                     cell["upper_ci"][0] if cell["upper_ci"][0] is not None else None
                                 )
+                                if lo is not None:
+                                    cells_with_ci += 1
                                 hover_row.append(
                                     f"Recency: {r_bin}<br>Freq: {f_bin}<br>Rate: {cell['rate'][0]:.1%}<br>N: {n}<br>Buyers: {buyers}<br>CI: [{lo:.1%}, {hi:.1%}]"
                                     if lo
@@ -3185,13 +2890,39 @@ def display_results(root, coverage):
                             hoverinfo="text",
                         )
                     )
-                    chart(
-                        fig,
-                        "RFM response surface: 30-day repeat probability",
-                        "rfm_surface",
-                        "Frequency bin (purchases_90d quantiles)",
-                        "Recency bin (recency quantiles)",
+
+                    # Wrap in ChartCard
+                    card = create_chart_card(
+                        key="rfm_surface_card",
+                        title="RFM Response Surface: 30-Day Repeat Probability",
+                        figure=fig,
+                        question="Which combinations of recency and frequency show different future repeat rates?",
+                        takeaway=f"Surface shows {cells_with_ci} cells with Wilson 95% CI across {rec_bins}×{freq_bins} bins; total eligible: {total_eligible:,}",
+                        evidence=ChartEvidence(
+                            numerator="Customers with repeat purchase within 30 days",
+                            denominator="Eligible customers per recency×frequency bin",
+                            population_size=total_eligible,
+                            comparison_period="30-day follow-up",
+                            confidence_interval="Wilson 95% per cell",
+                            interval_type="Binomial proportion CI",
+                            eligibility_criteria="Coverage confirmed + 30-day follow-up observed",
+                        ),
+                        how_to_read=(
+                            "Heatmap cells show 30-day repeat rate (color: green=high, red=low). "
+                            "X-axis: frequency quantile bins (purchases_90d). Y-axis: recency quantile bins. "
+                            "Hover shows exact rate, eligible N, buyers, and Wilson CI. "
+                            "Blank cells = insufficient eligible customers (<20)."
+                        ),
+                        caveat=(
+                            "Quantile bins on recency and frequency_90d. Wilson 95% CI for cells with ≥20 eligible. "
+                            "Descriptive association, not causal prediction or CLV forecast. "
+                            "Multiple comparisons not multiplicity-adjusted. "
+                            "First observed purchase ≠ true acquisition."
+                        ),
+                        next_step="Drill into 'Segments' view to see repeat rates by behavioral segment.",
+                        alt_description="Heatmap showing 30-day repeat probability across recency and frequency quantile bins with Wilson confidence intervals.",
                     )
+                    card.render()
 
                     table(
                         surface.select(
@@ -3204,11 +2935,6 @@ def display_results(root, coverage):
                             "upper_ci",
                         )
                     )
-                    st.caption(
-                        "Quantile bins on recency and frequency_90d. Wilson 95% CI for cells with ≥20 eligible. "
-                        "Descriptive association, not causal prediction or CLV forecast. "
-                        "Multiple comparisons not multiplicity-adjusted."
-                    )
 
             except Exception as e:
                 st.error(f"RFM response surface failed: {type(e).__name__}: {e}")
@@ -3218,14 +2944,6 @@ def display_results(root, coverage):
     # ============================================================
 
     elif view == "Cohort-Age Retention":
-        st.subheader("Cohort-age retention heatmap")
-        st.caption(
-            "Rows: first-observed purchase month. Columns: months since first purchase. "
-            "Color: proportion of original cohort making a purchase in each month. "
-            "Age-0 is the cohort month (baseline). Future/incomplete months are blanked. "
-            "First-observed ≠ true acquisition; capture gaps not confirmed."
-        )
-
         try:
             validated_path = root / "validated.parquet"
             if not validated_path.exists():
@@ -3282,6 +3000,9 @@ def display_results(root, coverage):
 
                     z = []
                     hover = []
+                    total_cohorts = 0
+                    total_customers = 0
+                    observed_cells = 0
                     for cohort in cohort_labels:
                         z_row = []
                         hover_row = []
@@ -3294,6 +3015,8 @@ def display_results(root, coverage):
                                 active = cohort_row["active_customers"][0]
                                 size = cohort_row["cohort_size"][0]
                                 max_obs = cohort_row["max_age_observed"][0]
+                                total_customers += size
+                                total_cohorts += 1
                                 # Blank future cells
                                 if age > max_obs:
                                     z_row.append(None)
@@ -3305,6 +3028,7 @@ def display_results(root, coverage):
                                     hover_row.append(
                                         f"Cohort: {cohort}<br>Age: {age}m<br>Active: {active}/{size} ({rate:.1%})"
                                     )
+                                    observed_cells += 1
                             else:
                                 z_row.append(None)
                                 hover_row.append(f"Cohort: {cohort}<br>Age: {age}m<br>No data")
@@ -3328,195 +3052,44 @@ def display_results(root, coverage):
                             hoverongaps=False,
                         )
                     )
-                    chart(
-                        fig,
-                        "Cohort-age retention: monthly activity by relationship age",
-                        "cohort_age_retention",
-                        "Months since first purchase",
-                        "First-observed cohort month",
-                    )
 
-                    st.caption(
-                        "Age 0 = cohort month. Blank cells = not yet observed (cohort too young). "
-                        "This is observed activity retention, not contractual retention. "
-                        "First-observed cohort may be left-censored (capture start ≠ acquisition)."
+                    # Wrap in ChartCard
+                    card = create_chart_card(
+                        key="cohort_age_retention_card",
+                        title="Cohort-Age Retention Heatmap",
+                        figure=fig,
+                        question="How does observed activity change after the first recorded purchase?",
+                        takeaway=f"{total_cohorts} cohorts, {total_customers:,} total customers, {observed_cells} observed age-cohort cells",
+                        evidence=ChartEvidence(
+                            numerator="Active customers in cohort at each age",
+                            denominator="Original cohort size",
+                            population_size=total_customers,
+                            comparison_period="Monthly since first observed purchase",
+                            confidence_interval="Not shown (raw rates)",
+                            interval_type="Descriptive rates only",
+                            eligibility_criteria=f"Min cohort size: {min_cohort}",
+                        ),
+                        how_to_read=(
+                            "Rows: first-observed purchase month (cohort). Columns: months since first purchase (age). "
+                            "Color: proportion of original cohort making a purchase in each month (0-100%). "
+                            "Age-0 is the cohort month (baseline). Blank cells = not yet observed (cohort too young). "
+                            "Consistent 0-100% color scale across all cohorts for comparability."
+                        ),
+                        caveat=(
+                            "First-observed cohort may be left-censored (capture start ≠ acquisition). "
+                            "Cohorts have unequal observation windows - immature cohorts appear worse. "
+                            "Raw rates not comparable without exposure adjustment. "
+                            "This is observed activity retention, not contractual retention."
+                        ),
+                        next_step="Check 'Multi-Horizon Cohorts' for repeat rates with Wilson intervals by horizon.",
+                        alt_description="Heatmap showing cohort-age retention with cohorts as rows and months since first purchase as columns, color-coded by activity rate.",
                     )
+                    card.render()
+
                     table(heatmap_data.sort("cohort_month", "age_month"))
 
         except Exception as e:
             st.error(f"Cohort-age retention failed: {type(e).__name__}: {e}")
-
-    elif view == "RFM Response Surface":
-        st.subheader("RFM response surface: repeat probability heatmap")
-        st.caption(
-            "30-day repeat probability across recency × frequency quantile bins. "
-            "Wilson 95% CI per cell. Research: RFM/Pareto-NBD response surfaces (Fader, Hardie & Lee, 2005). "
-            "Descriptive heatmap — not a calibrated CLV forecast."
-        )
-
-        if not coverage:
-            st.warning(
-                "Coverage unconfirmed: future outcome validation unavailable. "
-                "Enable coverage confirmation in sidebar."
-            )
-        else:
-            try:
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    rec_bins = st.slider("Recency quantile bins", 3, 10, 5, key="rfm_rec")
-                with col2:
-                    freq_bins = st.slider("Frequency quantile bins", 3, 10, 5, key="rfm_freq")
-                with col3:
-                    value_facet = st.checkbox("Facet by value_tier", value=True, key="rfm_facet")
-
-                surface = rfm_response_surface(
-                    rows,
-                    coverage,
-                    recency_bins=rec_bins,
-                    frequency_bins=freq_bins,
-                    value_tier_facet=value_facet,
-                )
-
-                if "warning" in surface.columns:
-                    st.warning(surface["warning"][0])
-                elif "error" in surface.columns:
-                    st.error(surface["error"][0])
-                elif surface.is_empty():
-                    st.info("No eligible customers for response surface.")
-                else:
-                    if value_facet and "value_tier" in surface.columns:
-                        tiers = sorted(surface["value_tier"].unique().to_list())
-                        tabs = st.tabs([f"Value tier: {t}" for t in tiers])
-
-                        for i, tier in enumerate(tiers):
-                            with tabs[i]:
-                                tier_data = surface.filter(pl.col("value_tier") == tier)
-                                z = []
-                                hover = []
-                                freq_bins_sorted = sorted(tier_data["frequency_bin"].unique())
-                                rec_bins_sorted = sorted(tier_data["recency_bin"].unique())
-
-                                for r_bin in rec_bins_sorted:
-                                    z_row = []
-                                    hover_row = []
-                                    for f_bin in freq_bins_sorted:
-                                        cell = tier_data.filter(
-                                            (pl.col("recency_bin") == r_bin)
-                                            & (pl.col("frequency_bin") == f_bin)
-                                        )
-                                        if cell.height > 0:
-                                            rate = cell["rate"][0]
-                                            n = cell["eligible_n"][0]
-                                            buyers = cell["buyers"][0]
-                                            lo = cell["lower_ci"][0]
-                                            hi = cell["upper_ci"][0]
-                                            z_row.append(rate if rate is not None else None)
-                                            hover_row.append(
-                                                f"Recency: {r_bin}<br>Freq: {f_bin}<br>Rate: {rate:.1%}<br>N: {n}<br>Buyers: {buyers}<br>CI: [{lo:.1%}, {hi:.1%}]"
-                                                if lo
-                                                else f"Recency: {r_bin}<br>Freq: {f_bin}<br>N: {n}"
-                                            )
-                                        else:
-                                            z_row.append(None)
-                                            hover_row.append(
-                                                f"Recency: {r_bin}<br>Freq: {f_bin}<br>No data"
-                                            )
-                                    z.append(z_row)
-                                    hover.append(hover_row)
-
-                                fig = go.Figure(
-                                    go.Heatmap(
-                                        z=z,
-                                        x=freq_bins_sorted,
-                                        y=rec_bins_sorted,
-                                        colorscale="RdYlGn",
-                                        zmin=0,
-                                        zmax=1,
-                                        colorbar=dict(tickformat=".0%", title="30d repeat rate"),
-                                        hovertext=hover,
-                                        hoverinfo="text",
-                                    )
-                                )
-                                chart(
-                                    fig,
-                                    f"RFM surface — {tier}",
-                                    f"rfm_surface_{tier}",
-                                    "Frequency bin (purchases_90d quantiles)",
-                                    "Recency bin (recency quantiles)",
-                                )
-                    else:
-                        # Non-faceted version
-                        z = []
-                        hover = []
-                        for r_bin in sorted(surface["recency_bin"].unique()):
-                            z_row = []
-                            hover_row = []
-                            for f_bin in sorted(surface["frequency_bin"].unique()):
-                                cell = surface.filter(
-                                    (pl.col("recency_bin") == r_bin)
-                                    & (pl.col("frequency_bin") == f_bin)
-                                )
-                                if cell.height > 0:
-                                    rate = cell["rate"][0]
-                                    n = cell["eligible_n"][0]
-                                    buyers = cell["buyers"][0]
-                                    lo = cell["lower_ci"][0]
-                                    hi = cell["upper_ci"][0]
-                                    z_row.append(rate if rate is not None else None)
-                                    hover_row.append(
-                                        f"Recency: {r_bin}<br>Freq: {f_bin}<br>Rate: {rate:.1%}<br>N: {n}<br>Buyers: {buyers}<br>CI: [{lo:.1%}, {hi:.1%}]"
-                                        if lo
-                                        else f"Recency: {r_bin}<br>Freq: {f_bin}<br>N: {n}"
-                                    )
-                                else:
-                                    z_row.append(None)
-                                    hover_row.append(
-                                        f"Recency: {r_bin}<br>Freq: {f_bin}<br>No data"
-                                    )
-                            z.append(z_row)
-                            hover.append(hover_row)
-
-                        fig = go.Figure(
-                            go.Heatmap(
-                                z=z,
-                                x=sorted(surface["frequency_bin"].unique()),
-                                y=sorted(surface["recency_bin"].unique()),
-                                colorscale="RdYlGn",
-                                zmin=0,
-                                zmax=1,
-                                colorbar=dict(tickformat=".0%", title="30d repeat rate"),
-                                hovertext=hover,
-                                hoverinfo="text",
-                            )
-                        )
-                        chart(
-                            fig,
-                            "RFM response surface: 30-day repeat probability",
-                            "rfm_surface",
-                            "Frequency bin (purchases_90d quantiles)",
-                            "Recency bin (recency quantiles)",
-                        )
-
-                    table(
-                        surface.select(
-                            "value_tier" if "value_tier" in surface.columns else "recency_bin",
-                            "recency_bin",
-                            "frequency_bin",
-                            "eligible_n",
-                            "buyers",
-                            "rate",
-                            "lower_ci",
-                            "upper_ci",
-                        )
-                    )
-                    st.caption(
-                        "Quantile bins on recency and frequency_90d. Wilson 95% CI for cells with ≥20 eligible. "
-                        "Descriptive association, not causal prediction or CLV forecast. "
-                        "Multiple comparisons not multiplicity-adjusted."
-                    )
-
-            except Exception as e:
-                st.error(f"RFM response surface failed: {type(e).__name__}: {e}")
 
     elif view == "Value-at-Risk Scatter":
         st.subheader("Value-at-risk: high-spend customers overdue on cadence")
@@ -4499,108 +4072,6 @@ def display_results(root, coverage):
                 f"Total spend: {conc['total']:,.2f} ({conc['positive_n']} with positive spend). Top fractions round up to whole customers."
             )
 
-    elif view == "Cadence Validation":
-        # (existing implementation - already exists)
-        st.subheader("Cadence vs observed return probability")
-        st.caption(
-            "Tests whether the lateness = recency/median_gap boundary (2×) corresponds to "
-            "actual changes in 30/90-day return probability. "
-            "Bins customers by lateness; plots Wilson 95% CI for future purchase rates."
-        )
-
-        if not coverage:
-            st.warning(
-                "Coverage unconfirmed: future outcome validation unavailable. "
-                "Enable coverage confirmation in sidebar."
-            )
-        else:
-            try:
-                max_lateness = st.slider(
-                    "Max lateness to display", 2.0, 10.0, 5.0, 0.5, key="cv_max_late"
-                )
-                bins = st.slider("Number of lateness bins", 5, 20, 10, key="cv_bins")
-
-                val = cadence_return_validation(
-                    rows, coverage, max_lateness=max_lateness, bins=bins
-                )
-
-                if "warning" in val.columns:
-                    st.warning(val["warning"][0])
-                elif "error" in val.columns:
-                    st.error(val["error"][0])
-                elif val.is_empty():
-                    st.info("No eligible customers with finite cadence metrics.")
-                else:
-                    for horizon in [30, 90]:
-                        h_data = val.filter(pl.col("horizon") == horizon)
-                        if h_data.is_empty():
-                            continue
-
-                        # Check if CI data exists
-                        has_upper = h_data["upper_ci"].is_not_null().any()
-                        has_lower = h_data["lower_ci"].is_not_null().any()
-                        upper_diff = (h_data["upper_ci"] - h_data["purchase_rate"]).to_list() if has_upper else None
-                        lower_diff = (h_data["purchase_rate"] - h_data["lower_ci"]).to_list() if has_lower else None
-
-                        fig = go.Figure()
-                        fig.add_trace(
-                            go.Bar(
-                                x=h_data["lateness_bin"].to_list(),
-                                y=h_data["purchase_rate"].to_list(),
-                                name=f"{horizon}d return rate",
-                                marker_color="#0072B2" if horizon == 30 else "#E69F00",
-                                error_y=dict(
-                                    type="data",
-                                    symmetric=False,
-                                    array=upper_diff,
-                                    arrayminus=lower_diff,
-                                    visible=True,
-                                )
-                                if has_upper or has_lower
-                                else None,
-                                customdata=list(
-                                    zip(
-                                        h_data["eligible_n"].to_list(),
-                                        h_data["buyers"].to_list(),
-                                    )
-                                ),
-                                hovertemplate="Lateness bin: %{x}<br>Return rate: %{y:.1%}<br>Eligible: %{customdata[0]:,}<br>Buyers: %{customdata[1]:,}<extra></extra>",
-                            )
-                        )
-                        fig.add_vline(
-                            x="1.5–2.0" if "1.5–2.0" in h_data["lateness_bin"].to_list() else 2.0,
-                            line_dash="dash",
-                            line_color="red",
-                            annotation_text="2× median_gap boundary",
-                            annotation_position="top",
-                        )
-                        fig.update_yaxes(range=[0, 1], tickformat=".0%")
-                        chart(
-                            fig,
-                            f"{horizon}-day return rate by lateness bin",
-                            f"cadence_val_{horizon}",
-                            "Lateness (recency / median_gap)",
-                            "Future purchase rate (Wilson 95% CI)",
-                        )
-
-                    table(
-                        val.select(
-                            "horizon",
-                            "lateness_bin",
-                            "eligible_n",
-                            "buyers",
-                            "purchase_rate",
-                            "lower_ci",
-                            "upper_ci",
-                        )
-                    )
-                    st.caption(
-                        "Wilson 95% CI shown for bins with ≥20 eligible customers. Lateness = recency / median_gap. Research: BG/NBD repeat-buying models."
-                    )
-
-            except Exception as e:
-                st.error(f"Cadence validation failed: {type(e).__name__}: {e}")
-
     elif view == "Full-Population Distributions":
         st.subheader("Full-population feature distributions")
         st.caption(
@@ -4667,6 +4138,992 @@ def display_results(root, coverage):
             "analysis_manifest.json",
             "application/json",
         )
+
+
+# ============================================================================
+# New view render functions (question-based navigation)
+# ============================================================================
+
+def render_data_trust_quality(root: Path, rows: pl.LazyFrame, coverage: bool, color_map: dict):
+    """Data Trust & Quality - Can these records support the analysis being requested?"""
+    st.subheader("Data Trust & Quality")
+    st.caption(
+        "Question: Can these records support the analysis being requested? "
+        "Shows quality funnel, date coverage, missingness, and source limitations."
+    )
+
+    # Load quality.json
+    quality_path = root / "quality.json"
+    if quality_path.exists():
+        quality = read_json(quality_path)
+    else:
+        st.warning("Quality report not found.")
+        return
+
+    # Quality funnel
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Source rows", f"{quality.get('source_rows', 0):,}")
+    col2.metric("Valid rows", f"{quality.get('valid_rows', 0):,}")
+    col3.metric("Rejected rows", f"{quality.get('rejected_rows', 0):,}")
+    col4.metric("Rejection rate", f"{quality.get('rejection_rate', 0):.2%}")
+
+    # Date coverage
+    st.markdown("**Date Coverage**")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("First observed date", str(quality.get('first_date', 'N/A')))
+    col2.metric("Last observed date", str(quality.get('last_date', 'N/A')))
+    col3.metric("Stated complete through", str(quality.get('observed_through', 'N/A')))
+
+    # Coverage confirmation status
+    coverage_confirmed = quality.get('coverage_confirmed', False)
+    if coverage_confirmed:
+        st.success("✓ Observation coverage confirmed by user")
+    else:
+        st.warning("⚠ Observation coverage NOT confirmed — future-purchase metrics unavailable")
+    st.caption(quality.get('coverage_interpretation', ''))
+
+    # Rejection breakdown
+    if quality.get('rejection_breakdown'):
+        st.markdown("**Rejection Breakdown**")
+        breakdown_df = pl.DataFrame([
+            {"Reason": k, "Count": v} for k, v in quality['rejection_breakdown'].items()
+        ])
+        table(breakdown_df)
+
+    # Data scope limitations (from METRICS.md)
+    st.markdown("**Data Scope Limitations**")
+    st.markdown("""
+    - **Purchases only**: No return/refund handling. All valid rows treated as purchases.
+    - **Currency opaque**: Amounts in input data's currency; no conversion or symbol assumed.
+    - **First observed ≠ acquisition**: First recorded purchase may not be true customer acquisition.
+    - **Basket grain**: Assumes `(customer_id, transaction_id, date)` uniquely identifies a basket.
+    - **Relative segmentation**: Quantile thresholds depend on snapshot population; not absolute benchmarks.
+    - **No causal claims**: Descriptive associations only. Segment differences ≠ treatment effects.
+    """)
+
+    # Missingness matrix (sample of features)
+    st.markdown("**Feature Missingness (sample)**")
+    features = [f for f in FEATURES if f in rows.collect_schema().names()]
+    expressions = [pl.len().alias("n")]
+    for f in features[:15]:  # Limit to first 15
+        finite = pl.col(f).filter(pl.col(f).is_finite())
+        expressions += [finite.count().alias(f + "_n")]
+    stats = collect(rows.select(expressions)).row(0, named=True)
+    missingness = pl.DataFrame([
+        dict(feature=f, missing=stats["n"] - stats[f + "_n"], missing_pct=(stats["n"] - stats[f + "_n"]) / stats["n"] if stats["n"] else 0)
+        for f in features[:15]
+    ]).sort("missing", descending=True)
+    table(missingness)
+
+
+def render_customer_base_summary(rows: pl.LazyFrame, coverage: bool, color_map: dict):
+    """Customer Base Summary - Is customer activity and recorded sales changing?"""
+    st.subheader("Customer Base Summary")
+    st.caption(
+        "Question: Is customer activity and recorded sales changing? "
+        "Shows active customers, baskets, recorded sales over time with calendar-month alignment."
+    )
+
+    # Overall metrics
+    metrics = collect(
+        rows.select(
+            pl.len().alias("customers"),
+            pl.col("spend_90d").sum().alias("sales"),
+            pl.col("purchases_90d").sum().alias("baskets"),
+            (pl.col("purchases_90d") > 0).sum().alias("active"),
+        )
+    ).row(0, named=True)
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total customers", f"{metrics['customers']:,}")
+    col2.metric("Active (90d)", f"{metrics['active']:,}")
+    col3.metric("Baskets (90d)", f"{metrics['baskets']:,}")
+    col4.metric("Recorded sales (90d)", f"{metrics['sales']:,.2f}")
+
+    st.caption("Recorded amounts are currency units, not profit. Windows end at the cutoff; inactive observed customers remain included.")
+
+    # Segment composition
+    st.markdown("**Population Composition**")
+    for dim in DIMS:
+        data = collect(
+            rows.group_by(dim).agg(
+                pl.len().alias("customers"), pl.col("spend_90d").sum().alias("spend_90d")
+            ).sort("customers", descending=True)
+        )
+        if not data.is_empty():
+            with st.expander(f"By {dim}", expanded=(dim == "lifecycle")):
+                bars(data, dim, "customers", f"Customers by {dim}", f"comp_cust_{dim}", color_map)
+                bars(data, dim, "spend_90d", f"Spend by {dim}", f"comp_spend_{dim}", color_map)
+
+
+def render_key_signals(rows: pl.LazyFrame, coverage: bool, color_map: dict):
+    """Key Signals - The 3-5 most useful signals from the data."""
+    st.subheader("Key Signals")
+    st.caption(
+        "Question: What are the most important patterns in the data right now? "
+        "Highlights: repeat rates, overdue customers, category concentration, momentum."
+    )
+
+    # Signal 1: Repeat rate (if coverage confirmed)
+    if coverage:
+        horizon = 90
+        outcome, eligible = f"future_purchases_{horizon}d", f"eligible_followup_{horizon}d"
+        repeat_data = collect(
+            rows.filter(pl.col(eligible))
+            .select(
+                pl.len().alias("eligible_n"),
+                (pl.col(outcome) > 0).sum().alias("repeat_n"),
+            )
+        )
+        if repeat_data["eligible_n"][0] > 0:
+            rate = repeat_data["repeat_n"][0] / repeat_data["eligible_n"][0]
+            lo, hi = wilson(repeat_data["repeat_n"][0], repeat_data["eligible_n"][0])
+            st.metric(
+                f"Next-{horizon}-day repeat rate",
+                f"{rate:.1%}",
+                help=f"Wilson 95% CI: [{lo:.1%}, {hi:.1%}] | n={repeat_data['eligible_n'][0]:,}"
+            )
+        else:
+            st.info("No eligible customers for repeat rate calculation.")
+
+    # Signal 2: Overdue customers (lateness >= 2)
+    overdue = collect(
+        rows.filter(pl.col("lateness").is_not_null() & (pl.col("lateness") >= 2))
+        .select(
+            pl.len().alias("overdue_n"),
+            pl.col("spend_90d").sum().alias("overdue_spend"),
+        )
+    ).row(0, named=True)
+    total = collect(rows.select(pl.len().alias("total"))).row(0)[0]
+    if total > 0:
+        overdue_pct = overdue["overdue_n"] / total
+        st.metric(
+            "Overdue customers (lateness ≥ 2)",
+            f"{overdue['overdue_n']:,} ({overdue_pct:.1%})",
+            help=f"Representing {overdue['overdue_spend']:,.2f} in 90d spend"
+        )
+
+    # Signal 3: Category concentration (HHI)
+    hhi_data = collect(
+        rows.filter(pl.col("category_hhi").is_not_null())
+        .select(pl.col("category_hhi").median().alias("median_hhi"))
+    ).row(0, named=True)
+    if hhi_data["median_hhi"] is not None:
+        st.metric(
+            "Median category concentration (HHI)",
+            f"{hhi_data['median_hhi']:.3f}",
+            help="Higher = more concentrated spend in few categories. Range: [1/N, 1]"
+        )
+
+    # Signal 4: Customer momentum (frequency + basket change)
+    momentum = collect(
+        rows.filter(
+            pl.col("frequency_change").is_not_null() &
+            pl.col("basket_change").is_not_null()
+        )
+        .select(
+            pl.len().alias("comparable_n"),
+            (pl.col("frequency_change") > 0).sum().alias("freq_up"),
+            (pl.col("frequency_change") < 0).sum().alias("freq_down"),
+            (pl.col("basket_change") > 0).sum().alias("basket_up"),
+            (pl.col("basket_change") < 0).sum().alias("basket_down"),
+        )
+    ).row(0, named=True)
+    if momentum["comparable_n"] > 0:
+        col1, col2 = st.columns(2)
+        col1.metric(
+            "Frequency trend",
+            f"↑ {momentum['freq_up']:,} · ↓ {momentum['freq_down']:,}",
+            help=f"Of {momentum['comparable_n']:,} customers with comparable windows"
+        )
+        col2.metric(
+            "Basket size trend",
+            f"↑ {momentum['basket_up']:,} · ↓ {momentum['basket_down']:,}",
+            help="Recent 90d vs previous 90d AOV change"
+        )
+
+    # Signal 5: Evidence distribution
+    evidence_data = collect(
+        rows.group_by("evidence").agg(pl.len().alias("count")).sort("count", descending=True)
+    )
+    if not evidence_data.is_empty():
+        # Create bar chart figure
+        fig = go.Figure(
+            go.Bar(
+                x=evidence_data["count"].to_list(),
+                y=evidence_data["evidence"].to_list(),
+                orientation="h",
+                marker_color=[get_color(v, color_map) for v in evidence_data["evidence"].to_list()],
+            )
+        )
+        
+        # Wrap in ChartCard
+        card = create_chart_card(
+            key="evidence_dist_card",
+            title="Customers by Evidence Level",
+            figure=fig,
+            question="How much evidence supports each customer's behavioral classification?",
+            takeaway=f"Population split: {evidence_data['count'].to_list()} across {evidence_data.height} evidence levels",
+            evidence=ChartEvidence(
+                numerator="Customers in each evidence level",
+                denominator="Total filtered customers",
+                population_size=int(evidence_data["count"].sum()),
+                interval_type="Exact counts (no sampling)",
+            ),
+            how_to_read=(
+                "Horizontal bars show customer count per evidence level. "
+                "**Stronger** = style-eligible with ≥12 usable gaps; "
+                "**Limited** = style-eligible with <12 gaps; "
+                "**Insufficient** = not style-eligible. "
+                "Colors are deterministic per label."
+            ),
+            caveat=(
+                "Evidence levels are based on observed history only. "
+                "First observed purchase may not be true acquisition. "
+                "Left-censoring affects customers near observation start."
+            ),
+            next_step="Drill into 'Segments' view to see behavioral tags by evidence level.",
+            alt_description="Horizontal bar chart showing customer counts by evidence level: stronger, limited, insufficient.",
+        )
+        card.render()
+
+
+def render_customer_brief(root: Path, rows: pl.LazyFrame, coverage: bool, color_map: dict):
+    """Customer Brief - Narrative profile with evidence and limitations.
+    
+    Per improvement plan CA-10: Answer 5 questions without requiring feature table interpretation:
+    1. Observed relationship (first/last purchase, tenure, recency, purchase days)
+    2. Shopping rhythm (median gap, usable gaps, eligibility)
+    3. Basket/value pattern (recent spend, median basket, peer comparison)
+    4. Breadth & preference (leading categories, concentration, repeat products)
+    5. Change & evidence (recent vs prior, counts, limitations)
+    """
+    from retail_analytics.visualization.chart_components import (
+        ChartSpec, ChartEvidence, ChartCard, create_chart_card,
+        evaluate_evidence, SupportThresholds,
+    )
+    
+    st.subheader("👤 Customer Brief")
+    st.caption(
+        "**Question:** What has actually been observed about this customer? "
+        "A concise narrative profile with supporting evidence and clear limitations. "
+        "Identifiers are masked by default."
+    )
+
+    # Customer selector
+    customer_ids = collect(rows.select("customer_id").unique().sort("customer_id"))["customer_id"].to_list()
+    if not customer_ids:
+        st.info("No customers in filtered population.")
+        return
+
+    # Mask identifiers by default
+    mask_ids = st.checkbox("Mask customer IDs", value=True, key="mask_customer_ids")
+    display_ids = [f"Cust_{i+1:04d}" for i in range(len(customer_ids))] if mask_ids else customer_ids
+    id_map = dict(zip(display_ids, customer_ids))
+
+    selected_display = st.selectbox("Customer", display_ids, key="customer_brief_id")
+    selected_id = id_map[selected_display]
+    if not selected_id:
+        return
+
+    # Get customer data
+    customer = collect(rows.filter(pl.col("customer_id") == selected_id))
+    if customer.is_empty():
+        st.warning("Customer not found in current filtered population.")
+        return
+
+    c = customer.row(0, named=True)
+
+    # ============================================================
+    # 1. OBSERVED RELATIONSHIP
+    # ============================================================
+    st.markdown("### 1. Observed Relationship")
+    
+    first_purchase = c.get("first_purchase")
+    last_purchase = c.get("last_purchase")
+    tenure = c.get("tenure", 0)
+    recency = c.get("recency", None)
+    purchases_90d = c.get("purchases_90d", 0)
+    days_365d = c.get("days_365d", 0)
+    
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("First Purchase", str(first_purchase) if first_purchase else "N/A")
+    col2.metric("Last Purchase", str(last_purchase) if last_purchase else "N/A")
+    col3.metric("Tenure (days)", f"{tenure:,}" if tenure else "N/A")
+    col4.metric("Recency (days)", f"{recency:,}" if recency is not None else "N/A")
+    
+    col1, col2 = st.columns(2)
+    col1.metric("Purchase Days (90d)", f"{purchases_90d:,}")
+    col2.metric("Shopping Days (365d)", f"{days_365d:,}")
+    
+    # Evidence badge for relationship
+    rel_state = evaluate_evidence(
+        n=days_365d if days_365d else 0,
+        thresholds=SupportThresholds(),
+        analysis_type="default"
+    )
+    st.caption(f"Evidence: {format_evidence_badge(rel_state)}")
+
+    # ============================================================
+    # 2. SHOPPING RHYTHM
+    # ============================================================
+    st.markdown("### 2. Shopping Rhythm")
+    
+    median_gap = c.get("median_gap")
+    gap_cv = c.get("gap_cv")
+    gap_count = c.get("gap_count", 0)
+    lateness = c.get("lateness")
+    
+    if median_gap is not None and median_gap > 0:
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Median Gap", f"{median_gap:.1f} days")
+        col2.metric("Gap CV", f"{gap_cv:.2f}" if gap_cv is not None else "N/A")
+        col3.metric("Usable Gaps", f"{gap_count:,}")
+        col4.metric("Lateness", f"{lateness:.2f}×" if lateness is not None else "N/A")
+        
+        # Rhythm interpretation
+        if lateness is not None:
+            if lateness < 1.0:
+                rhythm_status = "🟢 On cadence (purchasing ahead of typical rhythm)"
+            elif lateness < 2.0:
+                rhythm_status = "🟡 1-2× overdue"
+            else:
+                rhythm_status = "🔴 ≥2× overdue (significantly past typical interval)"
+            st.caption(f"Rhythm status: **{rhythm_status}**")
+        
+        # Eligibility for cadence metrics
+        cadence_state = evaluate_evidence(
+            n=gap_count,
+            thresholds=SupportThresholds(),
+            analysis_type="default"
+        )
+        st.caption(f"Cadence evidence: {format_evidence_badge(cadence_state)}")
+        if not cadence_state.has_evidence:
+            st.warning("⚠ Insufficient gaps for reliable rhythm estimate (need ≥4 gaps, tenure ≥90d, 6+ shopping days in 365d).")
+    else:
+        st.warning("⚠ No median gap available — insufficient purchase history for rhythm analysis.")
+        st.caption("Requires: ≥6 shopping days in 365d, tenure ≥90d, ≥4 usable gaps")
+
+    # ============================================================
+    # 3. BASKET / VALUE PATTERN
+    # ============================================================
+    st.markdown("### 3. Basket & Value Pattern (90-day window)")
+    
+    spend_90d = c.get("spend_90d", 0)
+    median_basket = c.get("median_basket")
+    aov_recent = c.get("aov_recent")
+    aov_previous = c.get("aov_previous")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Spend", f"{spend_90d:,.2f}")
+    col2.metric("Median Basket", f"{median_basket:,.2f}" if median_basket is not None else "N/A")
+    col3.metric("Recent AOV", f"{aov_recent:,.2f}" if aov_recent is not None else "N/A")
+    col4.metric("Previous AOV", f"{aov_previous:,.2f}" if aov_previous is not None else "N/A")
+    
+    # Peer comparison
+    peer_median_spend = collect(
+        rows.select(pl.col("spend_90d").median())
+    ).item()
+    if peer_median_spend:
+        diff_pct = ((spend_90d - peer_median_spend) / peer_median_spend * 100) if peer_median_spend else 0
+        st.caption(f"Peer median 90d spend: {peer_median_spend:,.2f} | This customer: {diff_pct:+.1f}% vs peer median")
+    
+    st.caption("⚠ Monetary figures are recorded spend, not profit.")
+
+    # ============================================================
+    # 4. BREADTH & PREFERENCE
+    # ============================================================
+    st.markdown("### 4. Breadth & Preference")
+    
+    cat_count = c.get("category_count", 0)
+    cat_hhi = c.get("category_hhi")
+    dom_cat = c.get("dominant_category", "N/A")
+    dom_dept = c.get("dominant_department", "N/A")
+    dominant_share = c.get("dominant_share")
+    core_size = c.get("core_size", 0)
+    core_spend_share = c.get("core_spend_share", 0)
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Categories Shopped", f"{cat_count:,}")
+    col2.metric("Dominant Category", f"{dom_cat} ({dom_dept})")
+    col3.metric("Dominant Share", f"{dominant_share:.1%}" if dominant_share is not None else "N/A")
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Category HHI", f"{cat_hhi:.3f}" if cat_hhi is not None else "N/A")
+    col2.metric("Core Products", f"{core_size:,}")
+    col3.metric("Core Spend Share", f"{core_spend_share:.1%}" if core_spend_share is not None else "N/A")
+    
+    # Concentration interpretation
+    if cat_hhi is not None:
+        if cat_hhi > 0.5:
+            conc_desc = "Highly concentrated (few categories dominate)"
+        elif cat_hhi > 0.25:
+            conc_desc = "Moderately concentrated"
+        else:
+            conc_desc = "Diverse (broad category spread)"
+        st.caption(f"Concentration: **{conc_desc}** (HHI = {cat_hhi:.3f})")
+
+    # ============================================================
+    # 5. CHANGE & EVIDENCE
+    # ============================================================
+    st.markdown("### 5. Recent vs Previous Period (90d vs Prior 90d)")
+    
+    if c.get("comparable_windows"):
+        freq_chg = c.get("frequency_change")
+        basket_chg = c.get("basket_change")
+        spend_chg = c.get("spend_change")
+        breadth_chg = c.get("breadth_change")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Frequency Δ", f"{freq_chg:+.1%}" if freq_chg is not None else "N/A")
+        col2.metric("Basket Size Δ", f"{basket_chg:+.1%}" if basket_chg is not None else "N/A")
+        col3.metric("Spend Δ", f"{spend_chg:+.1%}" if spend_chg is not None else "N/A")
+        col4.metric("Breadth Δ", f"{breadth_chg:+.2f}" if breadth_chg is not None else "N/A")
+        
+        # Evidence quality for change
+        tenure = c.get("tenure", 0)
+        st.caption(f"Comparison eligible: tenure ≥ 179d ({'✓' if tenure >= 179 else '✗'}, actual: {tenure}d)")
+    else:
+        tenure = c.get("tenure", 0)
+        st.info(f"⚠ Insufficient tenure for period-over-period comparison (requires ≥ 179 days, current: {tenure}d).")
+    
+    # Evidence summary
+    st.markdown("### Evidence Summary")
+    evidence_level = c.get("evidence", "unknown")
+    lifecycle = c.get("lifecycle", "unknown")
+    behavior = c.get("behavior", "unknown")
+    trajectory = c.get("trajectory", "unknown")
+    value_tier = c.get("value_tier", "unknown")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write(f"**Lifecycle:** {lifecycle}")
+        st.write(f"**Evidence Level:** {evidence_level}")
+        st.write(f"**Behavior:** {behavior}")
+    with col2:
+        st.write(f"**Trajectory:** {trajectory}")
+        st.write(f"**Value Tier:** {value_tier}")
+        if c.get("style_eligible"):
+            st.write("**Style Eligible:** ✓ (sufficient history for cadence metrics)")
+        else:
+            st.write("**Style Eligible:** ✗ (insufficient history for cadence metrics)")
+    
+    # Future outcomes (if coverage confirmed)
+    if coverage:
+        future_30 = c.get("future_purchases_30d")
+        future_90 = c.get("future_purchases_90d")
+        eligible_30 = c.get("eligible_followup_30d")
+        eligible_90 = c.get("eligible_followup_90d")
+        
+        if eligible_30 or eligible_90:
+            st.markdown("### Future Outcomes (Observed)")
+            col1, col2 = st.columns(2)
+            if eligible_30 and future_30 is not None:
+                col1.metric("30-day Repeat", "Yes" if future_30 > 0 else "No")
+            if eligible_90 and future_90 is not None:
+                col2.metric("90-day Repeat", "Yes" if future_90 > 0 else "No")
+        else:
+            st.caption("Future outcomes: Not eligible for follow-up in requested horizons.")
+    else:
+        st.caption("Future outcomes: Unavailable (coverage not confirmed). Re-run analysis with coverage confirmation to enable.")
+
+
+def render_customer_timeline(root: Path, rows: pl.LazyFrame, coverage: bool, color_map: dict):
+    """Customer Timeline - Narrative purchase history with rhythm and category evolution.
+    
+    Per improvement plan CA-10: Timeline with cadence, rhythm, and category evolution.
+    Identifiers masked by default.
+    """
+    from retail_analytics.visualization.chart_components import (
+        ChartSpec, ChartEvidence, ChartCard, create_chart_card,
+    )
+    
+    st.subheader("📅 Customer Timeline")
+    st.caption(
+        "**Question:** What is this customer's purchase history over time? "
+        "Shows timeline of baskets, spend, cadence, and category evolution with rhythm analysis."
+    )
+
+    # Customer selector with masked IDs
+    customer_ids = collect(rows.select("customer_id").unique().sort("customer_id"))["customer_id"].to_list()
+    if not customer_ids:
+        st.info("No customers in filtered population.")
+        return
+
+    mask_ids = st.checkbox("Mask customer IDs", value=True, key="mask_customer_ids_timeline")
+    display_ids = [f"Cust_{i+1:04d}" for i in range(len(customer_ids))] if mask_ids else customer_ids
+    id_map = dict(zip(display_ids, customer_ids))
+
+    selected_display = st.selectbox("Customer", display_ids, key="customer_timeline_id")
+    selected_id = id_map[selected_display]
+    if not selected_id:
+        return
+
+    # Load validated transactions for this customer
+    validated_path = root / "validated.parquet"
+    if not validated_path.exists():
+        st.info("No validated transaction data available.")
+        return
+
+    validated = pl.scan_parquet(validated_path)
+    customer_txns = collect(
+        validated.filter(pl.col("customer_id") == selected_id)
+        .sort("date")
+        .select("date", "transaction_id", "product_id", "category", "department", "value", "quantity")
+    )
+
+    if customer_txns.is_empty():
+        st.info("No transactions found for this customer.")
+        return
+
+    # ============================================================
+    # Timeline Summary
+    # ============================================================
+    first_date = customer_txns["date"].min()
+    last_date = customer_txns["date"].max()
+    total_days = (last_date - first_date).days + 1 if first_date and last_date else 0
+    total_txns = customer_txns.height
+    total_spend = customer_txns["value"].sum()
+    
+    # Aggregate to basket level
+    baskets = customer_txns.group_by(["date", "transaction_id"]).agg(
+        pl.col("value").sum().alias("basket_spend"),
+        pl.col("product_id").n_unique().alias("n_products"),
+        pl.col("category").unique().alias("categories"),
+        pl.col("department").unique().alias("departments"),
+    ).sort("date")
+    
+    n_baskets = baskets.height
+    median_basket = baskets["basket_spend"].median()
+    
+    # Calculate gaps
+    gap_days = []
+    prev_date = None
+    for d in baskets["date"].to_list():
+        if prev_date is not None:
+            gap_days.append((d - prev_date).days)
+        prev_date = d
+    
+    median_gap = np.median(gap_days) if gap_days else None
+    gap_cv = (np.std(gap_days) / np.mean(gap_days)) if gap_days and np.mean(gap_days) > 0 else None
+    
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("First Purchase", str(first_date))
+    col2.metric("Last Purchase", str(last_date))
+    col3.metric("Total Span", f"{total_days:,} days")
+    col4.metric("Total Baskets", f"{n_baskets:,}")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Spend", f"{total_spend:,.2f}")
+    col2.metric("Median Basket", f"{median_basket:,.2f}" if median_basket is not None else "N/A")
+    col3.metric("Median Gap", f"{median_gap:.1f} days" if median_gap is not None else "N/A")
+    col4.metric("Gap CV", f"{gap_cv:.2f}" if gap_cv is not None else "N/A")
+
+    # Rhythm interpretation
+    if median_gap is not None and median_gap > 0:
+        # Get recency from snapshot
+        customer_snapshot = collect(rows.filter(pl.col("customer_id") == selected_id))
+        if not customer_snapshot.is_empty():
+            recency = customer_snapshot["recency"][0]
+            lateness = recency / median_gap if recency and median_gap > 0 else None
+            
+            if lateness is not None:
+                if lateness < 1.0:
+                    rhythm_status = "🟢 On cadence"
+                elif lateness < 2.0:
+                    rhythm_status = "🟡 1-2× overdue"
+                else:
+                    rhythm_status = "🔴 ≥2× overdue"
+                st.caption(f"Current rhythm: **{rhythm_status}** (lateness = {lateness:.2f}×, recency = {recency}d, median gap = {median_gap:.1f}d)")
+
+    # ============================================================
+    # Basket Spend Timeline (ChartCard)
+    # ============================================================
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=baskets["date"].to_list(),
+        y=baskets["basket_spend"].to_list(),
+        mode="lines+markers",
+        name="Basket spend",
+        line=dict(color="#0072B2"),
+        marker=dict(size=8),
+        hovertemplate="Date: %{x}<br>Basket spend: %{y:,.2f}<br>Products: %{customdata[0]}<extra></extra>",
+        customdata=list(zip(baskets["n_products"].to_list())),
+    ))
+    
+    # Add cumulative spend line
+    cum_spend = baskets["basket_spend"].cum_sum().to_list()
+    fig.add_trace(go.Scatter(
+        x=baskets["date"].to_list(),
+        y=cum_spend,
+        mode="lines",
+        name="Cumulative spend",
+        line=dict(color="#009E73", dash="dot"),
+        yaxis="y2",
+        hovertemplate="Date: %{x}<br>Cumulative: %{y:,.2f}<extra></extra>",
+    ))
+    
+    fig.update_layout(
+        title="Purchase Timeline: Basket Spend & Cumulative",
+        xaxis_title="Date",
+        yaxis=dict(title="Basket Spend", side="left"),
+        yaxis2=dict(title="Cumulative Spend", side="right", overlaying="y", showgrid=False),
+        height=400,
+        template="plotly_white",
+        hovermode="x unified",
+    )
+    
+    # Render with ChartCard
+    card = create_chart_card(
+        key="customer_timeline_spend",
+        title="Purchase Timeline",
+        figure=fig,
+        question="When did this customer shop and how much did they spend per basket?",
+        takeaway=f"{n_baskets} baskets over {total_days} days (median {median_basket:,.2f}/basket, median gap {median_gap:.1f}d)" if median_basket else f"{n_baskets} baskets over {total_days} days",
+        evidence=ChartEvidence(
+            numerator=f"{n_baskets} baskets",
+            denominator=f"{total_days} days span",
+            population_size=1,
+            comparison_period=f"{first_date} to {last_date}",
+            confidence_interval="Not applicable",
+            interval_type="Descriptive",
+            eligibility_criteria="Customer has ≥1 transaction",
+        ),
+        how_to_read=(
+            "Blue line+markers: individual basket spend per purchase date. "
+            "Green dotted line: cumulative spend (right axis). "
+            "Hover shows basket spend, product count, and cumulative total."
+        ),
+        caveat="Shows observed transactions only. Returns/refunds not tracked. Cumulative includes all historical purchase days through cutoff.",
+        next_step="Check 'Customer Brief' for narrative profile with rhythm and category analysis.",
+        alt_description=f"Timeline showing {n_baskets} purchase events with basket spend and cumulative spend over {total_days} days.",
+    )
+    card.render()
+
+    # ============================================================
+    # Basket Details Table
+    # ============================================================
+    st.markdown("**Basket Details**")
+    display_baskets = baskets.with_columns(
+        pl.col("categories").list.join(", ").alias("categories"),
+        pl.col("departments").list.join(", ").alias("departments"),
+    ).select("date", "transaction_id", "basket_spend", "n_products", "categories", "departments")
+    table(display_baskets)
+
+    # ============================================================
+    # Category Evolution Over Time (ChartCard)
+    # ============================================================
+    st.markdown("**Category Evolution**")
+    cat_over_time = customer_txns.group_by(["date", "category"]).agg(
+        pl.col("value").sum().alias("spend")
+    ).sort(["date", "category"])
+
+    if not cat_over_time.is_empty():
+        fig2 = go.Figure()
+        for cat in sorted(cat_over_time["category"].unique().to_list()):
+            cat_data = cat_over_time.filter(pl.col("category") == cat)
+            fig2.add_trace(go.Scatter(
+                x=cat_data["date"].to_list(),
+                y=cat_data["spend"].to_list(),
+                mode="lines+markers",
+                name=cat,
+                line=dict(width=2),
+                marker=dict(size=6),
+            ))
+        fig2.update_layout(
+            title="Spend by Category Over Time",
+            xaxis_title="Date",
+            yaxis_title="Spend",
+            height=350,
+            template="plotly_white",
+        )
+        
+        card2 = create_chart_card(
+            key="customer_timeline_category",
+            title="Category Evolution",
+            figure=fig2,
+            question="How has this customer's category spend evolved over time?",
+            takeaway=f"{cat_over_time['category'].n_unique()} categories observed; dominant shifts visible over time",
+            evidence=ChartEvidence(
+                numerator="Category spend per date",
+                denominator="Total spend per date",
+                population_size=1,
+                comparison_period=f"{first_date} to {last_date}",
+                confidence_interval="Not applicable",
+                interval_type="Descriptive",
+                eligibility_criteria="Customer has ≥1 transaction",
+            ),
+            how_to_read=(
+                "Each line: spend in a category over time. "
+                "Peaks = high spend periods in that category. "
+                "Multiple lines = category switching or diversification."
+            ),
+            caveat="Category = department/category from source data. Spend = recorded amount, not profit.",
+            next_step="Check 'Customer Brief' for breadth/concentration metrics and dominant category.",
+            alt_description=f"Line chart showing spend by category over time for {cat_over_time['category'].n_unique()} categories.",
+        )
+        card2.render()
+
+    # ============================================================
+    # Rhythm Analysis
+    # ============================================================
+    if gap_days:
+        st.markdown("**Purchase Rhythm Analysis**")
+        
+        # Gap histogram
+        fig3 = go.Figure()
+        fig3.add_trace(go.Histogram(
+            x=gap_days,
+            nbinsx=min(20, len(set(gap_days))),
+            marker_color="#0072B2",
+            opacity=0.7,
+            name="Inter-purchase gaps",
+        ))
+        if median_gap:
+            fig3.add_vline(x=median_gap, line_dash="dash", line_color="green", 
+                          annotation_text=f"Median: {median_gap:.1f}d")
+        fig3.update_layout(
+            title="Inter-Purchase Gap Distribution",
+            xaxis_title="Days between purchases",
+            yaxis_title="Frequency",
+            height=300,
+            template="plotly_white",
+        )
+        card3 = create_chart_card(
+            key="customer_timeline_gaps",
+            title="Gap Distribution",
+            figure=fig3,
+            question="What is the distribution of days between this customer's purchases?",
+            takeaway=f"{len(gap_days)} gaps; median {median_gap:.1f}d, CV {gap_cv:.2f}" if median_gap and gap_cv else f"{len(gap_days)} gaps observed",
+            evidence=ChartEvidence(
+                numerator=f"{len(gap_days)} gaps",
+                denominator="Consecutive purchase pairs",
+                population_size=1,
+                comparison_period=f"{first_date} to {last_date}",
+                confidence_interval="Not applicable",
+                interval_type="Descriptive",
+                eligibility_criteria="Customer has ≥2 purchase days",
+            ),
+            how_to_read="Histogram of days between consecutive purchase dates. Median line (green) shows typical cadence.",
+            caveat="Only shows observed gaps. Gaps may be censored at start/end of observation window.",
+            next_step="Check 'Purchase Cadence' view for population-level cadence analysis.",
+            alt_description=f"Histogram of {len(gap_days)} inter-purchase gaps with median line.",
+        )
+        card3.render()
+
+
+def render_metric_definitions():
+    """Metric Definitions - All metric formulas and caveats."""
+    st.subheader("Metric Definitions")
+    st.caption(
+        "Question: How is each metric calculated? "
+        "Shows formula, numerator, denominator, window, minimum data requirements, and limitations."
+    )
+
+    # Load METRICS from visual_insights_core
+    for metric_name, (description, unit) in METRICS.items():
+        with st.expander(f"{metric_name} — {description} ({unit})"):
+            st.code(f"Metric: {metric_name}\nDescription: {description}\nUnit: {unit}")
+
+    st.markdown("---")
+    st.markdown("**Full metric specifications available in [METRICS.md](METRICS.md)**")
+    st.markdown("""
+    Key conventions:
+    - **Snapshot cutoff (C)**: Analysis date. Historical windows include C. Future windows start at C+1.
+    - **Null semantics**: Metric is `null` (not zero) when denominator is zero, inputs absent, or sample below threshold.
+    - **Historical windows**: 30d [C-29, C], 90d [C-89, C], 365d [C-364, C], Previous 90d [C-179, C-90]
+    - **Future windows**: 30d (C, C+30], 90d (C, C+90] — only when coverage confirmed
+    - **Change metrics**: Require `tenure ≥ 179` (comparable_windows = true)
+    """)
+
+
+def render_thresholds_calibration(root: Path):
+    """Thresholds & Calibration - Quantile thresholds and calibration metadata."""
+    st.subheader("Thresholds & Calibration")
+    st.caption(
+        "Question: How were the segmentation thresholds determined? "
+        "Shows reference snapshot, populations, confidence intervals, and calibration policy."
+    )
+
+    thresholds_path = root / "thresholds.json"
+    if not thresholds_path.exists():
+        st.info("Thresholds not yet computed.")
+        return
+
+    thresholds = read_json(thresholds_path)
+
+    # Reference selection
+    ref_sel = thresholds.get("reference_selection", {})
+    if ref_sel.get("selected"):
+        st.success(
+            f"✓ Thresholds calibrated from snapshot **{ref_sel.get('reference_date', 'N/A')}** "
+            f"({ref_sel.get('style_population', 0):,} style-eligible, "
+            f"{ref_sel.get('value_population', 0):,} value-eligible)"
+        )
+    else:
+        st.warning("⚠ Thresholds not calibrated: no snapshot met minimum population criteria.")
+
+    # Threshold stability note
+    manifest_path = root / "run.json"
+    if manifest_path.exists():
+        manifest = read_json(manifest_path)
+        chosen = manifest.get("snapshots", [])[-1] if manifest.get("snapshots") else None
+        if chosen and ref_sel.get("selected"):
+            ref_date = ref_sel.get("reference_date")
+            ref_pop = ref_sel.get("style_population", 0)
+            # Get current population from data profile
+            data_profile = thresholds.get("data_profile", {})
+            curr_pop = data_profile.get("style_eligible_n", 0)
+            if ref_date and ref_pop > 0 and curr_pop > 0:
+                sensitivity_note = threshold_sensitivity_note(
+                    reference_date=ref_date,
+                    reference_population=ref_pop,
+                    current_snapshot=chosen,
+                    current_population=curr_pop,
+                )
+                st.info(sensitivity_note)
+
+    # Threshold values with CIs
+    st.markdown("**Calibrated Thresholds**")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Value tier low (P33)", f"{thresholds.get('value_low', 0):,.0f}")
+        st.metric("Value tier high (P80)", f"{thresholds.get('value_high', 0):,.0f}")
+        st.metric("Basket low (P33)", f"{thresholds.get('basket_low', 0):,.0f}")
+        st.metric("Basket high (P80)", f"{thresholds.get('basket_high', 0):,.0f}")
+    with col2:
+        st.metric("Gap low (P33)", f"{thresholds.get('gap_low', 0):.1f} days")
+        st.metric("Gap high (P80)", f"{thresholds.get('gap_high', 0):.1f} days")
+        lateness = thresholds.get("lateness_overdue_min")
+        if lateness:
+            st.metric("Lateness threshold", f"{lateness:.2f}")
+        freq_thresh = thresholds.get("frequency_change_threshold")
+        if freq_thresh:
+            st.metric("Frequency change threshold", f"±{freq_thresh:.2f}")
+
+    # Threshold details with CIs
+    st.markdown("**Threshold Details (with Confidence Intervals)**")
+    details = thresholds.get("threshold_details", {})
+    for name, info in details.items():
+        with st.expander(f"{name}: {info.get('value', 'N/A')} (status: {info.get('status', 'N/A')})"):
+            st.json(info)
+
+    # Data profile
+    data_profile = thresholds.get("data_profile", {})
+    if data_profile:
+        st.markdown("**Data Profile at Reference Snapshot**")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total customers", f"{data_profile.get('n_customers', 0):,}")
+        col2.metric("Style-eligible", f"{data_profile.get('style_eligible_n', 0):,} ({data_profile.get('style_eligible_rate', 0):.1%})")
+        col3.metric("Value-eligible", f"{data_profile.get('value_eligible_n', 0):,} ({data_profile.get('value_eligible_rate', 0):.1%})")
+
+        warnings = data_profile.get("warnings", [])
+        if warnings:
+            for w in warnings:
+                st.warning(w)
+
+    # Calibration policy
+    st.markdown("**Calibration Policy**")
+    policy = thresholds.get("calibration_policy", {})
+    st.json(policy)
+
+
+def render_data_quality_report(root: Path):
+    """Data Quality Report - Detailed validation results."""
+    st.subheader("Data Quality Report")
+    st.caption(
+        "Question: What data quality issues were found during ingestion? "
+        "Shows rejected rows, rejection reasons, duplicate counts, and left-censoring."
+    )
+
+    quality_path = root / "quality.json"
+    if not quality_path.exists():
+        st.info("Quality report not found.")
+        return
+
+    quality = read_json(quality_path)
+
+    # Summary metrics
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Source rows", f"{quality.get('source_rows', 0):,}")
+    col2.metric("Valid rows", f"{quality.get('valid_rows', 0):,}")
+    col3.metric("Rejected rows", f"{quality.get('rejected_rows', 0):,}")
+    col4.metric("Rejection rate", f"{quality.get('rejection_rate', 0):.2%}")
+
+    # Detailed rejection counters
+    st.markdown("**Rejection Counters**")
+    rejection_fields = [
+        "null_customer_id", "null_transaction_id", "null_product_id", "null_date",
+        "null_price", "nonfinite_price", "negative_price",
+        "null_quantity", "nonfinite_quantity", "nonpositive_quantity",
+        "nonfinite_value", "missing_price_raw", "missing_quantity_raw"
+    ]
+    rejection_data = {k: quality.get(k, 0) for k in rejection_fields if quality.get(k, 0) > 0}
+    if rejection_data:
+        rej_df = pl.DataFrame([{"Field": k, "Count": v} for k, v in rejection_data.items()])
+        table(rej_df)
+    else:
+        st.success("No rejections recorded.")
+
+    # Duplicate analysis
+    st.markdown("**Duplicate Analysis**")
+    col1, col2 = st.columns(2)
+    col1.metric("Exact duplicate rows", f"{quality.get('exact_duplicate_rows', 0):,}")
+    col1.metric("Exact duplicate value", f"{quality.get('exact_duplicate_value', 0):,.2f}")
+    col2.metric("Normalized duplicate rows", f"{quality.get('normalized_duplicate_rows', 0):,}")
+    col2.metric("Normalized duplicate value", f"{quality.get('normalized_duplicate_value', 0):,.2f}")
+
+    # Left-censoring
+    st.markdown("**Left-Censoring (customers first seen near observation start)**")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Left-censored customers", f"{quality.get('left_censored_customers', 0):,}")
+    col2.metric("Total customers at start", f"{quality.get('total_customers_at_start', 0):,}")
+    col3.metric("Censor threshold (days)", f"{quality.get('censor_threshold_days', 0):,}")
+
+    # Baskets with rejected lines
+    st.metric("Baskets with rejected lines", f"{quality.get('baskets_with_rejected_lines', 0):,}")
+
+    # Negative quantity (potential returns)
+    st.markdown("**Negative Quantity Rows (potential returns/refunds)**")
+    col1, col2 = st.columns(2)
+    col1.metric("Rows with negative quantity", f"{quality.get('negative_quantity_rows', 0):,}")
+    col2.metric("Negative quantity value", f"{quality.get('negative_quantity_value', 0):,.2f}")
+
+    # Product variation
+    st.markdown("**Product Variation Audit**")
+    variation_path = root / "product_variation.parquet"
+    if variation_path.exists():
+        variation = pl.read_parquet(variation_path)
+        if not variation.is_empty():
+            st.warning(f"Found {variation.height} products with multiple department/category/description combinations")
+            table(variation.head(50))
+        else:
+            st.success("No product variation issues found.")
+    else:
+        st.info("Product variation audit not available.")
+
+
+def render_analysis_settings(root: Path):
+    """Analysis Settings - Run configuration and parameters."""
+    st.subheader("Analysis Settings")
+    st.caption(
+        "Question: How was this analysis configured? "
+        "Shows snapshots, price mode, bucketing, threshold policy, and version."
+    )
+
+    config_path = root / "configuration.json"
+    if config_path.exists():
+        config = read_json(config_path)
+        st.json(config)
+    else:
+        st.info("Configuration not found.")
+
+    # Run manifest
+    manifest_path = root / "run.json"
+    if manifest_path.exists():
+        manifest = read_json(manifest_path)
+        st.markdown("**Run Manifest**")
+        st.json(manifest)
 
 
 def main():
@@ -4835,9 +5292,51 @@ def main():
         st.json(metadata)
         return
 
-    # Always assume complete coverage - future-purchase analysis enabled by default
-    coverage = True
-    end = last  # Use the latest data date as coverage end
+    # Coverage confirmation - P0 fix: explicit user assertion required
+    st.sidebar.markdown("**🔬 Observation coverage (required for future outcomes)**")
+    
+    # Show latest observed transaction date (computed, read-only)
+    st.sidebar.info(f"📅 Latest transaction in file: **{last}**")
+    
+    # Coverage confirmation checkbox (default OFF)
+    coverage_confirmed = st.sidebar.checkbox(
+        "I confirm data is complete through a specific date",
+        value=False,
+        help="Check only if you can assert that ALL in-scope transactions are captured through the date below. "
+             "Exports may omit stores, channels, or delayed events. When unchecked, future-purchase validation is disabled."
+    )
+    
+    # Complete-through date input (only enabled when coverage confirmed)
+    if coverage_confirmed:
+        complete_through = st.sidebar.date_input(
+            "Data complete through (inclusive)",
+            value=last,
+            min_value=first,
+            max_value=last,
+            help="Latest date for which you assert complete capture of all in-scope activity. "
+                 "Future-purchase horizons extending past this date will be unavailable."
+        )
+        coverage_scope_note = st.sidebar.text_input(
+            "Scope covered (stores/channels/business units, or 'unknown')",
+            value="unknown",
+            help="Optional: describe which stores, channels, or business units this export covers."
+        )
+        coverage_warning = (
+            "⚠ **Warning:** Future repeat-purchase validation will use this date. "
+            "If the export omits any in-scope activity through this date, "
+            "observed repeat rates will be invalid."
+        )
+        st.sidebar.warning(coverage_warning)
+        end = complete_through
+    else:
+        complete_through = None
+        coverage_scope_note = None
+        st.sidebar.warning(
+            "⚠ **Coverage unconfirmed:** Historical descriptions available; "
+            "future outcome validation (repeat rates, cohort repeat, RFM response surface, etc.) is disabled. "
+            "Enable above only if you can confirm complete capture."
+        )
+        end = last  # Historical analysis still works; use latest date for cutoff bounds
 
     # Latest analysis cutoff - auto-default to leave room for follow-up
     st.sidebar.markdown("**📅 Analysis cutoffs**")
@@ -4849,7 +5348,7 @@ def main():
         "Latest analysis cutoff",
         value=default_chosen,
         min_value=first + timedelta(days=30),
-        max_value=end - timedelta(days=1),
+        max_value=end - timedelta(days=1) if end > first + timedelta(days=30) else first + timedelta(days=30),
         help="Cutoff date for feature computation. Future windows start after this date.",
     )
 
@@ -4872,7 +5371,10 @@ def main():
         snapshots=[str(x) for x in dates],
         buckets=partitions,
         exclude_invalid=exclude,
-        coverage_confirmed=coverage,
+        coverage_confirmed=coverage_confirmed,
+        coverage_complete_through=str(complete_through) if complete_through else None,
+        coverage_scope_note=coverage_scope_note,
+        coverage_confirmation_source="user_assertion" if coverage_confirmed else None,
         observed_through=str(end),
         min_reference_population=min_ref_pop,
     )
@@ -4894,7 +5396,7 @@ def main():
             return
     if st.session_state.get("result"):
         try:
-            display_results(Path(st.session_state["result"]), coverage)
+            display_results(Path(st.session_state["result"]), coverage_confirmed)
         except Exception as exc:
             st.error(
                 "A view could not render. Check output schemas, dependencies and server resources."

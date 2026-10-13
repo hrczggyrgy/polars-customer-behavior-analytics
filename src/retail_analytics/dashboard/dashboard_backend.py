@@ -361,6 +361,10 @@ def analyze(job: dict) -> None:
             {
                 "snapshots": [str(x) for x in dates],
                 "coverage_confirmed": coverage,
+                "coverage_complete_through": job.get("coverage_complete_through"),
+                "coverage_scope_note": job.get("coverage_scope_note"),
+                "coverage_confirmation_source": job.get("coverage_confirmation_source"),
+                "latest_observed_transaction_date": str(last),
                 "observed_through": str(end),
                 "price_mode": job["price_mode"],
                 "polars_version": pl.__version__,
@@ -389,6 +393,10 @@ def analyze(job: dict) -> None:
         {
             "snapshots": [str(x) for x in dates],
             "coverage_confirmed": coverage,
+            "coverage_complete_through": job.get("coverage_complete_through"),
+            "coverage_scope_note": job.get("coverage_scope_note"),
+            "coverage_confirmation_source": job.get("coverage_confirmation_source"),
+            "latest_observed_transaction_date": str(last),
             "observed_through": str(end),
             "price_mode": job["price_mode"],
             "polars_version": pl.__version__,

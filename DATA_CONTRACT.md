@@ -506,7 +506,8 @@ Quantile thresholds computed at first snapshot, with full calibration metadata.
     "style_population": 1414,
     "value_population": 1704,
     "checked_snapshots": [...]
-  }
+  },
+  "quantile_interpolation": "linear"
 }
 ```
 
@@ -529,6 +530,7 @@ Quantile thresholds computed at first snapshot, with full calibration metadata.
 | `threshold_details` | Object | Per-threshold metadata (value, raw, CI, n, status, clamp_bounds, clamped_value) |
 | `data_profile` | Object | Data quality diagnostics for the reference snapshot |
 | `reference_selection` | Object | Which snapshot was selected and why |
+| `quantile_interpolation` | String | Interpolation method used for all quantile estimates (always `"linear"`) |
 
 **Key behaviors:**
 - If no snapshot meets minimum population, all quantile thresholds are `null` and `reference_date` is `null`

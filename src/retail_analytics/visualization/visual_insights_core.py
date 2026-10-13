@@ -1116,7 +1116,7 @@ def future_outcome_validation(rows):
             )
         )
         # Keep original dimension name for dashboard compatibility
-        stats_30 = stats_30.rename({"dim_value": dim}) if "dim_value" in stats_30.columns else stats_30
+        stats_30 = stats_30.rename({dim: "dim_value"}) if dim in stats_30.columns else stats_30
         results.append(stats_30)
 
         # 90-day validation
@@ -1139,7 +1139,7 @@ def future_outcome_validation(rows):
             )
         )
         # Keep original dimension name for dashboard compatibility
-        stats_90 = stats_90.rename({"dim_value": dim}) if "dim_value" in stats_90.columns else stats_90
+        stats_90 = stats_90.rename({dim: "dim_value"}) if dim in stats_90.columns else stats_90
         results.append(stats_90)
 
     return pl.concat(results, how="vertical_relaxed") if results else pl.DataFrame()

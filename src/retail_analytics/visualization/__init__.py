@@ -37,6 +37,26 @@ from retail_analytics.visualization.visual_insights_core import (
     trial_to_repeat_map,
     value_tier_transition_waterfall,
 )
+from retail_analytics.visualization.chart_components import (
+    ChartSpec, ChartEvidence, ChartCard, create_chart_card,
+    SupportThresholds, EvidenceState, evaluate_evidence,
+    bootstrap_ci, format_evidence_badge, multiplicity_warning,
+    sampling_disclosure, threshold_sensitivity_note,
+    build_color_map, get_color, format_axis_title, OKABE_ITO, safe_list,
+)
+from retail_analytics.visualization.chart_specs import (
+    render_chart_card, create_evidence_badge,
+    get_cohort_age_retention_spec, get_rfm_response_surface_spec,
+    get_cadence_validation_spec, get_multi_horizon_cohorts_spec,
+    get_future_validation_spec, get_time_to_repeat_spec,
+    get_category_opportunity_map_spec, get_category_penetration_growth_spec,
+    get_value_at_risk_spec, get_product_affinity_spec, get_trial_conversion_spec,
+    get_segment_summary_spec, get_revenue_bridge_spec,
+    get_product_association_network_spec, get_revenue_waterfall_spec,
+    get_cohort_summary_spec, get_customer_momentum_spec,
+    get_purchase_cadence_spec, get_category_participation_spec,
+    get_segment_alluvial_spec,
+)
 
 __all__ = [
     "METRICS",
@@ -69,4 +89,22 @@ __all__ = [
     "category_opportunity_map",
     "rfm_response_surface",
     "collect_product_affinity",
+    # Chart components
+    "ChartSpec", "ChartEvidence", "ChartCard", "create_chart_card",
+    "SupportThresholds", "EvidenceState", "evaluate_evidence",
+    "bootstrap_ci", "format_evidence_badge", "multiplicity_warning",
+    "sampling_disclosure", "threshold_sensitivity_note",
+    "build_color_map", "get_color", "format_axis_title", "OKABE_ITO", "safe_list",
+    # Chart specs
+    "render_chart_card", "create_evidence_badge",
+    "get_cohort_age_retention_spec", "get_rfm_response_surface_spec",
+    "get_cadence_validation_spec", "get_multi_horizon_cohorts_spec",
+    "get_future_validation_spec", "get_time_to_repeat_spec",
+    "get_category_opportunity_map_spec", "get_category_penetration_growth_spec",
+    "get_value_at_risk_spec", "get_product_affinity_spec", "get_trial_conversion_spec",
+    "get_segment_summary_spec", "get_revenue_bridge_spec",
+    "get_product_association_network_spec", "get_revenue_waterfall_spec",
+    "get_cohort_summary_spec", "get_customer_momentum_spec",
+    "get_purchase_cadence_spec", "get_category_participation_spec",
+    "get_segment_alluvial_spec",
 ]
