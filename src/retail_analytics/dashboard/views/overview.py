@@ -19,8 +19,8 @@ from retail_analytics.visualization.chart_components import (
     get_color,
     safe_list,
     format_axis_title,
-    METRICS,
 )
+from retail_analytics.visualization.visual_insights_core import METRICS
 from retail_analytics.core.pipeline.utils import collect
 
 

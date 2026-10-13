@@ -12,8 +12,8 @@ from retail_analytics.visualization.chart_components import (
     safe_list,
     sampling_disclosure,
     format_axis_title,
-    METRICS,
 )
+from retail_analytics.visualization.visual_insights_core import METRICS
 from retail_analytics.dashboard.app import collect, table, PAGE_ROWS
 
 
