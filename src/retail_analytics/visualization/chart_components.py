@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 import plotly.graph_objects as go
+import polars as pl
 import streamlit as st
 
 from retail_analytics.core.coverage import check_horizon_eligibility
@@ -534,6 +535,82 @@ def table(frame):
     st.caption(f"Tables display at most {PAGE_ROWS:,} rows.")
 
 
+def apply_filters(rows, filters):
+    """Apply filter selections to a LazyFrame."""
+    for dimension, values in filters.items():
+        if values:
+            rows = rows.filter(pl.col(dimension).is_in(values))
+    return rows
+
+
+def chart(figure, title, key, x=None, y=None):
+    """Render a Plotly chart with error handling."""
+    import streamlit as st
+    try:
+        figure.update_layout(
+            title=title,
+            template="plotly_white",
+            height=430,
+            margin=dict(l=20, r=20, t=65, b=50),
+            xaxis_title=x,
+            yaxis_title=y,
+            uirevision=key,
+        )
+        st.plotly_chart(
+            figure,
+            use_container_width=True,
+            key=key,
+            config={"displaylogo": False, "toImageButtonOptions": {"format": "png", "scale": 2}},
+        )
+    except Exception as e:
+        st.error(f"Chart rendering failed for '{title}': {type(e).__name__}: {e}")
+        st.caption(
+            "This may be due to empty data, invalid data types, or missing columns. Check the data and filters."
+        )
+
+
+def bars(data, group, metric, title, key, color_map=None):
+    """Render horizontal bar chart with color mapping."""
+    import plotly.graph_objects as go
+    import streamlit as st
+    if data.is_empty():
+        st.info("No observations match this view.")
+        return
+    shown = data.sort(metric, descending=True).head(25).reverse()
+    if color_map is None:
+        color_map = build_color_map(shown[group].to_list())
+    chart(
+        go.Figure(
+            go.Bar(
+                x=shown[metric].to_list(),
+                y=shown[group].to_list(),
+                orientation="h",
+                marker_color=[get_color(v, color_map) for v in shown[group].to_list()],
+            )
+        ),
+        title,
+        key,
+        format_axis_title(metric),
+        group,
+    )
+    st.caption(f"Showing up to 25 groups out of {data.height}; omitted groups are not merged.")
+
+
+def export_csv(data):
+    """Export DataFrame to CSV with formula injection protection."""
+    columns = [x for x, dtype in data.schema.items() if dtype == pl.String]
+    safe = data.with_columns(
+        *[
+            pl.when(pl.col(x).str.contains(r"^[=+\-@\t\r]"))
+            .then(pl.concat_str([pl.lit("'"), pl.col(x)]))
+            .otherwise(pl.col(x))
+            .alias(x)
+            for x in columns
+        ]
+    )
+    return safe.write_csv().encode("utf8")
+
+
 __all__ = [
     "ChartSpec", "ChartEvidence", "ChartCard", "create_chart_card",
     "SupportThresholds", "EvidenceState", "evaluate_evidence",
@@ -544,4 +621,5 @@ __all__ = [
     "read_json",
     "bounded_grid",
     "collect", "table", "PAGE_ROWS",
+    "apply_filters", "chart", "bars", "export_csv",
 ]
